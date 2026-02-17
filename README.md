@@ -1,1 +1,124 @@
-# title-protocol
+# Title Protocol
+
+**The Identity Layer for Digital Content**
+
+Title Protocol is a decentralized infrastructure that provides **Attribution** for digital content. By combining with **C2PA** (Coalition for Content Provenance and Authenticity), it grants digital content a complete, verifiable identity.
+
+## 0. The Missing Piece in Digital Identity
+
+For digital content to have a true "Identity," three conditions must be met:
+
+1. **Provenance:** The origin and creation process are cryptographically verifiable.
+2. **Integrity:** It is possible to detect if the content has been tampered with.
+3. **Attribution:** The rights ownership can be resolved trustlessly.
+
+**C2PA** solves Provenance and Integrity. **Title Protocol** solves Attribution.
+
+### The Web Infrastructure Analogy
+
+The relationship between C2PA and Title Protocol is analogous to the infrastructure that secures the Web:
+
+| Role | Web Infrastructure (TLS/DNS) | Digital Content (C2PA/Title) |
+| --- | --- | --- |
+| **Certificate** | **SSL/TLS Certificate**<br>
+
+<br>Proves the server is who it claims to be. | **C2PA Manifest**<br>
+
+<br>Proves the content's origin and integrity. |
+| **Audit Log** | **Certificate Transparency (CT) Logs**<br>
+
+<br>Publicly records issuance to prevent fraud. | **Title Protocol (Core)**<br>
+
+<br>Records TEE-verified facts to a blockchain ledger. |
+| **Resolution** | **DNS**<br>
+
+<br>Resolves a domain name to an IP address. | **Title Protocol (Resolve)**<br>
+
+<br>Resolves a content ID to a Wallet Address. |
+
+Just as the Web relies on DNS and CT Logs, digital content requires an infrastructure to resolve rights and audit existence. Title Protocol is that infrastructure.
+
+## 1. Design Principles
+
+Title Protocol is designed as a neutral, permissionless public utility.
+
+* **Content-Agnostic & Neutral:**
+The protocol operates as neutral infrastructure, much like TCP/IP. It acts as a **registry, not a regulator**. It does not judge, filter, or censor content based on its nature. If the cryptographic proofs are valid, the protocol records the attribution without bias.
+* **Stateless:**
+The protocol runs inside **TEEs (Trusted Execution Environments)**. These nodes hold no state between requests; they simply accept input, perform computation, and return a result.
+* **Permissionless:**
+Anyone can build applications on top of the protocol. Node operation is managed by a DAO, preventing dependence on any single centralized entity.
+* **Privacy-First (E2EE):**
+Data sent to the protocol is End-to-End Encrypted. Even the node operator cannot view the raw content, ensuring privacy and minimizing liability for operators.
+
+## 2. Protocol Architecture
+
+The protocol consists of two distinct layers that share a common registration and verification flow.
+
+### Layer 1: Core (The Provenance Graph)
+
+The Core layer establishes the **Rights Structure** of the content.
+
+* **Input:** C2PA-signed content.
+* **Process:** The TEE verifies the C2PA signature chain and recursively extracts "ingredient" data (assets used to create the content).
+* **Output:** A **Provenance DAG (Directed Acyclic Graph)** recorded as a **Solana cNFT**.
+* **Function:** It answers the question: *"Who is involved in this content?"* (e.g., identifying the wallet addresses of the creator and all ingredient owners for revenue distribution).
+
+### Layer 2: Extension (The Attribute Layer)
+
+The Extension layer attaches **Objective Attributes** to the content.
+
+* **Input:** Content + Optional auxiliary inputs (e.g., ZK proofs).
+* **Process:** The TEE executes deterministic **WASM modules**.
+* **Output:** Key-Value attributes recorded as a **Solana cNFT**.
+* **Function:** It answers the question: *"What are the properties of this content?"*
+* *Example:* `phash-v1` calculates a perceptual hash for similarity search.
+* *Example:* `ai-training-v1` extracts "Do Not Train" flags from metadata.
+* *Example:* `hardware-proof` verifies if the content was captured by specific hardware (e.g., Sony, Canon, Google Pixel).
+
+
+
+## 3. How It Works (Node Perspective)
+
+The registration process is designed to be secure, scalable, and operator-friendly.
+
+```mermaid
+graph LR
+    User[Client] -->|Encrypted Payload| Gateway[Node Gateway]
+    Gateway -->|Relay| TEE[Trusted Execution Environment]
+    TEE -->|Verify & Sign| Solana[Solana Blockchain]
+    TEE -->|Store JSON| Arweave[Arweave Storage]
+
+```
+
+1. **Encryption:** The client encrypts the content and the destination wallet address using the TEE's public key (E2EE).
+2. **Blind Processing:** The Node Operator (Gateway) relays the encrypted payload to the TEE. The operator **cannot** see the content or the wallet address.
+3. **Verification:** The TEE decrypts the payload in a secure enclave, verifies the C2PA signatures, and executes WASM modules.
+4. **Signing:** The TEE signs the result with its private key.
+5. **Minting:** The result is stored on Arweave, and a **Compressed NFT (cNFT)** is minted on Solana, linking the content hash to the user's wallet.
+
+## 4. Operational Model
+
+### Registry, Not Police
+
+Title Protocol serves as a "Deed Office." It records objective facts (who claimed this content at what time with what proof). It does not police the content. Logic for filtering illegal content or handling disputes belongs to the **Application Layer**, not the Protocol Layer.
+
+### Trusted Execution Environments (TEE)
+
+Nodes must run on hardware that supports Remote Attestation (e.g., AWS Nitro Enclaves). This guarantees to the network that the node is running the exact, unmodified open-source code of the protocol, ensuring that the verification results are trustworthy without needing to trust the node operator.
+
+### Scalability via Solana cNFTs
+
+By utilizing Solana's Compressed NFTs (Bubblegum), the protocol can handle millions of registrations at a fraction of the cost of traditional NFTs, making it viable for high-volume content ecosystems like social media or AI generation.
+
+## 5. Technical Stack
+
+* **Core Logic:** Rust
+* **Runtime:** AWS Nitro Enclaves (TEE)
+* **Blockchain:** Solana (Compressed NFTs)
+* **Storage:** Arweave (via Irys)
+* **Standards:** C2PA (Coalition for Content Provenance and Authenticity)
+
+---
+
+*This repository contains the source code for the Title Protocol Node. For documentation on how to run a node or integrate the SDK, please refer to the [Docs].*

@@ -1,2 +1,24 @@
+# Rust
 target/
+Cargo.lock
+
+# Node.js
+node_modules/
+dist/
+package-lock.json
+
+# AWS Nitro Enclaves
 *.eif
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*

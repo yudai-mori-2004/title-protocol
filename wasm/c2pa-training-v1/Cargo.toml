@@ -1,0 +1,11 @@
+[package]
+name = "c2pa-training-v1"
+version = "0.1.0"
+edition = "2021"
+description = "Title Protocol Extension: AI学習許諾フラグ抽出"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dlmalloc = { version = "0.2", features = ["global"] }

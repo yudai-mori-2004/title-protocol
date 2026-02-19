@@ -1,0 +1,8 @@
+{
+  "name": "title-protocol",
+  "private": true,
+  "workspaces": [
+    "sdk/ts",
+    "indexer"
+  ]
+}

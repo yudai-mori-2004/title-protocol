@@ -1,0 +1,11 @@
+[package]
+name = "phash-v1"
+version = "0.1.0"
+edition = "2021"
+description = "Title Protocol Extension: 知覚ハッシュ (pHash)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dlmalloc = { version = "0.2", features = ["global"] }

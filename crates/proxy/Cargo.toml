@@ -1,0 +1,15 @@
+[package]
+name = "title-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "Title Protocol vsock HTTPプロキシ"
+
+[dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+vsock = "0.4"

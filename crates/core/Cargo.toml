@@ -1,0 +1,13 @@
+[package]
+name = "title-core"
+version = "0.1.0"
+edition = "2021"
+description = "Title Protocol Core - C2PA検証 + 来歴グラフ構築"
+
+[dependencies]
+title-types = { path = "../types" }
+title-crypto = { path = "../crypto" }
+c2pa = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

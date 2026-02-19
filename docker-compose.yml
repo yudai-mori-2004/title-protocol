@@ -1,0 +1,112 @@
+# Title Protocol ローカル開発環境
+# 起動: docker-compose up -d
+# 初期化: ./scripts/setup-local.sh
+
+services:
+  # Solanaテストバリデータ
+  solana-test-validator:
+    image: solanalabs/solana:v1.18.26
+    command: solana-test-validator --reset --quiet
+    ports:
+      - "8899:8899"   # RPC
+      - "8900:8900"   # WebSocket
+    healthcheck:
+      test: ["CMD", "solana", "cluster-version", "--url", "http://localhost:8899"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # MinIO (S3互換 Temporary Storage)
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # PostgreSQL (インデクサ用)
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: title_indexer
+      POSTGRES_USER: title
+      POSTGRES_PASSWORD: title_dev
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U title"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Arweaveモック (arlocal)
+  arlocal:
+    image: textury/arlocal:latest
+    ports:
+      - "1984:1984"
+
+  # Gateway
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/gateway.Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      TEE_ENDPOINT: "http://tee-mock:4000"
+      MINIO_ENDPOINT: "http://minio:9000"
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      SOLANA_RPC_URL: "http://solana-test-validator:8899"
+    depends_on:
+      minio:
+        condition: service_healthy
+      tee-mock:
+        condition: service_started
+
+  # TEE モック (MockRuntime使用)
+  tee-mock:
+    build:
+      context: .
+      dockerfile: docker/tee-mock.Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      MOCK_MODE: "true"
+      SOLANA_RPC_URL: "http://solana-test-validator:8899"
+      ARWEAVE_GATEWAY: "http://arlocal:1984"
+    depends_on:
+      solana-test-validator:
+        condition: service_healthy
+
+  # インデクサ
+  indexer:
+    build:
+      context: .
+      dockerfile: docker/indexer.Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: "postgres://title:title_dev@postgres:5432/title_indexer"
+      SOLANA_RPC_URL: "http://solana-test-validator:8899"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      solana-test-validator:
+        condition: service_healthy
+
+volumes:
+  minio-data:
+  postgres-data:

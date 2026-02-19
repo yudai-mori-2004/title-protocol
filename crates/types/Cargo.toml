@@ -1,0 +1,9 @@
+[package]
+name = "title-types"
+version = "0.1.0"
+edition = "2021"
+description = "Title Protocol 共有型定義"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "title-config"
+version = "0.1.0"
+edition = "2021"
+description = "Title Protocol Anchor Solanaプログラム"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = "0.30"

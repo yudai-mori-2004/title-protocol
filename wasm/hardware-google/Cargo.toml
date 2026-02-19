@@ -1,0 +1,11 @@
+[package]
+name = "hardware-google"
+version = "0.1.0"
+edition = "2021"
+description = "Title Protocol Extension: Google Pixel ハードウェア署名検証"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dlmalloc = { version = "0.2", features = ["global"] }

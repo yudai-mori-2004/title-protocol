@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "crates/types",
+    "crates/crypto",
+    "crates/core",
+    "crates/wasm-host",
+    "crates/tee",
+    "crates/gateway",
+    "crates/proxy",
+]
+exclude = [
+    "prototype",
+    "wasm",
+]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+ed25519-dalek = { version = "2", features = ["serde"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+aes-gcm = "0.10"
+sha2 = "0.10"
+hkdf = "0.12"
+base64 = "0.22"
+base58 = "0.2"
+c2pa = "0.47"
+wasmtime = "29"
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"

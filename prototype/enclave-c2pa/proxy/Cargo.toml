@@ -1,0 +1,9 @@
+# proxy/Cargo.toml
+[package]
+name = "vsock-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vsock = "0.4"
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }

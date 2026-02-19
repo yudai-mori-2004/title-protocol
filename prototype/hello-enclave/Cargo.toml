@@ -1,0 +1,7 @@
+[package]
+name = "hello-enclave"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vsock = "0.4"

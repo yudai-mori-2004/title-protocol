@@ -1,0 +1,10 @@
+# parent/Cargo.toml
+[package]
+name = "parent-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vsock = "0.4"
+base64 = "0.22"
+serde_json = "1"

@@ -22,21 +22,40 @@ IMAGE_NAME="title-tee-enclave"
 EIF_OUTPUT="$PROJECT_ROOT/title-tee.eif"
 
 # Step 1: Docker イメージのビルド
-echo "Docker イメージをビルド中..."
+echo "[Step 1/3] Docker イメージをビルド中..."
 docker build -t "$IMAGE_NAME" -f "$TEE_DOCKERFILE" "$PROJECT_ROOT"
+echo "  Docker イメージ: $IMAGE_NAME"
 
 # Step 2: EIF の生成
-echo "EIF を生成中..."
-# TODO: nitro-cli build-enclave の実行
-# nitro-cli build-enclave \
-#   --docker-uri "$IMAGE_NAME:latest" \
-#   --output-file "$EIF_OUTPUT"
+echo "[Step 2/3] EIF を生成中..."
+nitro-cli build-enclave \
+    --docker-uri "$IMAGE_NAME:latest" \
+    --output-file "$EIF_OUTPUT"
 
-echo "TODO: nitro-cli build-enclave コマンドの実行"
-echo "  nitro-cli build-enclave --docker-uri $IMAGE_NAME:latest --output-file $EIF_OUTPUT"
+echo "  EIF ファイル: $EIF_OUTPUT"
 
 # Step 3: 測定値の表示
-# TODO: EIFの測定値 (PCR0, PCR1, PCR2) を表示
-# nitro-cli describe-enclaves
+echo "[Step 3/3] Enclave 測定値 (PCR):"
+# nitro-cli build-enclave の出力にPCR値が含まれるが、
+# 念のためEIFからも抽出して表示する
+nitro-cli describe-eif --eif-path "$EIF_OUTPUT" | \
+    python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+measurements = data.get('Measurements', {})
+for key in ['PCR0', 'PCR1', 'PCR2']:
+    val = measurements.get(key, 'N/A')
+    print(f'  {key}: {val}')
+" 2>/dev/null || echo "  (PCR値の表示にはpython3が必要です)"
 
+echo ""
 echo "=== ビルド完了 ==="
+echo "EIF ファイル: $EIF_OUTPUT"
+echo ""
+echo "Enclave の起動:"
+echo "  nitro-cli run-enclave --eif-path $EIF_OUTPUT --cpu-count 2 --memory 512"
+echo ""
+echo "Global Config に登録する PCR 値を上記から取得してください。"
+echo "  PCR0: Enclave イメージの測定値"
+echo "  PCR1: カーネルの測定値"
+echo "  PCR2: アプリケーションの測定値"

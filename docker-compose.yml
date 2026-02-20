@@ -1,21 +1,12 @@
 # Title Protocol ローカル開発環境
 # 起動: docker-compose up -d
 # 初期化: ./scripts/setup-local.sh
+#
+# Solana RPC は外部プロバイダ（Helius devnet等）を使用する。
+# SOLANA_RPC_URL 環境変数で指定:
+#   SOLANA_RPC_URL=https://devnet.helius-rpc.com/?api-key=xxx docker compose up -d
 
 services:
-  # Solanaテストバリデータ
-  solana-test-validator:
-    image: solanalabs/solana:v1.18.26
-    command: solana-test-validator --reset --quiet
-    ports:
-      - "8899:8899"   # RPC
-      - "8900:8900"   # WebSocket
-    healthcheck:
-      test: ["CMD", "solana", "cluster-version", "--url", "http://localhost:8899"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   # MinIO (S3互換 Temporary Storage)
   minio:
     image: minio/minio:latest
@@ -67,9 +58,10 @@ services:
     environment:
       TEE_ENDPOINT: "http://tee-mock:4000"
       MINIO_ENDPOINT: "http://minio:9000"
+      MINIO_PUBLIC_ENDPOINT: "http://localhost:9000"
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-      SOLANA_RPC_URL: "http://solana-test-validator:8899"
+      SOLANA_RPC_URL: "${SOLANA_RPC_URL:-https://api.devnet.solana.com}"
     depends_on:
       minio:
         condition: service_healthy
@@ -85,11 +77,13 @@ services:
       - "4000:4000"
     environment:
       MOCK_MODE: "true"
-      SOLANA_RPC_URL: "http://solana-test-validator:8899"
+      TEE_RUNTIME: "mock"
+      PROXY_ADDR: "direct"
+      SOLANA_RPC_URL: "${SOLANA_RPC_URL:-https://api.devnet.solana.com}"
       ARWEAVE_GATEWAY: "http://arlocal:1984"
-    depends_on:
-      solana-test-validator:
-        condition: service_healthy
+      WASM_DIR: "/wasm-modules"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # インデクサ
   indexer:
@@ -97,14 +91,14 @@ services:
       context: .
       dockerfile: docker/indexer.Dockerfile
     ports:
-      - "5000:5000"
+      - "5050:5000"
     environment:
       DATABASE_URL: "postgres://title:title_dev@postgres:5432/title_indexer"
-      SOLANA_RPC_URL: "http://solana-test-validator:8899"
+      SOLANA_RPC_URL: "${SOLANA_RPC_URL:-https://api.devnet.solana.com}"
+      DAS_ENDPOINTS: "${SOLANA_RPC_URL:-https://api.devnet.solana.com}"
+      COLLECTION_MINTS: "${COLLECTION_MINTS:-11111111111111111111111111111111}"
     depends_on:
       postgres:
-        condition: service_healthy
-      solana-test-validator:
         condition: service_healthy
 
 volumes:

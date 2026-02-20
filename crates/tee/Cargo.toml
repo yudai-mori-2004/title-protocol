@@ -22,3 +22,16 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 base64 = { workspace = true }
 base58 = { workspace = true }
+rand = { workspace = true }
+solana-sdk = { workspace = true }
+bincode = { workspace = true }
+mpl-bubblegum = { workspace = true }
+
+serde_bytes = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aws-nitro-enclaves-nsm-api = "0.4"
+
+[dev-dependencies]
+c2pa = { workspace = true }
+wat = "1"

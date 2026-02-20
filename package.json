@@ -3,6 +3,7 @@
   "private": true,
   "workspaces": [
     "sdk/ts",
-    "indexer"
+    "indexer",
+    "tests/e2e"
   ]
 }

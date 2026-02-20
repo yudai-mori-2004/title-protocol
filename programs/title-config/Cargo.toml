@@ -14,3 +14,8 @@ default = []
 
 [dependencies]
 anchor-lang = "0.30"
+# cargo-build-sbfの古いCargoがedition2024クレートを処理できないためピン留め
+constant_time_eq = ">=0.1, <0.4"
+
+[profile.release]
+overflow-checks = true

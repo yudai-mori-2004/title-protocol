@@ -5,13 +5,16 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-title_config = "TiTLECfg111111111111111111111111111111111111"
+title_config = "C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN"
+
+[programs.devnet]
+title_config = "C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "Devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

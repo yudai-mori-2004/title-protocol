@@ -65,3 +65,67 @@ jobs:
         run: |
           npm ci
           npm run build
+
+  e2e-test:
+    name: E2E Integration Test
+    runs-on: ubuntu-latest
+    needs: [rust-check, typescript-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Generate C2PA test fixtures
+        run: cargo run --example gen_fixture -p title-core -- tests/e2e/fixtures
+
+      - name: Build WASM modules
+        run: |
+          for dir in wasm/*/; do
+            cargo build --manifest-path "${dir}Cargo.toml" --target wasm32-unknown-unknown --release
+          done
+
+      - name: Start services
+        run: docker compose up -d
+        env:
+          COMPOSE_PROJECT_NAME: title-e2e
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v1.18.26/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Setup local environment
+        run: |
+          solana-keygen new --no-bip39-passphrase --silent --force
+          bash scripts/setup-local.sh
+
+      - name: Install dependencies & build
+        run: |
+          npm install
+          cd sdk/ts && npx tsc && cd ../..
+          cd tests/e2e && npx tsc
+
+      - name: Run E2E tests
+        run: cd tests/e2e && node --test dist/e2e.test.js
+        timeout-minutes: 5
+
+      - name: Stop services
+        if: always()
+        run: docker compose down -v

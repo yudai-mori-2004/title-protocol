@@ -10,6 +10,11 @@
 //! | 対称暗号 | AES-256-GCM |
 //! | 署名 | Ed25519 |
 //! | ハッシュ | SHA-256 |
+//!
+//! ## Attestation Document検証
+//! `attestation` モジュールでAWS Nitro Attestation Documentの検証を提供する。
+
+pub mod attestation;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};

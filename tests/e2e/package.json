@@ -1,0 +1,23 @@
+{
+  "name": "@title-protocol/e2e-tests",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Title Protocol E2E integration tests",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "source ~/.nvm/nvm.sh && nvm use 24 --silent && node --test dist/e2e.test.js",
+    "fixture": "cargo run --example gen_fixture -p title-core -- fixtures"
+  },
+  "dependencies": {
+    "@title-protocol/sdk": "file:../../sdk/ts",
+    "@solana/web3.js": "^1.95.0",
+    "@noble/curves": "^1.8.0",
+    "@noble/hashes": "^1.7.0",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

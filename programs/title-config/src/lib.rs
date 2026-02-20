@@ -10,7 +10,7 @@
 
 use anchor_lang::prelude::*;
 
-declare_id!("TiTLECfg111111111111111111111111111111111111");
+declare_id!("C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN");
 
 #[program]
 pub mod title_config {

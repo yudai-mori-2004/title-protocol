@@ -9,12 +9,11 @@ RUN dnf install -y \
     gcc \
     gcc-c++ \
     openssl-devel \
-    perl-FindBin \
-    perl-File-Compare \
-    perl-IPC-Cmd \
-    perl-File-Copy \
     make \
+    pkg-config \
     && dnf clean all
+
+ENV OPENSSL_NO_VENDOR=1
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"

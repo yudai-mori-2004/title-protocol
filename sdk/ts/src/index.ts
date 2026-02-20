@@ -7,7 +7,6 @@
 
 export * from "./types";
 export * from "./crypto";
+export * from "./client";
 export * from "./register";
-export * from "./resolve";
 export * from "./storage";
-export * from "./discover";

@@ -323,6 +323,23 @@ pub struct SignResponse {
 // Gateway認証 (仕様書 §6.2)
 // ---------------------------------------------------------------------------
 
+/// Gateway認証の署名対象構造体。
+/// GatewayAuthWrapperからgateway_signatureを除いた構造。
+/// Gateway側で署名対象を構築し、TEE側で検証時に同一構造を再構築する。
+/// 仕様書 §6.2
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayAuthSignTarget {
+    /// HTTPメソッド
+    pub method: String,
+    /// リクエストパス
+    pub path: String,
+    /// クライアントのリクエスト本文
+    pub body: serde_json::Value,
+    /// リソース制限（Optional）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_limits: Option<ResourceLimits>,
+}
+
 /// Gateway認証ラッパー。GatewayがTEEに送信するリクエストの構造。
 /// 仕様書 §6.2
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -461,6 +478,8 @@ pub struct CreateTreeRequest {
     pub max_buffer_size: u32,
     /// Base58エンコードされたBlockhash
     pub recent_blockhash: String,
+    /// Base58エンコードされたfee payer公開鍵
+    pub payer: String,
 }
 
 /// /create-tree レスポンス。

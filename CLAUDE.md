@@ -5,9 +5,12 @@
 Title Protocol: デジタルコンテンツの帰属をブロックチェーン（Solana）に記録するプロトコル。
 C2PA（来歴証明）× TEE（信頼された実行環境）× cNFT（圧縮NFT）を組み合わせ、コンテンツの「誰のものか」をトラストレスに解決する。
 
-- 技術仕様書: `docs/SPECS_JA.md`（ver.9）
-- 実装カバレッジ: `docs/COVERAGE.md`
-- タスク定義: `docs/tasks/` 配下
+- ドキュメント管理: `docs/README.md`（バージョン単位で SPECS→COVERAGE→tasks を管理）
+- 現行バージョン: `docs/v1/`（2026-02-21、初期実装、全タスク完了）
+  - 技術仕様書: `docs/v1/SPECS_JA.md`（ver.9）
+  - 実装カバレッジ: `docs/v1/COVERAGE.md`（仕様→実装の橋渡し、累積的）
+  - タスク定義: `docs/v1/tasks/NN-name/`（各タスクはディレクトリ、メモを併置可能）
+- 環境変数一覧: `.env.example`
 
 ## ビルド手順
 
@@ -36,11 +39,11 @@ cd programs/title-config && anchor build
 
 - 全てのRust公開関数にdocコメント（日本語）。仕様書の該当セクション番号を含める（例: `/// 仕様書 §5.1 Step 4`）
 - エラー型は `thiserror` で定義し、クレートごとに専用のError enumを持つ
-- 未実装部分は `todo!()` で明示（コンパイルは通る状態を維持）
 - 仕様書のJSON構造とRust構造体のフィールド名は一致させる（snake_case）
 - WASMモジュールは `#![no_std]` + `dlmalloc` グローバルアロケータ + `core::arch::wasm32::unreachable()` パニックハンドラ
 - テストは各クレート内に `#[cfg(test)] mod tests` で書く
-- `prototype/` と `docs/` 配下の既存ファイルは編集しない（参照のみ可）
+- `prototype/` は編集しない（参照のみ可）
+- 完了済みバージョン（`docs/v1/` 等）は原則編集しない。現行バージョンのみ編集対象
 
 ## アーキテクチャ
 
@@ -52,37 +55,67 @@ Client (SDK) → Gateway → Temporary Storage → TEE → Solana
 
 ### Rustクレート（workspace members）
 
-| クレート | 役割 | 依存方向 |
-|---------|------|---------|
-| `crates/types` | 全コンポーネントが依存する型定義 | 他から依存される |
-| `crates/crypto` | 暗号プリミティブ（**実装済み**） | types に依存 |
-| `crates/core` | C2PA検証 + 来歴グラフ構築 | types, crypto に依存 |
-| `crates/wasm-host` | wasmtime直接使用のWASM実行環境 | types に依存 |
-| `crates/tee` | TEEサーバー本体（axum） | types, crypto, core, wasm-host に依存 |
-| `crates/gateway` | Gateway HTTPサーバー（axum） | types に依存 |
-| `crates/proxy` | vsock HTTPプロキシ（TEE↔外部通信） | 独立 |
+| クレート | 役割 | 仕様書 | 状態 |
+|---------|------|--------|------|
+| `crates/types` | 全コンポーネントが依存する型定義 | §5 | **実装済み** |
+| `crates/crypto` | 暗号プリミティブ | §1.1 Phase 1 Step 2, §6.4 | **実装済み** |
+| `crates/core` | C2PA検証 + 来歴グラフ構築 | §2.1, §2.2 | **実装済み** |
+| `crates/wasm-host` | wasmtime直接使用のWASM実行環境 | §7.1 | **実装済み** |
+| `crates/tee` | TEEサーバー本体（axum） | §6.4, §1.1 | **実装済み** |
+| `crates/gateway` | Gateway HTTPサーバー（axum） | §6.2 | **実装済み** |
+| `crates/proxy` | vsock HTTPプロキシ（TEE↔外部通信） | §6.4 | **実装済み** |
+
+### モジュール構成の詳細
+
+**Gateway** (`crates/gateway/src/`):
+```
+main.rs          — エントリポイント + ルーティング定義
+config.rs        — GatewayState（共有状態）
+storage.rs       — TempStorageトレイト + S3TempStorage実装
+auth.rs          — Gateway認証（Ed25519署名の付与・TEE中継）
+error.rs         — GatewayError定義
+endpoints/       — 各エンドポイントハンドラ（1ファイル = 1エンドポイント）
+```
+
+**TEE** (`crates/tee/src/`):
+```
+main.rs          — エントリポイント + ルーティング
+endpoints/       — verify.rs, sign.rs, create_tree.rs
+runtime/         — TeeRuntimeトレイト, mock.rs, nitro.rs
+security.rs      — DoS対策（セマフォ、タイムアウト）
+proxy_client.rs  — vsock/HTTP経由の外部通信
+gateway_auth.rs  — Gateway認証検証
+solana_tx.rs     — Bubblegumトランザクション構築
+```
+
+**Proxy** (`crates/proxy/src/`):
+```
+main.rs          — エントリポイント（vsock/TCPリスナー）
+protocol.rs      — Length-prefixedプロトコルのエンコード/デコード
+handler.rs       — HTTP転送ロジック
+```
 
 ### WASMモジュール（workspace外、個別ビルド）
 
-| モジュール | 出力 |
-|-----------|------|
-| `wasm/phash-v1` | 知覚ハッシュ |
-| `wasm/hardware-google` | ハードウェア撮影証明 |
-| `wasm/c2pa-training-v1` | AI学習許可フラグ |
-| `wasm/c2pa-license-v1` | ライセンス情報 |
+| モジュール | 出力 | 仕様書 |
+|-----------|------|--------|
+| `wasm/phash-v1` | 知覚ハッシュ | §7.4 |
+| `wasm/hardware-google` | ハードウェア撮影証明 | §7.4 |
+| `wasm/c2pa-training-v1` | AI学習許可フラグ | §7.4 |
+| `wasm/c2pa-license-v1` | ライセンス情報 | §7.4 |
 
 ### TypeScript
 
-| パッケージ | 役割 |
-|-----------|------|
-| `sdk/ts` | クライアントSDK（register, resolve, discover） |
-| `indexer` | cNFTインデクサ（webhook + poller） |
+| パッケージ | 役割 | 仕様書 |
+|-----------|------|--------|
+| `sdk/ts` | クライアントSDK（register, resolve, discover） | §6.7 |
+| `indexer` | cNFTインデクサ（webhook + poller） | §6.6 |
 
 ### Solanaプログラム
 
-| プログラム | 役割 |
-|-----------|------|
-| `programs/title-config` | Global Config PDA管理（Anchor、**実装済み**） |
+| プログラム | 役割 | 仕様書 |
+|-----------|------|--------|
+| `programs/title-config` | Global Config PDA管理（Anchor） | §8 |
 
 ### プロトタイプ（参照用、編集禁止）
 
@@ -104,12 +137,12 @@ Client (SDK) → Gateway → Temporary Storage → TEE → Solana
 
 ## タスクの進め方
 
-各タスクは `docs/tasks/` に定義ファイルがある。セッション開始時に指定されたタスクファイルを読み、そこに記載された「読むべきファイル」「仕様書セクション」「要件」「完了条件」に従って作業する。
+各タスクは `docs/vN/tasks/NN-name/README.md` に定義がある。セッション開始時に指定されたタスクの `README.md` を読み、そこに記載された「読むべきファイル」「仕様書セクション」「要件」「完了条件」に従って作業する。作業中に発見した知見・罠・メモは同じタスクディレクトリに `.md` ファイルとして残す。
 
 **1タスク = 1セッション**。コンテキストの溢れを防ぐため、1セッションで1タスクに集中する。
 
 作業完了後は必ず:
-1. `docs/COVERAGE.md` の該当箇所を「スタブ」→「実装済み」に更新
+1. 該当バージョンの `docs/vN/COVERAGE.md` を更新
 2. `cargo check --workspace && cargo test --workspace` が通ることを確認
 
 ## タスク一覧と依存関係
@@ -124,21 +157,26 @@ Client (SDK) → Gateway → Temporary Storage → TEE → Solana
                          05 TEE /sign ──→ 09 Indexer
                          01 MockRuntime ─→ 11 NitroRuntime
                          01〜09 全完了 ──→ 12 E2E + ローカル環境
+                         01〜12 全完了 ──→ 13 コードベース整理
+                         01〜16 全完了 ──→ 17 Devnetデプロイ基盤
 ```
 
-| # | タスクファイル | 内容 | 前提 |
+| # | タスクファイル | 内容 | 状態 |
 |---|--------------|------|------|
-| 01 | `docs/tasks/01-mock-runtime.md` | MockRuntime（鍵生成・署名・Attestation） | なし |
-| 02 | `docs/tasks/02-proxy.md` | vsock HTTPプロキシ非同期化 | なし |
-| 03 | `docs/tasks/03-c2pa-core.md` | C2PA検証 + 来歴グラフ構築 | なし |
-| 04 | `docs/tasks/04-tee-verify.md` | TEE /verifyエンドポイント + proxy_client | 01, 02, 03 |
-| 05 | `docs/tasks/05-tee-sign.md` | TEE /sign + /create-tree + Bubblegum | 04 |
-| 06 | `docs/tasks/06-gateway.md` | Gateway全ハンドラ + Gateway認証 | 05 |
-| 07 | `docs/tasks/07-wasm-host-and-modules.md` | WASMホスト + 4モジュール実装 | 04 |
-| 08 | `docs/tasks/08-ts-sdk.md` | TypeScript SDK全関数 | 06 |
-| 09 | `docs/tasks/09-indexer.md` | インデクサ（Webhook + Poller + DB） | 05 |
-| 10 | `docs/tasks/10-security-hardening.md` | DoS対策・リソース制限・防御強化 | 06, 07 |
-| 11 | `docs/tasks/11-nitro-runtime.md` | NitroRuntime + Enclave本番ビルド | 01, 02 |
-| 12 | `docs/tasks/12-e2e-local-dev.md` | E2Eテスト + ローカル開発環境整備 | 01〜09 |
-
-タスク01, 02, 03は前提なし。並行で着手可能。
+| 01 | `docs/v1/tasks/01-mock-runtime/` | MockRuntime（鍵生成・署名・Attestation） | **完了** |
+| 02 | `docs/v1/tasks/02-proxy/` | vsock HTTPプロキシ非同期化 | **完了** |
+| 03 | `docs/v1/tasks/03-c2pa-core/` | C2PA検証 + 来歴グラフ構築 | **完了** |
+| 04 | `docs/v1/tasks/04-tee-verify/` | TEE /verifyエンドポイント + proxy_client | **完了** |
+| 05 | `docs/v1/tasks/05-tee-sign/` | TEE /sign + /create-tree + Bubblegum | **完了** |
+| 06 | `docs/v1/tasks/06-gateway/` | Gateway全ハンドラ + Gateway認証 | **完了** |
+| 07 | `docs/v1/tasks/07-wasm-host-and-modules/` | WASMホスト + 4モジュール実装 | **完了** |
+| 08 | `docs/v1/tasks/08-ts-sdk/` | TypeScript SDK全関数 | **完了** |
+| 09 | `docs/v1/tasks/09-indexer/` | インデクサ（Webhook + Poller + DB） | **完了** |
+| 10 | `docs/v1/tasks/10-security-hardening/` | DoS対策・リソース制限・防御強化 | **完了** |
+| 11 | `docs/v1/tasks/11-nitro-runtime/` | NitroRuntime + Enclave本番ビルド | **完了** |
+| 12 | `docs/v1/tasks/12-e2e-local-dev/` | E2Eテスト + ローカル開発環境整備 | **完了** |
+| 13 | `docs/v1/tasks/13-codebase-cleanup/` | コードベース整理（警告解消・モジュール分割・ドキュメント整備） | **完了** |
+| 14 | `docs/v1/tasks/14-hmac-content/` | hmac_content WASMホスト関数 | **完了** |
+| 15 | `docs/v1/tasks/15-tsa-resolution/` | TSAタイムスタンプ重複解決 | **完了** |
+| 16 | `docs/v1/tasks/16-collection-delegate/` | Collection Authority Delegate | **完了** |
+| 17 | `docs/v1/tasks/17-devnet-deploy/` | Devnetデプロイ基盤（Terraform + スクリプト） | **完了** |

@@ -544,7 +544,7 @@ mod tests {
 
         let body_data = vec![0x42u8; 1024]; // 1KB
 
-        tokio::spawn({
+        let handle = tokio::spawn({
             let body = body_data.clone();
             async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -557,10 +557,11 @@ mod tests {
                     .await
                     .unwrap();
                 stream.write_all(&body).await.unwrap();
+                stream.flush().await.unwrap();
+                // クライアントが全データを読み終えるまでストリームを維持
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let sem = Arc::new(Semaphore::new(1024 * 1024));
         let result = proxy_get_secured(
@@ -572,9 +573,11 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "proxy_get_securedが失敗: {:?}", result.err());
         let resp = result.unwrap();
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body, body_data);
+
+        handle.abort();
     }
 }

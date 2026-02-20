@@ -11,6 +11,7 @@
 //! - `read_content_chunk`: コンテンツのチャンク読み取り
 //! - `get_extension_input`: Extension補助入力の取得
 //! - `hash_content`: コンテンツのハッシュ計算
+//! - `hmac_content`: コンテンツのHMAC計算
 //! - `get_content_length`: コンテンツの全長取得
 //!
 //! ## WASM結果フォーマット
@@ -19,6 +20,7 @@
 
 use std::panic;
 
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use wasmtime::{Caller, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Trap};
 
@@ -351,6 +353,81 @@ impl WasmRunner {
             )
             .map_err(|e| WasmError::ExecutionError(format!("hash_contentの登録に失敗: {e}")))?;
 
+        // hmac_content(algorithm: u32, key_ptr: u32, key_len: u32, offset: u32, length: u32, out_ptr: u32) -> u32
+        // コンテンツの指定範囲に対するHMACを計算する。
+        // algorithm: 0=HMAC-SHA256(32B), 1=HMAC-SHA384(48B), 2=HMAC-SHA512(64B)
+        // key はWASMリニアメモリ上のバイト列。
+        // 仕様書 §7.1
+        linker
+            .func_wrap(
+                "env",
+                "hmac_content",
+                |mut caller: Caller<'_, InnerHostState>,
+                 algorithm: u32,
+                 key_ptr: u32,
+                 key_len: u32,
+                 offset: u32,
+                 length: u32,
+                 out_ptr: u32|
+                 -> u32 {
+                    let memory = match caller.get_export("memory") {
+                        Some(ext) => match ext.into_memory() {
+                            Some(m) => m,
+                            None => return 0,
+                        },
+                        None => return 0,
+                    };
+                    let (mem_data, state) = memory.data_and_store_mut(&mut caller);
+
+                    // WASMメモリからHMACキーを読み取る
+                    let kp = key_ptr as usize;
+                    let kl = key_len as usize;
+                    if kp + kl > mem_data.len() {
+                        return 0;
+                    }
+                    let key = &mem_data[kp..kp + kl];
+
+                    // コンテンツの指定範囲を取得
+                    let start = offset as usize;
+                    if start >= state.content.len() {
+                        return 0;
+                    }
+                    let end = (start + length as usize).min(state.content.len());
+                    let data_slice = &state.content[start..end];
+
+                    // HMAC計算（仕様書 §7.1）
+                    let mac_bytes: Vec<u8> = match algorithm {
+                        0 => {
+                            let mut mac = Hmac::<Sha256>::new_from_slice(key)
+                                .unwrap_or_else(|_| Hmac::<Sha256>::new_from_slice(&[0]).unwrap());
+                            mac.update(data_slice);
+                            mac.finalize().into_bytes().to_vec()
+                        }
+                        1 => {
+                            let mut mac = Hmac::<Sha384>::new_from_slice(key)
+                                .unwrap_or_else(|_| Hmac::<Sha384>::new_from_slice(&[0]).unwrap());
+                            mac.update(data_slice);
+                            mac.finalize().into_bytes().to_vec()
+                        }
+                        2 => {
+                            let mut mac = Hmac::<Sha512>::new_from_slice(key)
+                                .unwrap_or_else(|_| Hmac::<Sha512>::new_from_slice(&[0]).unwrap());
+                            mac.update(data_slice);
+                            mac.finalize().into_bytes().to_vec()
+                        }
+                        _ => return 0,
+                    };
+
+                    let dest = out_ptr as usize;
+                    if dest + mac_bytes.len() > mem_data.len() {
+                        return 0;
+                    }
+                    mem_data[dest..dest + mac_bytes.len()].copy_from_slice(&mac_bytes);
+                    mac_bytes.len() as u32
+                },
+            )
+            .map_err(|e| WasmError::ExecutionError(format!("hmac_contentの登録に失敗: {e}")))?;
+
         // get_extension_input(buf_ptr: u32, buf_len: u32) -> u32
         // Extension補助入力をWASMメモリにコピーする。
         // 実際のサイズを返す。buf_len未満の場合もサイズのみ返す（データはコピーされない）。
@@ -424,6 +501,7 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             ;; 結果JSON: {"result":"ok"} (15バイト)
@@ -462,6 +540,7 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) (i32.const 0))
@@ -494,6 +573,7 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) (i32.const 0))
@@ -525,6 +605,7 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) (i32.const 4096))
@@ -563,6 +644,7 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             ;; 成功時の結果: {"hash_size":32} = 16バイト
@@ -595,5 +677,53 @@ mod tests {
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["hash_size"], 32);
+    }
+
+    /// テスト: hmac_contentがHMAC-SHA256を正しく計算する
+    /// 仕様書 §7.1
+    #[test]
+    fn test_hmac_content_sha256() {
+        let wasm = wat::parse_str(
+            r#"(module
+            (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
+            (import "env" "get_content_length" (func $len (result i32)))
+            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            ;; HMACキー "secret" (6バイト) をオフセット256に配置
+            (data (i32.const 256) "secret")
+            ;; 成功時の結果: {"hmac_size":32} = 16バイト
+            (data (i32.const 1024) "\10\00\00\00{\"hmac_size\":32}")
+            ;; 失敗時の結果: {"hmac_size":0}  = 15バイト
+            (data (i32.const 2048) "\0f\00\00\00{\"hmac_size\":0}")
+            (func (export "alloc") (param i32) (result i32) (i32.const 4096))
+            (func (export "compute_phash") (result i32)
+                (local $hmac_size i32)
+                ;; HMAC-SHA256(key="secret", コンテンツ全体)をオフセット8192に書き込む
+                (local.set $hmac_size (call $hmac
+                    (i32.const 0)     ;; algorithm=0 (SHA256)
+                    (i32.const 256)   ;; key_ptr
+                    (i32.const 6)     ;; key_len ("secret" = 6 bytes)
+                    (i32.const 0)     ;; offset
+                    (i32.const 65535) ;; length (全コンテンツ)
+                    (i32.const 8192)  ;; out_ptr
+                ))
+                ;; hmac_sizeが32であれば成功
+                (if (result i32) (i32.eq (local.get $hmac_size) (i32.const 32))
+                    (then (i32.const 1024))
+                    (else (i32.const 2048))
+                )
+            )
+        )"#,
+        )
+        .unwrap();
+
+        let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
+        let result = runner
+            .execute(&wasm, b"test data for hmac", None, "compute_phash")
+            .expect("WASM実行に成功するべき");
+
+        assert_eq!(result.output["hmac_size"], 32);
     }
 }

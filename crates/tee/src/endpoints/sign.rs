@@ -34,7 +34,7 @@ fn b64() -> base64::engine::GeneralPurpose {
 }
 
 /// /sign エンドポイントハンドラ。
-/// 仕様書 §6.4
+/// 仕様書 §1.1 Phase 2, §6.4
 pub async fn handle_sign(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,

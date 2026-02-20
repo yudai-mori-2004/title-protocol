@@ -129,44 +129,49 @@ mod real_nsm {
 // モックNSMデバイス（テスト用）
 // ─────────────────────────────────────────────
 
-/// テスト用モックNSMデバイス。
-/// `OsRng` でエントロピーを生成し、モックAttestation Documentを返す。
-struct MockNsm;
+#[cfg(test)]
+mod mock_nsm {
+    use super::NsmOps;
 
-impl NsmOps for MockNsm {
-    /// `OsRng` でランダムバイトを生成する。
-    fn get_random(&self, len: usize) -> Vec<u8> {
-        use rand::RngCore;
-        let mut buf = vec![0u8; len];
-        rand::rngs::OsRng.fill_bytes(&mut buf);
-        buf
-    }
+    /// テスト用モックNSMデバイス。
+    /// `OsRng` でエントロピーを生成し、モックAttestation Documentを返す。
+    pub(super) struct MockNsm;
 
-    /// モックAttestation Documentを返す。
-    /// 仕様書 §5.2 Step 4.1
-    ///
-    /// 実際のNitro Attestation Documentと同様のフィールドを持つが、
-    /// COSE Sign1ではなくJSON形式のモック。PCR値は全てゼロ。
-    fn get_attestation_doc(
-        &self,
-        public_key: Option<&[u8]>,
-        user_data: Option<&[u8]>,
-        nonce: Option<&[u8]>,
-    ) -> Vec<u8> {
-        let doc = serde_json::json!({
-            "module_id": "nitro-runtime-mock",
-            "digest": "SHA384",
-            "timestamp": 1700000000u64,
-            "pcrs": {
-                "0": vec![0u8; 48],
-                "1": vec![0u8; 48],
-                "2": vec![0u8; 48],
-            },
-            "public_key": public_key.map(|k| k.to_vec()),
-            "user_data": user_data.map(|d| d.to_vec()),
-            "nonce": nonce.map(|n| n.to_vec()),
-        });
-        serde_json::to_vec(&doc).expect("モックAttestation Documentのシリアライズに失敗")
+    impl NsmOps for MockNsm {
+        /// `OsRng` でランダムバイトを生成する。
+        fn get_random(&self, len: usize) -> Vec<u8> {
+            use rand::RngCore;
+            let mut buf = vec![0u8; len];
+            rand::rngs::OsRng.fill_bytes(&mut buf);
+            buf
+        }
+
+        /// モックAttestation Documentを返す。
+        /// 仕様書 §5.2 Step 4.1
+        ///
+        /// 実際のNitro Attestation Documentと同様のフィールドを持つが、
+        /// COSE Sign1ではなくJSON形式のモック。PCR値は全てゼロ。
+        fn get_attestation_doc(
+            &self,
+            public_key: Option<&[u8]>,
+            user_data: Option<&[u8]>,
+            nonce: Option<&[u8]>,
+        ) -> Vec<u8> {
+            let doc = serde_json::json!({
+                "module_id": "nitro-runtime-mock",
+                "digest": "SHA384",
+                "timestamp": 1700000000u64,
+                "pcrs": {
+                    "0": vec![0u8; 48],
+                    "1": vec![0u8; 48],
+                    "2": vec![0u8; 48],
+                },
+                "public_key": public_key.map(|k| k.to_vec()),
+                "user_data": user_data.map(|d| d.to_vec()),
+                "nonce": nonce.map(|n| n.to_vec()),
+            });
+            serde_json::to_vec(&doc).expect("モックAttestation Documentのシリアライズに失敗")
+        }
     }
 }
 
@@ -221,7 +226,7 @@ impl NitroRuntime {
     #[cfg(test)]
     pub(crate) fn with_mock() -> Self {
         Self {
-            nsm: Box::new(MockNsm),
+            nsm: Box::new(mock_nsm::MockNsm),
             signing_key: RwLock::new(None),
             encryption_secret: RwLock::new(None),
             tree_key: RwLock::new(None),

@@ -82,8 +82,8 @@ pub fn aes_gcm_encrypt(
     plaintext: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::EncryptError)?;
-    let nonce = Nonce::from_slice(nonce);
-    cipher.encrypt(nonce, plaintext).map_err(|_| CryptoError::EncryptError)
+    let nonce = Nonce::from(*nonce);
+    cipher.encrypt(&nonce, plaintext).map_err(|_| CryptoError::EncryptError)
 }
 
 /// AES-256-GCMによる復号。
@@ -94,8 +94,8 @@ pub fn aes_gcm_decrypt(
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::DecryptError)?;
-    let nonce = Nonce::from_slice(nonce);
-    cipher.decrypt(nonce, ciphertext).map_err(|_| CryptoError::DecryptError)
+    let nonce = Nonce::from(*nonce);
+    cipher.decrypt(&nonce, ciphertext).map_err(|_| CryptoError::DecryptError)
 }
 
 /// Ed25519による署名。

@@ -8,6 +8,8 @@ description = "Title Protocol Core - C2PA検証 + 来歴グラフ構築"
 title-types = { path = "../types" }
 title-crypto = { path = "../crypto" }
 c2pa = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

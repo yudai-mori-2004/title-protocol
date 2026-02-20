@@ -121,4 +121,70 @@ By utilizing Solana's Compressed NFTs (Bubblegum), the protocol can handle milli
 
 ---
 
-*This repository contains the source code for the Title Protocol Node. For documentation on how to run a node or integrate the SDK, please refer to the [Docs].*
+## Quick Start
+
+```bash
+# Build and test the Rust workspace
+cargo check --workspace
+cargo test --workspace
+
+# Build WASM modules
+for dir in wasm/*/; do
+  cargo build --manifest-path "${dir}Cargo.toml" --target wasm32-unknown-unknown --release
+done
+
+# Build TypeScript SDK & Indexer
+cd sdk/ts && npm ci && npm run build && cd ../..
+cd indexer && npm ci && npm run build && cd ..
+```
+
+## Repository Structure
+
+```
+crates/
+  types/          — Shared type definitions (§5)
+  crypto/         — Cryptographic primitives: ECDH, HKDF, AES-GCM, Ed25519 (§6.4)
+  core/           — C2PA verification & provenance graph construction (§2)
+  wasm-host/      — WASM execution engine using wasmtime (§7.1)
+  tee/            — TEE server: /verify, /sign, /create-tree (§6.4)
+  gateway/        — Gateway HTTP server: upload-url, relay, sign-and-mint (§6.2)
+  proxy/          — vsock HTTP proxy for TEE network isolation (§6.4)
+wasm/             — WASM modules: phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1
+programs/
+  title-config/   — Anchor Solana program for Global Config PDA (§8)
+sdk/ts/           — TypeScript client SDK: register, crypto (E2EE), storage
+indexer/           — TypeScript cNFT indexer: webhook, poller, DAS API
+prototype/        — Reference implementations (read-only)
+docs/                — Versioned development docs (SPECS → COVERAGE → tasks per version)
+  v1/              — Initial implementation (2026-02-21, complete)
+    SPECS_JA.md    — Technical specification (Japanese, ver.9)
+    COVERAGE.md    — Spec-to-implementation coverage (cumulative)
+    tasks/         — AI-driven development tasks (01–13) + work notes
+```
+
+## Running a Node (Local Development)
+
+```bash
+# 1. Start infrastructure services
+docker-compose up -d
+
+# 2. Initialize local environment (MinIO bucket, Solana config, etc.)
+bash scripts/setup-local.sh
+
+# 3. Run E2E tests
+cd tests/e2e && npm install && npx tsc && node --test dist/e2e.test.js
+```
+
+See `.env.example` for all available configuration options.
+
+## For Developers
+
+This project uses an AI-driven development workflow:
+
+- **`CLAUDE.md`** — Instructions for AI coding assistants (project conventions, architecture)
+- **`docs/`** — Versioned documentation: each version contains SPECS (what to build) → COVERAGE (what's built) → tasks (how to build it + notes)
+- **`docs/v1/`** — Initial implementation phase (2026-02-21, all 13 tasks complete)
+
+## License
+
+This project is open-source infrastructure. See LICENSE for details.

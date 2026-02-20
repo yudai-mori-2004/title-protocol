@@ -1,6 +1,6 @@
 # 実装カバレッジレポート
 
-本文書は、技術仕様書（SPECS_JA.md ver.9）の各セクションに対する現在のコードベースの実装状況を整理したものである。
+本文書は、技術仕様書（`SPECS_JA.md` ver.9）の各セクションに対する実装状況を整理したものである。
 
 凡例:
 - **実装済み**: ロジックが動作する状態
@@ -16,12 +16,12 @@
 |---------|---------|--------|-------|--------|
 | 暗号プリミティブ (crates/crypto) | 8/8 | — | — | — |
 | データ型 (crates/types) | — | 全型 | — | — |
-| C2PA検証 (crates/core) | 3/3 | — | — | — |
-| WASMホスト (crates/wasm-host) | **2/2** — execute_inner(wasmtime), ホスト関数4種, テスト5件 | — | — | — |
+| C2PA検証 (crates/core) | 3/3 + TSA重複解決 | — | — | — |
+| WASMホスト (crates/wasm-host) | **2/2** — execute_inner(wasmtime), ホスト関数5種(hash_content, hmac_content, read_content_chunk, get_extension_input, get_content_length), テスト6件 | — | — | — |
 | TEEサーバー (crates/tee) | MockRuntime+NitroRuntime完了, /verify(Core+Extension)・/sign・/create-tree・proxy_client・solana_tx・gateway_auth・security(DoS対策)実装済み | — | — | — |
 | Gateway (crates/gateway) | **実装済み** — 5エンドポイント+Gateway認証+S3署名付きURL+sign-and-mint | — | — | — |
 | Proxy (crates/proxy) | **実装済み** | — | — | — |
-| Solanaプログラム (programs/title-config) | 4/4（Devnetデプロイ済み: `C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN`） | — | — | — |
+| Solanaプログラム (programs/title-config) | 6/6（Devnetデプロイ済み: `C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN`） | — | — | — |
 | WASMモジュール (wasm/*) | **4/4** — phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1 | — | — | — |
 | TS SDK (sdk/ts) | **実装済み** — crypto(E2EE), TitleClient, register(11ステップ), StorageProvider, テスト10件 | 全型 | — | — |
 | インデクサ (indexer) | **実装済み** — DasClient(Helius DAS)、Webhook(MINT/BURN/TRANSFER)、Poller、DB CRUD、テスト6件 | 全型 | — | — |
@@ -90,8 +90,8 @@
 
 | 仕様の要素 | 対応コード | 状態 |
 |-----------|-----------|------|
-| TSAタイムスタンプ/Solana block time比較 | — | **未着手** |
-| 先行作成者の優先ロジック | — | **未着手** |
+| TSAタイムスタンプ/Solana block time比較 | `crates/core/src/lib.rs` の `extract_tsa_info()`, `effective_creation_time()` | **実装済み** — manifest.time()からRFC 3339解析、issuerハッシュでTSA信頼判定 |
+| 先行作成者の優先ロジック | `crates/core/src/lib.rs` の `resolve_duplicate()` | **実装済み** — Burn除外、TSA/Solana block time比較、同時刻は登録時刻で決着、テスト6件 |
 
 ---
 
@@ -111,7 +111,7 @@
 
 #### §3.3–3.4 属性を伴う登録と解決・重複解決
 
-スタブ（§2.3–2.4と同等の状態）。
+Extension属性の登録は §3.1–3.2 の WASM 実行で完了。重複解決は §2.4 の `resolve_duplicate()` で Core/Extension 共通。
 
 ---
 
@@ -130,15 +130,15 @@
 
 | 仕様の要素 | Rust型 (`crates/types`) | TS型 (`sdk/ts/src/types.ts`) | 状態 |
 |-----------|------------------------|------------------------------|------|
-| Step 1: ClientPayload | `ClientPayload` | `ClientPayload` | **型のみ** |
-| Step 2: EncryptedPayload | `EncryptedPayload` | `EncryptedPayload` | **型のみ** |
-| Step 3: VerifyRequest | `VerifyRequest` | `VerifyRequest` | **型のみ** |
-| Step 4: signed_json (Core) | `SignedJson`, `SignedJsonCore`, `CorePayload` | `SignedJson`, `CorePayload` | **型のみ** |
-| Step 5: signed_json (Extension) | `SignedJsonExtension`, `ExtensionPayload` | `SignedJson`, `ExtensionPayload` | **型のみ** |
-| Step 6: VerifyResponse | `VerifyResponse` | `VerifyResponse` | **型のみ** |
-| Step 8: SignRequest | `SignRequest` | `SignRequest` | **型のみ** |
-| Step 10: SignResponse | `SignResponse` | `SignResponse` | **型のみ** |
-| Step 11: cNFT Metadata | `CnftMetadata`, `Attribute` | `CnftMetadata`, `Attribute` | **型のみ** |
+| Step 1: ClientPayload | `ClientPayload` | `ClientPayload` | **実装済み** — SDK register()で構築、TEE /verifyで処理 |
+| Step 2: EncryptedPayload | `EncryptedPayload` | `EncryptedPayload` | **実装済み** — SDK crypto.tsで暗号化、TEE /verifyで復号 |
+| Step 3: VerifyRequest | `VerifyRequest` | `VerifyRequest` | **実装済み** — Gateway→TEE中継 |
+| Step 4: signed_json (Core) | `SignedJson`, `SignedJsonCore`, `CorePayload` | `SignedJson`, `CorePayload` | **実装済み** — TEE /verify process_core()で構築 |
+| Step 5: signed_json (Extension) | `SignedJsonExtension`, `ExtensionPayload` | `SignedJson`, `ExtensionPayload` | **実装済み** — TEE /verify process_extension()で構築 |
+| Step 6: VerifyResponse | `VerifyResponse` | `VerifyResponse` | **実装済み** — TEE /verifyの暗号化レスポンス |
+| Step 8: SignRequest | `SignRequest` | `SignRequest` | **実装済み** — Gateway→TEE中継 |
+| Step 10: SignResponse | `SignResponse` | `SignResponse` | **実装済み** — TEE /signから返却 |
+| Step 11: cNFT Metadata | `CnftMetadata`, `Attribute` | `CnftMetadata`, `Attribute` | **実装済み** — TEE /sign MintV2構築時に使用 |
 
 #### §5.2 検証フローのデータ構造
 
@@ -167,21 +167,21 @@
 
 | 仕様の要素 | 対応コード | 状態 |
 |-----------|-----------|------|
-| API: POST /upload-url | `crates/gateway/src/main.rs` の `handle_upload_url()` | **実装済み** — S3/MinIO署名付きURL生成、EDoSサイズ制限チェック |
-| API: POST /verify | `crates/gateway/src/main.rs` の `handle_verify()` | **実装済み** — Gateway認証付きTEE中継 |
-| API: POST /sign | `crates/gateway/src/main.rs` の `handle_sign()` | **実装済み** — Gateway認証付きTEE中継 |
-| API: POST /sign-and-mint | `crates/gateway/src/main.rs` の `handle_sign_and_mint()` | **実装済み** — TEE中継+Gatewayウォレット署名+Solana RPCブロードキャスト |
-| GET /.well-known/title-node-info | `crates/gateway/src/main.rs` の `handle_node_info()` | **実装済み** — signing_pubkey, supported_extensions, limits返却 |
-| Gateway認証（Ed25519署名付与） | `crates/gateway/src/main.rs` の `build_gateway_auth_wrapper()` | **実装済み** — GatewayAuthSignTarget署名+GatewayAuthWrapper構築 |
+| API: POST /upload-url | `crates/gateway/src/endpoints/upload_url.rs` | **実装済み** — S3/MinIO署名付きURL生成、EDoSサイズ制限チェック |
+| API: POST /verify | `crates/gateway/src/endpoints/verify.rs` | **実装済み** — Gateway認証付きTEE中継 |
+| API: POST /sign | `crates/gateway/src/endpoints/sign.rs` | **実装済み** — Gateway認証付きTEE中継 |
+| API: POST /sign-and-mint | `crates/gateway/src/endpoints/sign_and_mint.rs` | **実装済み** — TEE中継+Gatewayウォレット署名+Solana RPCブロードキャスト |
+| GET /.well-known/title-node-info | `crates/gateway/src/endpoints/node_info.rs` | **実装済み** — signing_pubkey, supported_extensions, limits返却 |
+| Gateway認証（Ed25519署名付与） | `crates/gateway/src/auth.rs` | **実装済み** — GatewayAuthSignTarget署名+GatewayAuthWrapper構築 |
 | Gateway認証検証（TEE側） | `crates/tee/src/gateway_auth.rs` の `verify_gateway_auth()` | **実装済み** — /verify, /signの両方で検証、GATEWAY_PUBKEY環境変数でON/OFF |
-| resource_limits付与 | `crates/gateway/src/main.rs` + `crates/tee/src/endpoints/verify.rs` | **実装済み** — Gateway→TEE転送時に付与、TEE側でc2pa_max_graph_size等を適用 |
+| resource_limits付与 | `crates/gateway/src/auth.rs` + `crates/tee/src/endpoints/verify.rs` | **実装済み** — Gateway→TEE転送時に付与、TEE側でc2pa_max_graph_size等を適用 |
 | レート制限・APIキー管理 | — | **未着手** |
 
 #### §6.3 Temporary Storage
 
 | 仕様の要素 | 対応コード | 状態 |
 |-----------|-----------|------|
-| S3署名付きURL発行 | `crates/gateway/src/main.rs` の `handle_upload_url()` | **実装済み** — rust-s3クレートでpresigned PUT/GET URL生成 |
+| S3署名付きURL発行 | `crates/gateway/src/endpoints/upload_url.rs` | **実装済み** — rust-s3クレートでpresigned PUT/GET URL生成 |
 | MinIO（ローカル開発） | `docker-compose.yml` | **実装済み** — MinIOサービス定義済み |
 
 #### §6.4 TEE
@@ -253,14 +253,14 @@
 
 | 仕様の要素 | 対応コード | 状態 |
 |-----------|-----------|------|
-| Fuel/Memory制限 | `crates/wasm-host/src/lib.rs` | **スタブ** — 値は保持するが適用なし |
+| Fuel/Memory制限 | `crates/wasm-host/src/lib.rs` の `WasmRunner` | **実装済み** — `consume_fuel(true)` + `StoreLimitsBuilder` |
 | catch_unwind | `crates/wasm-host/src/lib.rs` の `execute()` | **実装済み** |
-| Core→Extension処理順序の保証 | — | **未着手** |
-| 補助入力の分配（extension_inputs隔離） | — | **未着手** |
-| read_content_chunk ホスト関数 | — | **未着手** — WASMに `extern` 宣言あり、ホスト側未実装 |
-| hash_content ホスト関数 | — | **未着手** — 同上 |
-| hmac_content ホスト関数 | — | **未着手** |
-| get_extension_input ホスト関数 | — | **未着手** |
+| Core→Extension処理順序の保証 | `crates/tee/src/endpoints/verify.rs` | **実装済み** — process_core()→process_extension()の順次実行 |
+| 補助入力の分配（extension_inputs隔離） | `crates/tee/src/endpoints/verify.rs` の `process_extension()` | **実装済み** — extension_inputs[extension_id]のみWASMに渡す |
+| read_content_chunk ホスト関数 | `crates/wasm-host/src/lib.rs` | **実装済み** — チャンク読み取り+WASMメモリコピー |
+| hash_content ホスト関数 | `crates/wasm-host/src/lib.rs` | **実装済み** — SHA-256/384/512対応 |
+| hmac_content ホスト関数 | `crates/wasm-host/src/lib.rs` | **実装済み** — HMAC-SHA256/384/512対応、WASMメモリからキー読取 |
+| get_extension_input ホスト関数 | `crates/wasm-host/src/lib.rs` | **実装済み** — 補助入力コピー |
 
 #### §7.4 公式WASMセット
 
@@ -283,7 +283,7 @@
 | TEEノードの追加・削除 | `programs/title-config/src/lib.rs` の `update_tee_nodes()` | **実装済み** |
 | WASMモジュールの管理 | `programs/title-config/src/lib.rs` の `update_wasm_modules()` | **実装済み** |
 | TSA Trust Listの管理 | `programs/title-config/src/lib.rs` の `update_tsa_keys()` | **実装済み** |
-| Collection Authority Delegate | — | **未着手** |
+| Collection Authority Delegate | `programs/title-config/src/lib.rs` の `delegate_collection_authority()`, `revoke_collection_authority()` | **実装済み** — TEE信頼検証+イベント発行、クライアントサイドMPL Core CPI合成設計 |
 
 ---
 
@@ -305,7 +305,7 @@
 | 項目 | 状態 | 備考 |
 |-----|------|------|
 | `cargo check --workspace` | **通過** | 全クレートがコンパイル可能 |
-| `cargo test --workspace` | **通過** | crypto 6件(attestation), core 8件, gateway 6件, proxy 3件, tee 44件（mock 6件 + nitro 8件 + verify 4件 + sign 4件 + create_tree 2件 + solana_tx 8件 + gateway_auth 4件 + security 8件）, wasm-host 5件 |
+| `cargo test --workspace` | **通過** | crypto 7件(attestation), core 14件, gateway 6件, proxy 3件, tee 44件（mock 6件 + nitro 8件 + verify 4件 + sign 4件 + create_tree 2件 + solana_tx 8件 + gateway_auth 4件 + security 8件）, wasm-host 6件 |
 | WASMビルド (`wasm32-unknown-unknown`) | **通過** | 4モジュール全てビルド可能 |
 | TypeScript SDK ビルド (`tsc`) | **通過** | テスト10件通過 |
 | TypeScript Indexer ビルド (`tsc`) | **通過** | テスト6件通過（DasClient） |
@@ -320,61 +320,22 @@
 
 ---
 
-## 実装の優先度マップ
+## 実装状況サマリー
 
-現時点でスタブの項目について、仕様書§10のロードマップ（Phase 1: 2026 Q1）に基づく優先度:
+タスク01〜16の全実装が完了済み（2026-02）。
 
-### 最優先（Phase 1必須・クリティカルパス）
-
-1. **TEE Runtime実装**（MockRuntime）— 鍵生成がなければ全フローが動作しない
-1. + Proxy (prototype/enclave-c2pa/proxy/ を参考にtokio化するだけ)
-2. **C2PA検証** (`crates/core`) — Core機能の根幹
-3. **TEE /verify エンドポイント** — 登録フロー Phase 1
-4. **TEE /sign エンドポイント** — 登録フロー Phase 2
-5. **Gateway全ハンドラ** — クライアントとTEEの中継
-6. **TS SDK crypto** — E2EEクライアント側
-7. **TS SDK register()** — 登録フローのクライアント実装
-8. **TS SDK resolve()** — 検証フローのクライアント実装
-
-### 高優先度
-
-9. **WASMホスト実行エンジン** (`crates/wasm-host`) — Extension機能
-10. **WASMモジュール実装** (phash-v1が最優先) — Extension機能
-11. **Gateway認証** — セキュリティ要件
-12. **vsock Proxy** — Nitro Enclave通信
-13. **インデクサ** — 検索・利便性レイヤー
-
-### 中優先度
-
-14. **NitroRuntime** — **実装済み**（タスク11）
-15. **漸進的重み付きセマフォ予約** — メモリ管理
-16. **重複解決ロジック** — §2.4の判定ロジック
-17. **TS SDK discoverNodes()** — ノード選択
-18. **TS SDK upload()** — コンテンツアップロード
-19. **ArweaveStorage** — オフチェーンストレージ
-20. **セットアップスクリプト** — ローカル開発環境
+残る未実装項目:
+- §6.2 レート制限・APIキー管理・課金ティア
+- §9.2 クレジット制課金
 
 ---
 
-## カバーできていないもの（概念・設計レベル）
+## 未実装項目（概念・設計レベル）
 
-以下は仕様書に記述があるが、現在のコードに対応する実装も型定義も存在しない領域:
+以下は仕様書に記述があるが、現在のコードに対応する実装が存在しない領域:
 
 | 仕様箇所 | 内容 | 備考 |
 |---------|------|------|
-| §2.4 | TSAタイムスタンプによる重複解決 | TSA検証ロジック全般 |
-| §4.3 | Burn済みトークンの除外ロジック | resolve側の実装が必要 |
-| §6.2 | Gateway認証（署名の付与・検証の双方） | **実装済み（タスク06）** — Gateway側署名付与 + TEE側署名検証 |
 | §6.2 | レート制限・APIキー管理・課金ティア | 運用機能 |
-| §6.4 | 漸進的重み付きセマフォ予約 | **実装済み（タスク10）** — security.rsのproxy_get_secured |
-| §6.4 | 動的グローバルタイムアウト | **実装済み（タスク10）** — compute_dynamic_timeout |
-| §6.4 | Verify on Sign 防御 | **実装済み（タスク05+10）** — proxy_get_securedによる三層防御 |
-| §6.4 | 不正WASMインジェクション防御 | **実装済み（タスク10）** — TEE側trusted_extension_ids + SDK側wasm_hash検証 + E2EEレスポンス暗号化 |
-| §6.5 | Bubblegum V2/SPL Account Compression V2連携 | **実装済み（タスク05）** — `mpl-bubblegum` 2.1クレート使用、MPL-Coreコレクション対応 |
-| §6.7 | SDK upload() | **実装済み（タスク08）** — TitleClient.upload() |
-| §6.7 | SDK wasm_hash検証 | **実装済み（タスク08）** — register.ts Step 8 |
-| §6.7 | SDK トランザクション検証 | **実装済み（タスク08）** — register.ts Step 11 |
-| §7.1 | hmac_content ホスト関数 | WASM実行基盤（sha256/384/512は実装済み、HMACのみ未着手） |
-| §7.1 | Core→Extension処理順序保証（メモリ解放後にExtension実行） | メモリ安全性（現在は順次実行だがメモリ解放は未実装） |
-| §8.2 | Collection Authority Delegate | ガバナンス |
+| §7.1 | Core→Extension間のメモリ解放 | 順次実行は保証済み、明示的メモリ解放は未実装 |
 | §9.2 | クレジット制課金 | 運用機能 |

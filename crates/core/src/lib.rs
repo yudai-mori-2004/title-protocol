@@ -13,6 +13,7 @@ mod jumbf;
 use std::io::Cursor;
 
 use c2pa::validation_results::ValidationState;
+use sha2::{Digest, Sha256};
 use title_types::{GraphLink, GraphNode};
 
 /// Coreモジュールのエラー型
@@ -79,6 +80,156 @@ fn format_content_hash(hash: &[u8; 32]) -> String {
     format!("0x{hex}")
 }
 
+/// C2PAマニフェストからTSAタイムスタンプ情報を抽出する。
+/// 仕様書 §2.4 重複の解決
+///
+/// マニフェストの `time()` メソッドでRFC 3339形式のタイムスタンプを取得し、
+/// Unix epoch秒に変換する。`signature_info().issuer()` のSHA-256ハッシュを
+/// TSA公開鍵ハッシュの代替として使用する。
+fn extract_tsa_info(manifest: &c2pa::Manifest) -> (Option<u64>, Option<String>) {
+    let time_str = match manifest.time() {
+        Some(t) => t,
+        None => return (None, None),
+    };
+
+    // RFC 3339 → Unix epoch秒
+    let timestamp = parse_rfc3339_to_epoch(&time_str);
+    if timestamp.is_none() {
+        return (None, None);
+    }
+
+    // issuerのSHA-256ハッシュ
+    let pubkey_hash = manifest
+        .signature_info()
+        .and_then(|si| si.issuer.as_ref())
+        .map(|issuer: &String| {
+            let hash = Sha256::digest(issuer.as_bytes());
+            hex::encode(hash)
+        });
+
+    (timestamp, pubkey_hash)
+}
+
+/// RFC 3339形式のタイムスタンプをUnix epoch秒に変換する。
+/// 仕様書 §2.4
+///
+/// 形式例: "2024-01-15T10:30:45Z", "2024-01-15T10:30:45.123456Z"
+fn parse_rfc3339_to_epoch(s: &str) -> Option<u64> {
+    // 基本的なRFC 3339パーサ: YYYY-MM-DDThh:mm:ss[.frac]Z
+    let s = s.trim();
+    let date_time = s.strip_suffix('Z').or_else(|| {
+        // +00:00 形式のオフセット（UTCのみサポート）
+        s.strip_suffix("+00:00")
+    })?;
+
+    let (date_part, time_part) = date_time.split_once('T')?;
+    let parts: Vec<&str> = date_part.split('-').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let year: i64 = parts[0].parse().ok()?;
+    let month: i64 = parts[1].parse().ok()?;
+    let day: i64 = parts[2].parse().ok()?;
+
+    let time_no_frac = time_part.split('.').next()?;
+    let tparts: Vec<&str> = time_no_frac.split(':').collect();
+    if tparts.len() != 3 {
+        return None;
+    }
+    let hour: i64 = tparts[0].parse().ok()?;
+    let min: i64 = tparts[1].parse().ok()?;
+    let sec: i64 = tparts[2].parse().ok()?;
+
+    // 簡易Unix epoch計算（うるう秒は無視）
+    // days_from_epoch using a simplified algorithm
+    let m = if month <= 2 { month + 9 } else { month - 3 };
+    let y = if month <= 2 { year - 1 } else { year };
+    let days = 365 * y + y / 4 - y / 100 + y / 400 + (m * 306 + 5) / 10 + day - 1 - 719468;
+    let epoch = days * 86400 + hour * 3600 + min * 60 + sec;
+
+    if epoch >= 0 {
+        Some(epoch as u64)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 重複解決 (仕様書 §2.4)
+// ---------------------------------------------------------------------------
+
+/// 重複解決用のトークンレコード。
+/// 仕様書 §2.4
+#[derive(Debug, Clone)]
+pub struct TokenRecord {
+    /// トークンの一意識別子
+    pub id: String,
+    /// TSAタイムスタンプ（存在する場合、Unix epoch秒）
+    pub tsa_timestamp: Option<u64>,
+    /// TSA公開鍵ハッシュ（hex文字列）
+    pub tsa_pubkey_hash: Option<String>,
+    /// Solana block time（登録時刻、Unix epoch秒）
+    pub solana_block_time: u64,
+    /// トークンがBurn済みかどうか
+    pub is_burned: bool,
+}
+
+/// 同一content_hashに対する複数の権利トークンから正当な所有者を決定する。
+/// 仕様書 §2.4 重複の解決
+///
+/// 判定ロジック:
+/// 1. Burn済みトークンを除外する
+/// 2. 各トークンの「作成時刻」を決定する
+///    - 信頼できるTSAタイムスタンプを持つ → TSAタイムスタンプを使用
+///    - 持たない → Solana block time（登録時刻）を使用
+/// 3. 作成時刻が最古のトークンを選択する
+/// 4. 同一作成時刻の場合、登録時刻（Solana block time）が最古のものを選択する
+///
+/// `trusted_tsa_keys` が指定された場合、TSA公開鍵ハッシュがリストに含まれるもののみ
+/// TSAタイムスタンプを信頼する。リストが空の場合、全てのTSAを信頼する。
+pub fn resolve_duplicate<'a>(
+    tokens: &'a [TokenRecord],
+    trusted_tsa_keys: &[String],
+) -> Option<&'a TokenRecord> {
+    let active: Vec<&TokenRecord> = tokens.iter().filter(|t| !t.is_burned).collect();
+
+    if active.is_empty() {
+        return None;
+    }
+
+    active.into_iter().min_by(|a, b| {
+        let a_time = effective_creation_time(a, trusted_tsa_keys);
+        let b_time = effective_creation_time(b, trusted_tsa_keys);
+
+        a_time
+            .cmp(&b_time)
+            .then(a.solana_block_time.cmp(&b.solana_block_time))
+    })
+}
+
+/// トークンの有効な作成時刻を決定する。
+/// 仕様書 §2.4
+fn effective_creation_time(token: &TokenRecord, trusted_tsa_keys: &[String]) -> u64 {
+    if let Some(tsa_ts) = token.tsa_timestamp {
+        // TSA公開鍵が信頼リストに含まれるか確認
+        let is_trusted = if trusted_tsa_keys.is_empty() {
+            // 信頼リストが空の場合は全てのTSAを信頼
+            true
+        } else if let Some(ref hash) = token.tsa_pubkey_hash {
+            trusted_tsa_keys.contains(hash)
+        } else {
+            false
+        };
+
+        if is_trusted {
+            return tsa_ts;
+        }
+    }
+
+    // TSAなし or 信頼できないTSA → Solana block timeで代用
+    token.solana_block_time
+}
+
 /// JUMBFデータからマニフェストの署名バイト列を取得する。
 /// 仕様書 §2.1
 fn extract_manifest_signature(
@@ -92,7 +243,7 @@ fn extract_manifest_signature(
 }
 
 /// C2PA署名チェーンを検証し、結果を返す。
-/// 仕様書 §2.1
+/// 仕様書 §2.1 コンテンツの識別子
 ///
 /// TEEはC2PA署名チェーンの正当性を検証し、以下を確認する:
 /// - 署名チェーンの正当性（コンテンツの出自が改ざんされていない）
@@ -133,19 +284,23 @@ pub fn verify_c2pa(
     // JUMBFから署名バイト列を抽出
     let signature = extract_manifest_signature(content_bytes, mime_type, &active_label)?;
 
-    // TSA情報（現時点ではNone: TSA対応は後続タスクで実装）
+    // TSAタイムスタンプ抽出（仕様書 §2.4）
+    // C2PAマニフェストにTSAタイムスタンプが含まれる場合、RFC 3339形式の文字列を
+    // Unix epoch秒に変換する。issuerのSHA-256ハッシュをtsa_pubkey_hashとして使用する。
+    let (tsa_timestamp, tsa_pubkey_hash) = extract_tsa_info(manifest);
+
     Ok(C2paVerificationResult {
         is_valid,
         active_manifest_signature: signature,
         content_type,
-        tsa_timestamp: None,
-        tsa_pubkey_hash: None,
+        tsa_timestamp,
+        tsa_pubkey_hash,
         tsa_token_data: None,
     })
 }
 
 /// Active Manifestの署名からcontent_hashを抽出する。
-/// 仕様書 §2.1: `content_hash = SHA-256(Active Manifestの署名)`
+/// 仕様書 §2.1 コンテンツの識別子: `content_hash = SHA-256(Active Manifestの署名)`
 pub fn extract_content_hash(
     content_bytes: &[u8],
     mime_type: &str,
@@ -157,7 +312,7 @@ pub fn extract_content_hash(
 }
 
 /// C2PAの素材情報を再帰的に抽出し、来歴グラフ（DAG）を構築する。
-/// 仕様書 §2.2
+/// 仕様書 §2.2 来歴グラフの導出
 ///
 /// 各ノードはcontent_hashで識別され、各エッジは
 /// 「この素材がこのコンテンツの作成に使われた」という関係を表す。
@@ -480,6 +635,132 @@ mod tests {
             Err(CoreError::GraphSizeExceeded { .. }) => {} // 期待通り
             other => panic!("予期しない結果: {other:?}"),
         }
+    }
+
+    // ----- TSA / 重複解決テスト -----
+
+    #[test]
+    fn test_parse_rfc3339_to_epoch() {
+        // 2024-01-01T00:00:00Z = 1704067200
+        assert_eq!(parse_rfc3339_to_epoch("2024-01-01T00:00:00Z"), Some(1704067200));
+        // フラクション付き
+        assert_eq!(parse_rfc3339_to_epoch("2024-01-01T00:00:00.123Z"), Some(1704067200));
+        // +00:00オフセット
+        assert_eq!(parse_rfc3339_to_epoch("2024-01-01T00:00:00+00:00"), Some(1704067200));
+        // 不正な入力
+        assert_eq!(parse_rfc3339_to_epoch("not-a-date"), None);
+        assert_eq!(parse_rfc3339_to_epoch(""), None);
+    }
+
+    #[test]
+    fn test_resolve_duplicate_tsa_wins() {
+        // TSAタイムスタンプを持つトークンが、Solana block timeで先に登録されたトークンに勝つ
+        let tokens = vec![
+            TokenRecord {
+                id: "later_register_but_earlier_create".into(),
+                tsa_timestamp: Some(1000), // 作成時刻: 1000
+                tsa_pubkey_hash: Some("trusted_key".into()),
+                solana_block_time: 2000,   // 登録時刻: 2000（後）
+                is_burned: false,
+            },
+            TokenRecord {
+                id: "earlier_register_but_later_create".into(),
+                tsa_timestamp: None,
+                tsa_pubkey_hash: None,
+                solana_block_time: 1500,   // 登録時刻: 1500（先）、作成時刻もこれ
+                is_burned: false,
+            },
+        ];
+
+        let trusted = vec!["trusted_key".to_string()];
+        let winner = resolve_duplicate(&tokens, &trusted).unwrap();
+        assert_eq!(winner.id, "later_register_but_earlier_create");
+    }
+
+    #[test]
+    fn test_resolve_duplicate_untrusted_tsa_ignored() {
+        // 信頼リストに含まれないTSAは無視される
+        let tokens = vec![
+            TokenRecord {
+                id: "untrusted_tsa".into(),
+                tsa_timestamp: Some(500),
+                tsa_pubkey_hash: Some("unknown_key".into()),
+                solana_block_time: 2000,
+                is_burned: false,
+            },
+            TokenRecord {
+                id: "no_tsa_but_earlier".into(),
+                tsa_timestamp: None,
+                tsa_pubkey_hash: None,
+                solana_block_time: 1000,
+                is_burned: false,
+            },
+        ];
+
+        let trusted = vec!["other_key".to_string()];
+        let winner = resolve_duplicate(&tokens, &trusted).unwrap();
+        // untrusted TSAは無視されるので、solana_block_time 2000 vs 1000 → 1000が勝つ
+        assert_eq!(winner.id, "no_tsa_but_earlier");
+    }
+
+    #[test]
+    fn test_resolve_duplicate_burn_excluded() {
+        let tokens = vec![
+            TokenRecord {
+                id: "burned".into(),
+                tsa_timestamp: Some(100), // 最古だがBurn済み
+                tsa_pubkey_hash: None,
+                solana_block_time: 100,
+                is_burned: true,
+            },
+            TokenRecord {
+                id: "active".into(),
+                tsa_timestamp: None,
+                tsa_pubkey_hash: None,
+                solana_block_time: 500,
+                is_burned: false,
+            },
+        ];
+
+        let winner = resolve_duplicate(&tokens, &[]).unwrap();
+        assert_eq!(winner.id, "active");
+    }
+
+    #[test]
+    fn test_resolve_duplicate_same_time_uses_registration() {
+        // 同一作成時刻の場合、Solana block timeが最古のものを選択
+        let tokens = vec![
+            TokenRecord {
+                id: "later_registered".into(),
+                tsa_timestamp: None,
+                tsa_pubkey_hash: None,
+                solana_block_time: 2000,
+                is_burned: false,
+            },
+            TokenRecord {
+                id: "earlier_registered".into(),
+                tsa_timestamp: None,
+                tsa_pubkey_hash: None,
+                solana_block_time: 1000,
+                is_burned: false,
+            },
+        ];
+
+        let winner = resolve_duplicate(&tokens, &[]).unwrap();
+        assert_eq!(winner.id, "earlier_registered");
+    }
+
+    #[test]
+    fn test_resolve_duplicate_all_burned_returns_none() {
+        let tokens = vec![TokenRecord {
+            id: "burned".into(),
+            tsa_timestamp: None,
+            tsa_pubkey_hash: None,
+            solana_block_time: 100,
+            is_burned: true,
+        }];
+
+        assert!(resolve_duplicate(&tokens, &[]).is_none());
     }
 
     #[test]

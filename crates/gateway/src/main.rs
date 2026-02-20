@@ -1,6 +1,6 @@
 //! # Title Protocol Gateway
 //!
-//! 仕様書セクション6.2で定義されるGateway。
+//! 仕様書 §6.2
 //!
 //! ## 役割
 //! - クライアント認証（APIキー管理）
@@ -17,530 +17,19 @@
 //! - `POST /sign-and-mint` — sign + ブロードキャスト代行
 //! - `GET /.well-known/title-node-info` — ノード情報公開
 
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+mod auth;
+mod config;
+mod endpoints;
+pub mod error;
+pub mod storage;
 
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::Json;
-use base64::Engine;
-use ed25519_dalek::{Signer, SigningKey as Ed25519SigningKey, VerifyingKey as Ed25519VerifyingKey};
+use std::sync::Arc;
+
+use ed25519_dalek::{SigningKey as Ed25519SigningKey, VerifyingKey as Ed25519VerifyingKey};
 use title_types::*;
 
-// ---------------------------------------------------------------------------
-// ユーティリティ
-// ---------------------------------------------------------------------------
-
-/// Base64エンジン（Standard）
-fn b64() -> base64::engine::GeneralPurpose {
-    base64::engine::general_purpose::STANDARD
-}
-
-// ---------------------------------------------------------------------------
-// エラー型
-// ---------------------------------------------------------------------------
-
-/// Gatewayエラー型。
-/// 仕様書 §6.2
-#[derive(Debug, thiserror::Error)]
-pub enum GatewayError {
-    /// TEEへのリクエスト中継に失敗
-    #[error("TEEへのリクエスト中継に失敗: {0}")]
-    TeeRelay(String),
-    /// ストレージ操作に失敗
-    #[error("ストレージ操作に失敗: {0}")]
-    Storage(String),
-    /// Solana RPC エラー
-    #[error("Solana RPC エラー: {0}")]
-    Solana(String),
-    /// 内部エラー
-    #[error("内部エラー: {0}")]
-    Internal(String),
-    /// 不正なリクエスト
-    #[error("不正なリクエスト: {0}")]
-    BadRequest(String),
-}
-
-impl axum::response::IntoResponse for GatewayError {
-    fn into_response(self) -> axum::response::Response {
-        let status = match &self {
-            GatewayError::TeeRelay(_) => StatusCode::BAD_GATEWAY,
-            GatewayError::Storage(_) | GatewayError::Internal(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-            GatewayError::Solana(_) => StatusCode::BAD_GATEWAY,
-            GatewayError::BadRequest(_) => StatusCode::BAD_REQUEST,
-        };
-        (status, self.to_string()).into_response()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Temporary Storage トレイト (仕様書 §6.3)
-// ---------------------------------------------------------------------------
-
-/// Temporary Storageの署名付きURL生成結果。
-pub struct PresignedUrls {
-    /// クライアントがアップロードに使用するURL（PUT）
-    pub upload_url: String,
-    /// TEEがダウンロードに使用するURL（GET）
-    pub download_url: String,
-}
-
-/// Temporary Storageの抽象インターフェース。
-/// 仕様書 §6.3
-///
-/// Gateway運用者はS3互換ストレージ（MinIO, AWS S3, Cloudflare R2等）や
-/// その他のストレージバックエンドを実装として選択できる。
-#[async_trait::async_trait]
-pub trait TempStorage: Send + Sync {
-    /// 署名付きアップロードURL（PUT）とダウンロードURL（GET）を生成する。
-    ///
-    /// - `upload_url`: クライアントが暗号化ペイロードをアップロードするために使用
-    /// - `download_url`: TEEが暗号化ペイロードをフェッチするために使用
-    ///
-    /// upload_urlとdownload_urlが異なるエンドポイントを指す場合がある
-    /// （例: Docker内部ホスト名 vs 外部ホスト名）。
-    async fn generate_presigned_urls(
-        &self,
-        object_key: &str,
-        expiry_secs: u32,
-    ) -> Result<PresignedUrls, GatewayError>;
-}
-
-// ---------------------------------------------------------------------------
-// S3互換 Temporary Storage 実装
-// ---------------------------------------------------------------------------
-
-/// S3互換ストレージによるTemporary Storage実装。
-/// AWS S3, MinIO, Cloudflare R2 等のS3互換APIを使用する。
-/// 仕様書 §6.3
-pub struct S3TempStorage {
-    /// 内部通信用バケット（TEEからのダウンロード等）
-    bucket_internal: s3::Bucket,
-    /// クライアント向けバケット（署名付きURL生成用）。
-    /// Docker内部ホスト名と外部ホスト名が異なる場合に使用。
-    /// Noneの場合はbucket_internalを使用する。
-    bucket_public: Option<s3::Bucket>,
-}
-
-impl S3TempStorage {
-    /// S3互換バケットからTempStorageを構築する。
-    pub fn new(
-        bucket_internal: s3::Bucket,
-        bucket_public: Option<s3::Bucket>,
-    ) -> Self {
-        Self {
-            bucket_internal,
-            bucket_public,
-        }
-    }
-
-    /// 環境変数からS3互換バケットを初期化する。
-    /// 仕様書 §6.3
-    fn init_bucket(
-        endpoint: &str,
-        access_key: &str,
-        secret_key: &str,
-        bucket_name: &str,
-    ) -> anyhow::Result<s3::Bucket> {
-        let region = s3::Region::Custom {
-            region: "us-east-1".to_string(),
-            endpoint: endpoint.to_string(),
-        };
-
-        let credentials = s3::creds::Credentials::new(
-            Some(access_key),
-            Some(secret_key),
-            None,
-            None,
-            None,
-        )?;
-
-        let bucket = s3::Bucket::new(bucket_name, region, credentials)?.with_path_style();
-
-        Ok(*bucket)
-    }
-
-    /// 環境変数から構築する。
-    pub fn from_env() -> anyhow::Result<Self> {
-        let endpoint = std::env::var("MINIO_ENDPOINT")
-            .unwrap_or_else(|_| "http://localhost:9000".to_string());
-        let access_key =
-            std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
-        let secret_key =
-            std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
-        let bucket_name =
-            std::env::var("MINIO_BUCKET").unwrap_or_else(|_| "title-uploads".to_string());
-
-        let bucket_internal =
-            Self::init_bucket(&endpoint, &access_key, &secret_key, &bucket_name)?;
-
-        let bucket_public = std::env::var("MINIO_PUBLIC_ENDPOINT")
-            .ok()
-            .map(|public_ep| {
-                tracing::info!(
-                    minio_public_endpoint = %public_ep,
-                    "クライアント向けMinIOエンドポイントを設定"
-                );
-                Self::init_bucket(&public_ep, &access_key, &secret_key, &bucket_name)
-            })
-            .transpose()?;
-
-        Ok(Self::new(bucket_internal, bucket_public))
-    }
-}
-
-#[async_trait::async_trait]
-impl TempStorage for S3TempStorage {
-    async fn generate_presigned_urls(
-        &self,
-        object_key: &str,
-        expiry_secs: u32,
-    ) -> Result<PresignedUrls, GatewayError> {
-        let public_bucket = self.bucket_public.as_ref().unwrap_or(&self.bucket_internal);
-
-        let upload_url = public_bucket
-            .presign_put(object_key, expiry_secs, None, None)
-            .await
-            .map_err(|e| GatewayError::Storage(format!("署名付きアップロードURL生成失敗: {e}")))?;
-
-        let download_url = self
-            .bucket_internal
-            .presign_get(object_key, expiry_secs, None)
-            .await
-            .map_err(|e| {
-                GatewayError::Storage(format!("署名付きダウンロードURL生成失敗: {e}"))
-            })?;
-
-        Ok(PresignedUrls {
-            upload_url,
-            download_url,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 共有状態
-// ---------------------------------------------------------------------------
-
-/// Gatewayの共有状態。
-/// 仕様書 §6.2
-pub struct GatewayState {
-    /// TEEのエンドポイントURL
-    pub tee_endpoint: String,
-    /// HTTPクライアント
-    pub http_client: reqwest::Client,
-    /// Gateway認証用Ed25519秘密鍵
-    /// 仕様書 §6.2: Gateway秘密鍵で署名
-    pub signing_key: Ed25519SigningKey,
-    /// Gateway認証用Ed25519公開鍵
-    pub verifying_key: Ed25519VerifyingKey,
-    /// Temporary Storage（S3互換等、トレイトで抽象化）
-    /// 仕様書 §6.3
-    pub temp_storage: Box<dyn TempStorage>,
-    /// Solana RPC URL（sign-and-mint用）
-    pub solana_rpc_url: Option<String>,
-    /// Solana Gateway ウォレットキーペア（sign-and-mint用）
-    pub solana_keypair: Option<solana_sdk::signer::keypair::Keypair>,
-    /// サポートするExtensionリスト
-    pub supported_extensions: Vec<String>,
-    /// ノードのリソース制限情報
-    pub node_limits: NodeLimits,
-    /// デフォルトリソース制限（リクエストごと）
-    pub default_resource_limits: ResourceLimits,
-    /// アップロード最大サイズ（バイト）
-    pub max_upload_size: u64,
-    /// 署名付きURLの有効期限（秒）
-    pub presign_expiry_secs: u32,
-}
-
-// ---------------------------------------------------------------------------
-// Gateway認証ヘルパー
-// ---------------------------------------------------------------------------
-
-/// Gateway認証ラッパーを構築する。
-/// 仕様書 §6.2: リクエスト内容 + resource_limits を含む構造体を構築し、Gateway秘密鍵で署名する。
-fn build_gateway_auth_wrapper(
-    signing_key: &Ed25519SigningKey,
-    method: &str,
-    path: &str,
-    body: serde_json::Value,
-    resource_limits: Option<ResourceLimits>,
-) -> Result<GatewayAuthWrapper, GatewayError> {
-    let sign_target = GatewayAuthSignTarget {
-        method: method.to_string(),
-        path: path.to_string(),
-        body: body.clone(),
-        resource_limits: resource_limits.clone(),
-    };
-
-    let sign_bytes = serde_json::to_vec(&sign_target)
-        .map_err(|e| GatewayError::Internal(format!("署名対象のシリアライズに失敗: {e}")))?;
-
-    let signature = signing_key.sign(&sign_bytes);
-    let signature_b64 = b64().encode(signature.to_bytes());
-
-    Ok(GatewayAuthWrapper {
-        method: method.to_string(),
-        path: path.to_string(),
-        body,
-        resource_limits,
-        gateway_signature: signature_b64,
-    })
-}
-
-/// TEEにリクエストを中継する。
-/// 仕様書 §6.2: Gateway認証署名を付与してTEEにリクエストを転送する。
-async fn relay_to_tee(
-    state: &GatewayState,
-    path: &str,
-    body: serde_json::Value,
-) -> Result<serde_json::Value, GatewayError> {
-    let wrapper = build_gateway_auth_wrapper(
-        &state.signing_key,
-        "POST",
-        path,
-        body,
-        Some(state.default_resource_limits.clone()),
-    )?;
-
-    let url = format!("{}{}", state.tee_endpoint, path);
-    let response = state
-        .http_client
-        .post(&url)
-        .json(&wrapper)
-        .send()
-        .await
-        .map_err(|e| GatewayError::TeeRelay(format!("HTTP送信失敗: {e}")))?;
-
-    let status = response.status();
-    let response_body = response
-        .text()
-        .await
-        .map_err(|e| GatewayError::TeeRelay(format!("レスポンス読み取り失敗: {e}")))?;
-
-    if !status.is_success() {
-        return Err(GatewayError::TeeRelay(format!(
-            "TEEがエラーを返しました: HTTP {} - {}",
-            status, response_body
-        )));
-    }
-
-    serde_json::from_str(&response_body)
-        .map_err(|e| GatewayError::TeeRelay(format!("レスポンスのパースに失敗: {e}")))
-}
-
-// ---------------------------------------------------------------------------
-// ハンドラ
-// ---------------------------------------------------------------------------
-
-/// POST /upload-url — 署名付きURL発行。
-/// 仕様書 §6.2
-///
-/// Temporary Storageへのアップロード用署名付きURLを発行する。
-/// content-length-range条件によるEDoS攻撃対策を含む。
-async fn handle_upload_url(
-    State(state): State<Arc<GatewayState>>,
-    Json(body): Json<UploadUrlRequest>,
-) -> Result<Json<UploadUrlResponse>, GatewayError> {
-    // EDoS対策: コンテンツサイズの上限チェック (仕様書 §6.2)
-    if body.content_size > state.max_upload_size {
-        return Err(GatewayError::BadRequest(format!(
-            "コンテンツサイズが上限を超えています: {} bytes (上限: {} bytes)",
-            body.content_size, state.max_upload_size
-        )));
-    }
-
-    if body.content_size == 0 {
-        return Err(GatewayError::BadRequest(
-            "コンテンツサイズは1以上である必要があります".to_string(),
-        ));
-    }
-
-    // ユニークなオブジェクトキーを生成
-    let object_key = format!("uploads/{}", uuid::Uuid::new_v4());
-
-    // TempStorageトレイト経由で署名付きURLを生成
-    let urls = state
-        .temp_storage
-        .generate_presigned_urls(&object_key, state.presign_expiry_secs)
-        .await?;
-
-    // URL有効期限のUNIXタイムスタンプ
-    let expires_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| GatewayError::Internal(format!("時刻取得失敗: {e}")))?
-        .as_secs()
-        + state.presign_expiry_secs as u64;
-
-    Ok(Json(UploadUrlResponse {
-        upload_url: urls.upload_url,
-        download_url: urls.download_url,
-        expires_at,
-    }))
-}
-
-/// POST /verify — TEEへのリクエスト中継 + Gateway認証署名付与。
-/// 仕様書 §6.2
-///
-/// クライアントのVerifyRequestをGateway認証で包み、TEEに中継する。
-/// TEEからのレスポンス（暗号化済み）をそのままクライアントに返す。
-async fn handle_verify(
-    State(state): State<Arc<GatewayState>>,
-    Json(body): Json<VerifyRequest>,
-) -> Result<Json<serde_json::Value>, GatewayError> {
-    let body_value = serde_json::to_value(&body)
-        .map_err(|e| GatewayError::Internal(format!("リクエストのシリアライズに失敗: {e}")))?;
-
-    let result = relay_to_tee(&state, "/verify", body_value).await?;
-    Ok(Json(result))
-}
-
-/// POST /sign — TEEへのリクエスト中継。
-/// 仕様書 §6.2
-///
-/// クライアントのSignRequestをGateway認証で包み、TEEに中継する。
-/// TEEからの部分署名済みトランザクションをクライアントに返す。
-async fn handle_sign(
-    State(state): State<Arc<GatewayState>>,
-    Json(body): Json<SignRequest>,
-) -> Result<Json<SignResponse>, GatewayError> {
-    let body_value = serde_json::to_value(&body)
-        .map_err(|e| GatewayError::Internal(format!("リクエストのシリアライズに失敗: {e}")))?;
-
-    let result = relay_to_tee(&state, "/sign", body_value).await?;
-
-    let sign_response: SignResponse = serde_json::from_value(result)
-        .map_err(|e| GatewayError::TeeRelay(format!("SignResponseのパースに失敗: {e}")))?;
-
-    Ok(Json(sign_response))
-}
-
-/// POST /sign-and-mint — sign + ブロードキャスト代行。
-/// 仕様書 §6.2
-///
-/// /signと同様にTEEから部分署名済みトランザクションを取得し、
-/// GatewayのSolanaウォレットで最終署名を行い、Solanaにブロードキャストする。
-/// クライアントはSolanaウォレットでの署名を省略でき、ガス代はGateway運営者が負担する。
-async fn handle_sign_and_mint(
-    State(state): State<Arc<GatewayState>>,
-    Json(body): Json<SignRequest>,
-) -> Result<Json<SignAndMintResponse>, GatewayError> {
-    let solana_rpc_url = state
-        .solana_rpc_url
-        .as_ref()
-        .ok_or_else(|| GatewayError::Internal("SOLANA_RPC_URLが設定されていません".to_string()))?;
-    let gateway_keypair = state.solana_keypair.as_ref().ok_or_else(|| {
-        GatewayError::Internal("GATEWAY_SOLANA_KEYPAIRが設定されていません".to_string())
-    })?;
-
-    // Step 1: TEEの/signに中継
-    let body_value = serde_json::to_value(&body)
-        .map_err(|e| GatewayError::Internal(format!("リクエストのシリアライズに失敗: {e}")))?;
-
-    let result = relay_to_tee(&state, "/sign", body_value).await?;
-    let sign_response: SignResponse = serde_json::from_value(result)
-        .map_err(|e| GatewayError::TeeRelay(format!("SignResponseのパースに失敗: {e}")))?;
-
-    // Step 2: 各partial_txにGatewayウォレットで署名+ブロードキャスト
-    let mut tx_signatures = Vec::new();
-
-    for partial_tx_b64 in &sign_response.partial_txs {
-        let tx_bytes = b64().decode(partial_tx_b64).map_err(|e| {
-            GatewayError::TeeRelay(format!("partial_txのBase64デコードに失敗: {e}"))
-        })?;
-
-        let mut tx: solana_sdk::transaction::Transaction =
-            bincode::deserialize(&tx_bytes).map_err(|e| {
-                GatewayError::TeeRelay(format!(
-                    "トランザクションのデシリアライズに失敗: {e}"
-                ))
-            })?;
-
-        // Gatewayウォレットで署名（未署名のスロットに署名）
-        use solana_sdk::signer::Signer;
-        let gateway_pubkey = gateway_keypair.pubkey();
-
-        // Gatewayの公開鍵に対応する署名スロットを特定
-        let sig_index = tx
-            .message
-            .account_keys
-            .iter()
-            .position(|k| *k == gateway_pubkey)
-            .ok_or_else(|| {
-                GatewayError::Internal(
-                    "Gatewayの公開鍵がトランザクションの署名者に含まれていません".to_string(),
-                )
-            })?;
-
-        let message_bytes = tx.message.serialize();
-        let sig = gateway_keypair.sign_message(&message_bytes);
-        tx.signatures[sig_index] = sig;
-
-        // Solana RPCにブロードキャスト
-        let tx_serialized = bincode::serialize(&tx)
-            .map_err(|e| GatewayError::Internal(format!("トランザクションのシリアライズに失敗: {e}")))?;
-        let tx_b64 = b64().encode(&tx_serialized);
-
-        let rpc_request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sendTransaction",
-            "params": [tx_b64, {"encoding": "base64"}]
-        });
-
-        let rpc_response = state
-            .http_client
-            .post(solana_rpc_url)
-            .json(&rpc_request)
-            .send()
-            .await
-            .map_err(|e| GatewayError::Solana(format!("RPC送信失敗: {e}")))?;
-
-        let rpc_body: serde_json::Value = rpc_response
-            .json()
-            .await
-            .map_err(|e| GatewayError::Solana(format!("RPCレスポンスのパースに失敗: {e}")))?;
-
-        if let Some(error) = rpc_body.get("error") {
-            return Err(GatewayError::Solana(format!(
-                "トランザクションのブロードキャストに失敗: {error}"
-            )));
-        }
-
-        let tx_sig = rpc_body
-            .get("result")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                GatewayError::Solana("RPCレスポンスにresultがありません".to_string())
-            })?;
-
-        tx_signatures.push(tx_sig.to_string());
-    }
-
-    Ok(Json(SignAndMintResponse { tx_signatures }))
-}
-
-/// GET /.well-known/title-node-info — ノード情報公開。
-/// 仕様書 §6.2
-///
-/// クライアント（SDK）がノードを選択するために必要なスペック情報を返却する。
-async fn handle_node_info(
-    State(state): State<Arc<GatewayState>>,
-) -> Json<NodeInfo> {
-    use base58::ToBase58;
-
-    Json(NodeInfo {
-        signing_pubkey: state.verifying_key.to_bytes().to_base58(),
-        supported_extensions: state.supported_extensions.clone(),
-        limits: state.node_limits.clone(),
-    })
-}
-
-// ---------------------------------------------------------------------------
-// エントリポイント
-// ---------------------------------------------------------------------------
+use config::GatewayState;
+use storage::S3TempStorage;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -558,7 +47,6 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|_| anyhow::anyhow!("GATEWAY_SIGNING_KEYは32バイトの16進数である必要があります"))?;
         Ed25519SigningKey::from_bytes(&key_arr)
     } else {
-        // 開発環境用: ランダムキーを生成
         tracing::warn!("GATEWAY_SIGNING_KEYが未設定です。ランダムキーを生成します（開発環境用）");
         Ed25519SigningKey::generate(&mut rand::rngs::OsRng)
     };
@@ -616,13 +104,13 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = axum::Router::new()
-        .route("/upload-url", axum::routing::post(handle_upload_url))
-        .route("/verify", axum::routing::post(handle_verify))
-        .route("/sign", axum::routing::post(handle_sign))
-        .route("/sign-and-mint", axum::routing::post(handle_sign_and_mint))
+        .route("/upload-url", axum::routing::post(endpoints::handle_upload_url))
+        .route("/verify", axum::routing::post(endpoints::handle_verify))
+        .route("/sign", axum::routing::post(endpoints::handle_sign))
+        .route("/sign-and-mint", axum::routing::post(endpoints::handle_sign_and_mint))
         .route(
             "/.well-known/title-node-info",
-            axum::routing::get(handle_node_info),
+            axum::routing::get(endpoints::handle_node_info),
         )
         .with_state(state);
 
@@ -635,14 +123,18 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// テスト
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use auth::{b64, build_gateway_auth_wrapper};
     use base58::ToBase58;
+    use config::GatewayState;
+    use endpoints::*;
+    use storage::{PresignedUrls, TempStorage};
+
+    use axum::extract::State;
+    use axum::Json;
+    use base64::Engine;
 
     /// テスト用のモックTempStorage。
     /// S3への接続なしで署名付きURLのダミーを返す。
@@ -654,7 +146,7 @@ mod tests {
             &self,
             object_key: &str,
             _expiry_secs: u32,
-        ) -> Result<PresignedUrls, GatewayError> {
+        ) -> Result<PresignedUrls, error::GatewayError> {
             Ok(PresignedUrls {
                 upload_url: format!("http://mock-storage/upload/{object_key}?sig=test"),
                 download_url: format!("http://mock-storage/download/{object_key}?sig=test"),

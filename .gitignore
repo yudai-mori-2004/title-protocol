@@ -10,6 +10,15 @@ package-lock.json
 # AWS Nitro Enclaves
 *.eif
 
+# Terraform
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.backup
+deploy/terraform/.terraform.lock.hcl
+
+# WASM build output (deploy時に生成)
+wasm-modules/
+
 # OS
 .DS_Store
 
@@ -22,3 +31,8 @@ package-lock.json
 # Environment
 .env
 .env.*
+!.env.example
+
+# SSH keys
+deploy/keys/
+*.pem

@@ -51,7 +51,7 @@ fn detect_mime_type(data: &[u8]) -> &str {
 const CORE_PROCESSOR_ID: &str = "core-c2pa";
 
 /// /verify エンドポイントハンドラ。
-/// 仕様書 §6.4
+/// 仕様書 §1.1 Phase 1, §6.4
 pub async fn handle_verify(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
@@ -354,7 +354,7 @@ pub async fn handle_verify(
 }
 
 /// Core処理: C2PA検証 + 来歴グラフ構築 + signed_json生成。
-/// 仕様書 §5.1 Step 4
+/// 仕様書 §2.1, §2.2, §5.1 Step 4
 fn process_core(
     state: &AppState,
     content_bytes: &[u8],
@@ -448,7 +448,7 @@ fn process_core(
 }
 
 /// Extension処理: WASM実行 + Extension signed_json生成。
-/// 仕様書 §5.1 Step 5, §7.1
+/// 仕様書 §3.1, §5.1 Step 5, §7.1
 ///
 /// WASMバイナリはWasmLoaderトレイト経由で取得する。
 /// エクスポート関数名は標準化された `process` を使用する。

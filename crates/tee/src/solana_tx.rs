@@ -80,7 +80,7 @@ pub fn rent_exempt_minimum(data_len: usize) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Bubblegum V2 CreateTreeConfig トランザクションを構築する。
-/// 仕様書 §6.4 Step 2
+/// 仕様書 §6.4 Step 2, §6.5 Merkle Tree
 ///
 /// トランザクションには2つの命令が含まれる:
 /// 1. system_program::create_account — Merkle Treeアカウントの割り当て
@@ -140,7 +140,7 @@ pub fn build_create_tree_tx(
 // ---------------------------------------------------------------------------
 
 /// Bubblegum V2 MintV2 トランザクションを構築する。
-/// 仕様書 §5.1 Step 9-10
+/// 仕様書 §5.1 Step 9-10, §6.5 Merkle Tree
 ///
 /// core_collectionが指定された場合、MPL-Coreコレクションへのミントを行う。
 /// TEEがcollection_authorityとtree_creator_or_delegateの両方を兼ねる。

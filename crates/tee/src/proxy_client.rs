@@ -149,12 +149,3 @@ pub async fn proxy_get(proxy_addr: &str, url: &str) -> Result<ProxyResponse, std
     proxy_request(proxy_addr, "GET", url, &[]).await
 }
 
-/// vsock経由でHTTP POSTリクエストを送信する。
-/// 仕様書 §6.4
-pub async fn proxy_post(
-    proxy_addr: &str,
-    url: &str,
-    body: &[u8],
-) -> Result<ProxyResponse, std::io::Error> {
-    proxy_request(proxy_addr, "POST", url, body).await
-}

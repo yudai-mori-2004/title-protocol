@@ -51,8 +51,8 @@ REQUIRED_VARS=(
   MINIO_ACCESS_KEY
   MINIO_SECRET_KEY
   DB_PASSWORD
-  COLLECTION_MINT
 )
+# COLLECTION_MINT は init-config.mjs 実行後に設定するため、初回は不要
 
 MISSING=()
 for var in "${REQUIRED_VARS[@]}"; do

@@ -50,8 +50,9 @@ su - ec2-user -c 'sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"'
 # --- Git ---
 dnf install -y git
 
-# --- Rust (ビルド用、オプション) ---
-# su - ec2-user -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
+# --- Rust + wasm32ターゲット (WASMモジュールビルド + Dockerビルド用) ---
+su - ec2-user -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
+su - ec2-user -c 'source ~/.cargo/env && rustup target add wasm32-unknown-unknown'
 
 # --- 作業ディレクトリ ---
 mkdir -p /home/ec2-user/title-protocol

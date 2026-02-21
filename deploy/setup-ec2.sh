@@ -52,7 +52,7 @@ REQUIRED_VARS=(
   MINIO_SECRET_KEY
   DB_PASSWORD
 )
-# COLLECTION_MINT は init-config.mjs 実行後に設定するため、初回は不要
+# COLLECTION_MINT, GATEWAY_PUBKEY は init-config.mjs 実行後に設定するため、初回は不要
 
 MISSING=()
 for var in "${REQUIRED_VARS[@]}"; do
@@ -166,7 +166,28 @@ for e in data:
 
   echo "  Enclave起動完了 (CPU=$ENCLAVE_CPU, Memory=${ENCLAVE_MEM}MiB)"
 else
-  echo "  SKIP: Enclaveなし。TEEはMockRuntimeで起動します。"
+  # MockRuntime: TEEバイナリを直接起動
+  echo "  Enclaveなし。TEEをMockRuntimeで直接起動します。"
+  if ! pgrep -f title-tee &>/dev/null; then
+    if [ -f "target/release/title-tee" ]; then
+      MOCK_MODE=true TEE_RUNTIME=mock PROXY_ADDR=direct \
+        SOLANA_RPC_URL="$SOLANA_RPC_URL" \
+        COLLECTION_MINT="${COLLECTION_MINT:-}" \
+        GATEWAY_PUBKEY="${GATEWAY_PUBKEY:-}" \
+        TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-phash-v1,hardware-google,c2pa-training-v1,c2pa-license-v1}" \
+        ARWEAVE_GATEWAY="${ARWEAVE_GATEWAY:-https://arweave.net}" \
+        WASM_DIR="$WASM_OUTPUT" \
+        nohup ./target/release/title-tee > /var/log/title-tee.log 2>&1 &
+      echo "  TEE起動 (MockRuntime, PID=$!)"
+      sleep 2
+    else
+      echo "  ERROR: target/release/title-tee が見つかりません。"
+      echo "    OPENSSL_NO_VENDOR=1 cargo build --release --bin title-tee"
+      exit 1
+    fi
+  else
+    echo "  TEE は既に稼働中"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -188,7 +209,6 @@ if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
     echo "  Proxy は既に稼働中"
   fi
 else
-  # MockRuntime: Proxyは不要（TEEが直接HTTPで応答）
   echo "  SKIP: MockRuntimeモードではProxyは不要"
 fi
 
@@ -197,13 +217,8 @@ fi
 # ---------------------------------------------------------------------------
 echo "[Step 5/8] Docker Compose 起動..."
 
-# MockRuntime時はローカル開発用compose、Nitro時は本番compose
-if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
-  docker compose -f deploy/docker-compose.production.yml up -d --build
-else
-  # MockRuntime: ローカル開発用（MinIO + arlocal 含む）
-  docker compose up -d --build
-fi
+# 本番compose: PostgreSQL + Gateway + Indexer（TEEは別プロセスで起動済み）
+docker compose -f deploy/docker-compose.production.yml up -d --build
 
 echo "  Docker Compose 起動完了"
 

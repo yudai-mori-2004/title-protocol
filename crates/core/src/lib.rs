@@ -467,12 +467,6 @@ mod tests {
 
     /// テスト用のsignerを作成する
     fn test_signer() -> Box<dyn c2pa::Signer> {
-        // テスト用証明書では verify_after_sign を無効化する
-        c2pa::settings::load_settings_from_str(
-            r#"{"verify": {"verify_after_sign": false}}"#,
-            "json",
-        )
-        .unwrap();
         c2pa::create_signer::from_keys(CERTS, PRIVATE_KEY, c2pa::SigningAlg::Ed25519, None)
             .unwrap()
     }

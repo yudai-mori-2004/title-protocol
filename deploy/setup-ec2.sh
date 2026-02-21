@@ -47,9 +47,9 @@ set +a
 REQUIRED_VARS=(
   SOLANA_RPC_URL
   GATEWAY_SIGNING_KEY
-  MINIO_ENDPOINT
-  MINIO_ACCESS_KEY
-  MINIO_SECRET_KEY
+  S3_ENDPOINT
+  S3_ACCESS_KEY
+  S3_SECRET_KEY
   DB_PASSWORD
 )
 # COLLECTION_MINT, GATEWAY_PUBKEY は init-config.mjs 実行後に設定するため、初回は不要
@@ -177,7 +177,6 @@ else
         COLLECTION_MINT="${COLLECTION_MINT:-}" \
         GATEWAY_PUBKEY="${GATEWAY_PUBKEY:-}" \
         TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-phash-v1,hardware-google,c2pa-training-v1,c2pa-license-v1}" \
-        ARWEAVE_GATEWAY="${ARWEAVE_GATEWAY:-https://arweave.net}" \
         WASM_DIR="$WASM_OUTPUT" \
         nohup ./target/release/title-tee > /tmp/title-tee.log 2>&1 &
       echo "  TEE起動 (MockRuntime, PID=$!)"
@@ -239,26 +238,26 @@ done
 # ---------------------------------------------------------------------------
 echo "[Step 6/8] S3ストレージの確認..."
 
-BUCKET_NAME="${MINIO_BUCKET:-title-uploads}"
-if echo "$MINIO_ENDPOINT" | grep -q "s3.amazonaws.com\|s3\..*\.amazonaws\.com"; then
+BUCKET_NAME="${S3_BUCKET:-title-uploads}"
+if echo "$S3_ENDPOINT" | grep -q "s3.amazonaws.com\|s3\..*\.amazonaws\.com"; then
   # AWS S3: バケット存在確認
-  echo "  S3バケット: $BUCKET_NAME (endpoint: $MINIO_ENDPOINT)"
+  echo "  S3バケット: $BUCKET_NAME (endpoint: $S3_ENDPOINT)"
   if aws s3 ls "s3://$BUCKET_NAME" > /dev/null 2>&1; then
     echo "  S3バケット確認OK"
   else
     echo "  WARNING: S3バケットにアクセスできません"
     echo "    確認事項:"
-    echo "      - MINIO_BUCKET=$BUCKET_NAME がTerraformで作成したバケット名と一致しているか"
+    echo "      - S3_BUCKET=$BUCKET_NAME がTerraformで作成したバケット名と一致しているか"
     echo "      - EC2のIAMロールにS3アクセス権限があるか"
     echo "      - aws s3 ls s3://$BUCKET_NAME を手動で試してみてください"
   fi
 else
   # MinIO/ローカル: docker composeのMinIOを使用
-  echo "  MinIOエンドポイント: $MINIO_ENDPOINT"
+  echo "  S3互換エンドポイント: $S3_ENDPOINT"
   docker compose exec -T minio sh -c '
-    mc alias set local http://localhost:9000 '"$MINIO_ACCESS_KEY"' '"$MINIO_SECRET_KEY"' 2>/dev/null
+    mc alias set local http://localhost:9000 '"$S3_ACCESS_KEY"' '"$S3_SECRET_KEY"' 2>/dev/null
     mc mb local/title-uploads --ignore-existing 2>/dev/null
-  ' 2>/dev/null && echo "  MinIOバケット確認OK" || echo "  WARNING: MinIOバケット作成失敗"
+  ' 2>/dev/null && echo "  バケット確認OK" || echo "  WARNING: バケット作成失敗"
 fi
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ sha2 = "0.10"
 hkdf = "0.12"
 base64 = "0.22"
 base58 = "0.2"
-c2pa = "0.47"
+c2pa = "0.75"
 wasmtime = "29"
 axum = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

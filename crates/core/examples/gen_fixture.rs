@@ -21,11 +21,6 @@ const PRIVATE_KEY: &[u8] = include_bytes!("../tests/fixtures/certs/ee.key");
 const TEST_IMAGE: &[u8] = include_bytes!("../tests/fixtures/test.jpg");
 
 fn test_signer() -> Box<dyn c2pa::Signer> {
-    c2pa::settings::load_settings_from_str(
-        r#"{"verify": {"verify_after_sign": false}}"#,
-        "json",
-    )
-    .unwrap();
     c2pa::create_signer::from_keys(CERTS, PRIVATE_KEY, c2pa::SigningAlg::Ed25519, None).unwrap()
 }
 

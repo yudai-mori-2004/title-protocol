@@ -71,8 +71,8 @@ impl S3TempStorage {
         bucket_name: &str,
     ) -> anyhow::Result<s3::Bucket> {
         // AWS S3エンドポイント（s3.REGION.amazonaws.com）からリージョンを自動検出。
-        // MinIO等の非AWSエンドポイントではus-east-1をフォールバックとして使用。
-        let detected_region = std::env::var("MINIO_REGION").ok().unwrap_or_else(|| {
+        // 非AWSエンドポイントではus-east-1をフォールバックとして使用。
+        let detected_region = std::env::var("S3_REGION").ok().unwrap_or_else(|| {
             if let Some(caps) = endpoint.find("s3.").and_then(|start| {
                 let rest = &endpoint[start + 3..];
                 rest.find(".amazonaws.com").map(|end| rest[..end].to_string())
@@ -103,24 +103,24 @@ impl S3TempStorage {
     /// 環境変数から構築する。
     /// 仕様書 §6.3
     pub fn from_env() -> anyhow::Result<Self> {
-        let endpoint = std::env::var("MINIO_ENDPOINT")
+        let endpoint = std::env::var("S3_ENDPOINT")
             .unwrap_or_else(|_| "http://localhost:9000".to_string());
         let access_key =
-            std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+            std::env::var("S3_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
         let secret_key =
-            std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+            std::env::var("S3_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
         let bucket_name =
-            std::env::var("MINIO_BUCKET").unwrap_or_else(|_| "title-uploads".to_string());
+            std::env::var("S3_BUCKET").unwrap_or_else(|_| "title-uploads".to_string());
 
         let bucket_internal =
             Self::init_bucket(&endpoint, &access_key, &secret_key, &bucket_name)?;
 
-        let bucket_public = std::env::var("MINIO_PUBLIC_ENDPOINT")
+        let bucket_public = std::env::var("S3_PUBLIC_ENDPOINT")
             .ok()
             .map(|public_ep| {
                 tracing::info!(
-                    minio_public_endpoint = %public_ep,
-                    "クライアント向けMinIOエンドポイントを設定"
+                    s3_public_endpoint = %public_ep,
+                    "クライアント向けS3エンドポイントを設定"
                 );
                 Self::init_bucket(&public_ep, &access_key, &secret_key, &bucket_name)
             })

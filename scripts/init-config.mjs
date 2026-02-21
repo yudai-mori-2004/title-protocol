@@ -52,7 +52,7 @@ const TEE_URL = getArg("tee", "http://localhost:4000");
 // ---------------------------------------------------------------------------
 
 const PROGRAM_ID = new PublicKey(
-  "C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN"
+  process.env.TITLE_CONFIG_PROGRAM_ID || "C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN"
 );
 
 /** Anchor instruction discriminator = sha256("global:<method>")[..8] */

@@ -24,7 +24,7 @@ SOLANA_RPC="${SOLANA_RPC_URL:-https://api.devnet.solana.com}"
 GATEWAY_URL="http://localhost:3000"
 TEE_URL="http://localhost:4000"
 INDEXER_URL="http://localhost:5050"
-MINIO_ENDPOINT="http://localhost:9000"
+S3_ENDPOINT="http://localhost:9000"
 
 echo "=== Title Protocol ローカル環境セットアップ ==="
 echo "  Solana RPC: $SOLANA_RPC"
@@ -129,7 +129,7 @@ else
   echo "  ✗ Solana RPC ($SOLANA_RPC)"
 fi
 
-check_service "MinIO" "$MINIO_ENDPOINT/minio/health/live"
+check_service "MinIO" "$S3_ENDPOINT/minio/health/live"
 check_service "Gateway" "$GATEWAY_URL/.well-known/title-node-info"
 check_service "TEE Mock" "$TEE_URL/health" || true
 check_service "Indexer" "$INDEXER_URL/health"

@@ -18,11 +18,8 @@ import type {
   SignRequest,
   SignResponse,
   EncryptedPayload,
-  RegisterResult,
-  ResolveResult,
   NodeInfo,
 } from "./types";
-import { StorageProvider } from "./storage";
 
 // ---------------------------------------------------------------------------
 // 設定
@@ -46,9 +43,6 @@ export interface TitleClientConfig {
    * まだデプロイされていないため、外部から注入する。
    */
   globalConfig: GlobalConfig;
-
-  /** オフチェーンストレージプロバイダ（Arweave等） */
-  storage: StorageProvider;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +79,7 @@ export class TitleClient {
   /**
    * TEEノードをランダムに1つ選択し、セッションを開始する。
    * 暗号化アップロードを行う前にこれを呼ぶ。
-   * 返却されたTeeSessionを後続のregister()に渡すことで、
+   * 返却されたTeeSessionを後続のverify/signに渡すことで、
    * 同一TEEノードへのアフィニティが保証される。
    *
    * 仕様書 §6.7

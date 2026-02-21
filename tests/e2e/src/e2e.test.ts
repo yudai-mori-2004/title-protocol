@@ -60,7 +60,7 @@ describe("E2E Integration Tests", () => {
     storage = new TestStorage();
 
     // クライアントセットアップ
-    client = await setupClient(storage);
+    client = await setupClient();
 
     // テスト用ウォレット作成
     wallet = await createFundedWallet();
@@ -157,7 +157,7 @@ describe("E2E Integration Tests", () => {
         payloadBytes
       );
 
-      // Step 3: MinIOにアップロード
+      // Step 3: Temporary Storageにアップロード
       const uploadUrlRes = await fetch(`${GATEWAY_URL}/upload-url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -177,7 +177,7 @@ describe("E2E Integration Tests", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(encryptedPayload),
       });
-      assert.equal(putRes.ok, true, `MinIO PUT failed: HTTP ${putRes.status}`);
+      assert.equal(putRes.ok, true, `Storage PUT failed: HTTP ${putRes.status}`);
 
       // Step 4: /verify 呼び出し
       const verifyRes = await fetch(`${GATEWAY_URL}/verify`, {
@@ -267,7 +267,7 @@ describe("E2E Integration Tests", () => {
         payloadBytes
       );
 
-      // MinIOアップロード
+      // Temporary Storageにアップロード
       const uploadUrlRes = await fetch(`${GATEWAY_URL}/upload-url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

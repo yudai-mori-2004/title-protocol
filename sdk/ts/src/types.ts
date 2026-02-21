@@ -217,27 +217,6 @@ export interface NodeInfo {
 // SDK固有の型
 // ---------------------------------------------------------------------------
 
-/** register() の結果 */
-export interface RegisterResult {
-  contents: ContentResult[];
-  partialTxs?: string[];
-  txSignatures?: string[];
-}
-
-/** 個別コンテンツの登録結果 */
-export interface ContentResult {
-  contentHash: string;
-  storageUri: string;
-  cNftId?: string;
-  extensions: ExtensionResult[];
-}
-
-/** Extension結果 */
-export interface ExtensionResult {
-  extensionId: string;
-  storageUri: string;
-}
-
 /** resolve() の結果 */
 export interface ResolveResult {
   owner: string | null;

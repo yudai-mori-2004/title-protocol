@@ -57,10 +57,10 @@ services:
       - "3000:3000"
     environment:
       TEE_ENDPOINT: "http://tee-mock:4000"
-      MINIO_ENDPOINT: "http://minio:9000"
-      MINIO_PUBLIC_ENDPOINT: "http://localhost:9000"
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      S3_ENDPOINT: "http://minio:9000"
+      S3_PUBLIC_ENDPOINT: "http://localhost:9000"
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
       SOLANA_RPC_URL: "${SOLANA_RPC_URL:-https://api.devnet.solana.com}"
     depends_on:
       minio:
@@ -80,7 +80,6 @@ services:
       TEE_RUNTIME: "mock"
       PROXY_ADDR: "direct"
       SOLANA_RPC_URL: "${SOLANA_RPC_URL:-https://api.devnet.solana.com}"
-      ARWEAVE_GATEWAY: "http://arlocal:1984"
       WASM_DIR: "/wasm-modules"
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -23,7 +23,6 @@ import {
 import {
   TitleClient,
   TitleClientConfig,
-  StorageProvider,
   GlobalConfig,
   TrustedTeeNode,
   NodeInfo,
@@ -34,17 +33,16 @@ import {
 // ---------------------------------------------------------------------------
 
 export const SOLANA_RPC = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
-export const GATEWAY_URL = "http://localhost:3000";
-export const TEE_URL = "http://localhost:4000";
-export const MINIO_URL = "http://localhost:9000";
-export const ARLOCAL_URL = "http://localhost:1984";
+export const GATEWAY_URL = process.env.GATEWAY_URL || "http://localhost:3000";
+export const TEE_URL = process.env.TEE_URL || "http://localhost:4000";
+export const S3_URL = process.env.S3_URL || "http://localhost:9000";
 
 /**
  * GatewayがDocker内部ホスト名(minio:9000)で返すURLを
  * ホストマシンからアクセス可能なURL(localhost:9000)に変換する。
  */
-export function fixMinioUrl(url: string): string {
-  return url.replace("http://minio:9000", MINIO_URL);
+export function fixStorageUrl(url: string): string {
+  return url.replace("http://minio:9000", S3_URL);
 }
 
 /** ストレージサーバーのポート（signed_json保管用） */
@@ -227,10 +225,10 @@ export class TestStorageServer {
 }
 
 /**
- * TestStorageServerをStorageProvider interfaceでラップする。
- * SDK の register() から使える。
+ * TestStorageServerへのアップロードクライアント。
+ * signed_jsonの保管に使用する。
  */
-export class TestStorage implements StorageProvider {
+export class TestStorage {
   private endpoint: string;
 
   constructor(port = STORAGE_PORT) {
@@ -300,9 +298,7 @@ export function loadTeeInfo(): TeeInfo {
  *
  * 前提: setup-local.sh が完了し、tee-info.json が生成済みであること。
  */
-export async function setupClient(
-  storage: StorageProvider
-): Promise<TitleClient> {
+export async function setupClient(): Promise<TitleClient> {
   // tee-info.json から TEE の鍵情報を取得
   const teeInfo = loadTeeInfo();
 
@@ -351,7 +347,6 @@ export async function setupClient(
     teeNodes: [GATEWAY_URL],
     solanaRpcUrl: SOLANA_RPC,
     globalConfig,
-    storage,
   };
 
   return new TitleClient(config);

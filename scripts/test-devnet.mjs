@@ -10,7 +10,7 @@
  *   node test-devnet.mjs --gateway http://<EC2_IP>:3000
  *
  * 環境変数:
- *   GATEWAY_URL           - Gateway URL (default: http://35.77.196.129:3000)
+ *   GATEWAY_URL           - Gateway URL (default: http://localhost:3000)
  *   SOLANA_RPC_URL        - Solana RPC (default: https://api.devnet.solana.com)
  *   TEE_ENCRYPTION_PUBKEY - TEE暗号化公開鍵 (Base64, node-infoから自動取得)
  */
@@ -46,7 +46,7 @@ function getArg(name, defaultVal) {
   return defaultVal;
 }
 
-const GATEWAY_URL = getArg("gateway", process.env.GATEWAY_URL || "http://35.77.196.129:3000");
+const GATEWAY_URL = getArg("gateway", process.env.GATEWAY_URL || "http://localhost:3000");
 const SOLANA_RPC_URL = getArg("rpc", process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com");
 const FIXTURE_PATH = getArg("fixture", join(PROJECT_ROOT, "tests/e2e/fixtures/signed.jpg"));
 

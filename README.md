@@ -166,7 +166,7 @@ docs/                — Versioned development docs (SPECS → COVERAGE → task
 
 ```bash
 # 1. Start infrastructure services
-docker-compose up -d
+docker compose up -d
 
 # 2. Initialize local environment (MinIO bucket, Solana config, etc.)
 bash scripts/setup-local.sh
@@ -176,6 +176,47 @@ cd tests/e2e && npm install && npx tsc && node --test dist/e2e.test.js
 ```
 
 See `.env.example` for all available configuration options.
+
+## Deploying to Devnet
+
+### Prerequisites
+
+- EC2 instance (c5.xlarge recommended) with Docker & Docker Compose
+- Solana CLI configured for devnet
+- Anchor program deployed: `anchor deploy --provider.cluster devnet`
+- `.env` configured (copy from `.env.example`)
+
+### Steps
+
+```bash
+# 1. Load environment variables
+source .env
+
+# 2. Configure Solana CLI
+solana config set --url "$SOLANA_RPC_URL"
+solana config set --keypair ~/.config/solana/id.json
+
+# 3. Build & start services (use docker-compose.yml for mock TEE)
+docker compose build
+docker compose up -d
+
+# 4. Initialize Global Config & create Merkle Tree
+#    This script will:
+#    - Initialize the on-chain Global Config PDA
+#    - Register TEE node information
+#    - Fund the TEE internal wallet
+#    - Call /create-tree and broadcast the transaction
+node scripts/init-config.mjs --rpc "$SOLANA_RPC_URL"
+```
+
+### Important Notes
+
+- **TEE is stateless**: Keys are regenerated on every restart. After restarting `tee-mock`, re-run `init-config.mjs` to create a new Merkle Tree.
+- **`/create-tree` is one-shot**: Each TEE instance only allows one `/create-tree` call per lifecycle.
+- **Port conflicts**: Ensure ports 3000 (Gateway), 4000 (TEE), 5000 (Indexer) are free before starting.
+- **SOL funding**: The TEE internal wallet needs SOL for tree creation rent (~0.5 SOL for depth-14 tree).
+- For production (Nitro Enclave), use `deploy/docker-compose.production.yml` instead.
+- See `docs/v1/tasks/17-devnet-deploy/README.md` for detailed operational notes.
 
 ## For Developers
 

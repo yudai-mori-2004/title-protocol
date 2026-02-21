@@ -159,6 +159,7 @@ handler.rs       — HTTP転送ロジック
                          01〜09 全完了 ──→ 12 E2E + ローカル環境
                          01〜12 全完了 ──→ 13 コードベース整理
                          01〜16 全完了 ──→ 17 Devnetデプロイ基盤
+                         01〜17 全完了 ──→ 18 ベンダー名除去+SDK再設計
 ```
 
 | # | タスクファイル | 内容 | 状態 |
@@ -180,3 +181,4 @@ handler.rs       — HTTP転送ロジック
 | 15 | `docs/v1/tasks/15-tsa-resolution/` | TSAタイムスタンプ重複解決 | **完了** |
 | 16 | `docs/v1/tasks/16-collection-delegate/` | Collection Authority Delegate | **完了** |
 | 17 | `docs/v1/tasks/17-devnet-deploy/` | Devnetデプロイ基盤（Terraform + スクリプト） | **完了** |
+| 18 | `docs/v1/tasks/18-vendor-neutrality/` | ベンダー名除去 + SDK粒度再設計 | **完了** |

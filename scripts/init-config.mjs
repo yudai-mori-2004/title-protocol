@@ -248,7 +248,17 @@ async function main() {
   }
 
   // -----------------------------------------------------------------------
-  // 4. TEE /create-tree
+  // 4. TEE signing_pubkeyにSOLを送金
+  // -----------------------------------------------------------------------
+  // TEEは内部walletでtree作成費用を支払う。
+  // Gateway node-info の signing_pubkey はGatewayの鍵。TEEの signing_pubkey は
+  // /create-tree レスポンスで初めて判明するため、先にTEE /health でTEEの稼働を確認し、
+  // /create-tree を呼んでTEE pubkeyを取得→送金→再度 /create-tree の順が必要だが、
+  // /create-tree は一度しか呼べない。
+  // 回避策: TEE /create-tree を呼び、レスポンスの signing_pubkey に送金し、
+  // 返された signed_tx を即ブロードキャストする（TEEが完全署名済みなので外部署名不要）。
+  // -----------------------------------------------------------------------
+  // 5. TEE /create-tree + ブロードキャスト
   // -----------------------------------------------------------------------
   console.log("  Merkle Tree 作成中...");
   await waitForService(`${TEE_URL}/health`, "TEE Mock", 15);
@@ -263,7 +273,6 @@ async function main() {
         max_depth: 14,
         max_buffer_size: 64,
         recent_blockhash: blockhash,
-        payer: wallet.publicKey.toBase58(),
       }),
     });
 
@@ -290,20 +299,46 @@ async function main() {
         // tests/e2e ディレクトリが存在しない場合はスキップ
       }
 
-      // partial_tx に署名してブロードキャスト
-      const txBytes = Buffer.from(result.partial_tx, "base64");
+      // TEE内部walletにSOLを送金（tree作成のrent + 手数料）
+      const teePubkey = new PublicKey(result.signing_pubkey);
+      const teeBalance = await connection.getBalance(teePubkey);
+      const REQUIRED_LAMPORTS = 0.5 * LAMPORTS_PER_SOL; // depth-14 tree rent ≈ 0.22 SOL + 余裕
+      if (teeBalance < REQUIRED_LAMPORTS) {
+        const transferAmount = REQUIRED_LAMPORTS - teeBalance;
+        console.log(`  TEE wallet (${result.signing_pubkey}) にSOL送金中... (${transferAmount / LAMPORTS_PER_SOL} SOL)`);
+        const transferIx = SystemProgram.transfer({
+          fromPubkey: wallet.publicKey,
+          toPubkey: teePubkey,
+          lamports: transferAmount,
+        });
+        const transferTx = new Transaction().add(transferIx);
+        try {
+          const transferSig = await sendAndConfirmTransaction(connection, transferTx, [wallet]);
+          console.log(`  SOL送金完了: ${transferSig}`);
+        } catch (e) {
+          console.log(`  SOL送金失敗: ${e.message?.substring(0, 100)}`);
+          console.log("  TEE walletに手動でSOLを送金してください:");
+          console.log(`    solana transfer ${result.signing_pubkey} 0.5 --allow-unfunded-recipient`);
+        }
+      } else {
+        console.log(`  TEE wallet 残高: ${teeBalance / LAMPORTS_PER_SOL} SOL (十分)`);
+      }
+
+      // signed_tx をそのままブロードキャスト（TEEが完全署名済み）
+      const txBytes = Buffer.from(result.signed_tx, "base64");
       const { Transaction: SolTx } = await import("@solana/web3.js");
-      const partialTx = SolTx.from(txBytes);
-      partialTx.partialSign(wallet);
+      const signedTx = SolTx.from(txBytes);
 
       try {
         const sig = await connection.sendRawTransaction(
-          partialTx.serialize()
+          signedTx.serialize()
         );
         await connection.confirmTransaction(sig, "confirmed");
         console.log(`  Merkle Tree 作成完了: ${sig}`);
       } catch (e) {
-        console.log(`  Merkle Tree ブロードキャスト失敗（再試行が必要な場合あり）: ${e.message?.substring(0, 80)}`);
+        console.log(`  Merkle Tree ブロードキャスト失敗: ${e.message?.substring(0, 120)}`);
+        console.log("  TEE walletの残高不足の可能性があります。手動で送金してからリトライ:");
+        console.log(`    solana transfer ${result.signing_pubkey} 0.5 --allow-unfunded-recipient`);
       }
     } else {
       const body = await createTreeRes.text();

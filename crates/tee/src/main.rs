@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
     // MPL-Coreコレクションアドレス（仕様書 §5.2）
     let collection_mint = std::env::var("COLLECTION_MINT")
         .ok()
+        .filter(|s| !s.is_empty())
         .map(|s| Pubkey::from_str(&s).expect("COLLECTION_MINTが不正なBase58です"));
 
     if let Some(ref mint) = collection_mint {
@@ -99,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Gateway認証用公開鍵（仕様書 §6.2）
-    let gateway_pubkey = std::env::var("GATEWAY_PUBKEY").ok().map(|s| {
+    let gateway_pubkey = std::env::var("GATEWAY_PUBKEY").ok().filter(|s| !s.is_empty()).map(|s| {
         use base58::FromBase58;
         let bytes = s.from_base58().expect("GATEWAY_PUBKEYが不正なBase58です");
         let arr: [u8; 32] = bytes

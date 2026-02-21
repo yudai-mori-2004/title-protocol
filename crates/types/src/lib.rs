@@ -470,6 +470,9 @@ pub struct UploadUrlResponse {
 
 /// /create-tree リクエスト。
 /// 仕様書 §6.4
+///
+/// payerはTEE内部の署名鍵が兼ねる（TEEウォレットに事前にSOLを送金する必要がある）。
+/// これにより、Merkle Treeの作成・操作権限が完全にTEE内部に閉じる。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTreeRequest {
     /// Merkle Treeの深さ
@@ -478,16 +481,14 @@ pub struct CreateTreeRequest {
     pub max_buffer_size: u32,
     /// Base58エンコードされたBlockhash
     pub recent_blockhash: String,
-    /// Base58エンコードされたfee payer公開鍵
-    pub payer: String,
 }
 
 /// /create-tree レスポンス。
 /// 仕様書 §6.4
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTreeResponse {
-    /// Base64エンコードされた部分署名済みトランザクション
-    pub partial_tx: String,
+    /// Base64エンコードされた完全署名済みトランザクション（そのままブロードキャスト可能）
+    pub signed_tx: String,
     /// Base58エンコードされたMerkle Treeアドレス
     pub tree_address: String,
     /// Base58エンコードされたEd25519署名用公開鍵

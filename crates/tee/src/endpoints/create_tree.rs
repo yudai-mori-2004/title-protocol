@@ -52,14 +52,6 @@ pub async fn handle_create_tree(
         )
     })?;
 
-    // payer公開鍵（Base58デコード）
-    let payer_pubkey = Pubkey::from_str(&request.payer).map_err(|e| {
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("payer公開鍵のBase58デコードに失敗: {e}"),
-        )
-    })?;
-
     // recent_blockhash（Base58デコード）
     let blockhash = solana_sdk::hash::Hash::from_str(&request.recent_blockhash).map_err(|e| {
         (
@@ -77,7 +69,9 @@ pub async fn handle_create_tree(
     })?;
     let tree_pubkey = Pubkey::new_from_array(tree_pubkey_bytes);
 
-    // TEE署名用公開鍵（tree_creator）
+    // TEE署名用公開鍵（payer兼tree_creator）
+    // 仕様書 §6.4: payerをTEE内部walletにすることで、
+    // Merkle Treeの作成・操作権限が完全にTEE内部に閉じる。
     let signing_pubkey_bytes: [u8; 32] =
         state.runtime.signing_pubkey().try_into().map_err(|_| {
             (
@@ -88,8 +82,9 @@ pub async fn handle_create_tree(
     let tee_signing_pubkey = Pubkey::new_from_array(signing_pubkey_bytes);
 
     // Bubblegum V2 CreateTreeConfig トランザクション構築（仕様書 §6.4 Step 2）
+    // payer = TEE signing_pubkey（TEE内部walletが支払う）
     let mut tx = solana_tx::build_create_tree_tx(
-        &payer_pubkey,
+        &tee_signing_pubkey,
         &tree_pubkey,
         &tee_signing_pubkey,
         request.max_depth,
@@ -97,7 +92,7 @@ pub async fn handle_create_tree(
         &blockhash,
     );
 
-    // Messageバイト列にTree用キーペアとTEE署名用キーペアで部分署名
+    // TEEが全署名を行う（payer=signing_key なので signing_key + tree_key の2署名）
     let message_bytes = tx.message.serialize();
 
     let tree_sig = state.runtime.tree_sign(&message_bytes);
@@ -144,7 +139,7 @@ pub async fn handle_create_tree(
     );
 
     let response = CreateTreeResponse {
-        partial_tx: b64().encode(&tx_bytes),
+        signed_tx: b64().encode(&tx_bytes),
         tree_address: tree_pubkey.to_string(),
         signing_pubkey: tee_signing_pubkey.to_string(),
         encryption_pubkey: b64().encode(state.runtime.encryption_pubkey()),
@@ -181,6 +176,7 @@ mod tests {
     }
 
     /// /create-tree が正常に動作し、inactive → active に遷移することを確認
+    /// payer = TEE signing_pubkey で完全署名済みTXが返る
     #[tokio::test]
     async fn test_create_tree_success() {
         let state = make_test_state();
@@ -189,7 +185,6 @@ mod tests {
             "max_depth": 20,
             "max_buffer_size": 64,
             "recent_blockhash": "11111111111111111111111111111111",
-            "payer": "11111111111111111111111111111112",
         });
 
         let result = handle_create_tree(State(state.clone()), Json(body)).await;
@@ -197,13 +192,14 @@ mod tests {
 
         let response = result.unwrap().0;
 
-        // partial_txがBase64でデコード可能
-        let tx_bytes = b64().decode(&response.partial_tx).unwrap();
+        // signed_txがBase64でデコード可能
+        let tx_bytes = b64().decode(&response.signed_tx).unwrap();
         assert!(!tx_bytes.is_empty());
 
         // トランザクションがデシリアライズ可能
         let tx: Transaction = bincode::deserialize(&tx_bytes).unwrap();
-        assert_eq!(tx.message.header.num_required_signatures, 3);
+        // payer = tree_creator なので署名者は2（signing_key + tree_key）
+        assert_eq!(tx.message.header.num_required_signatures, 2);
         assert_eq!(tx.message.instructions.len(), 2);
 
         // tree_addressがBase58
@@ -240,7 +236,6 @@ mod tests {
             "max_depth": 20,
             "max_buffer_size": 64,
             "recent_blockhash": "11111111111111111111111111111111",
-            "payer": "11111111111111111111111111111112",
         });
 
         let result = handle_create_tree(State(state), Json(body)).await;

@@ -237,11 +237,19 @@ done
 # ---------------------------------------------------------------------------
 echo "[Step 6/8] S3ストレージの確認..."
 
+BUCKET_NAME="${MINIO_BUCKET:-title-uploads}"
 if echo "$MINIO_ENDPOINT" | grep -q "s3.amazonaws.com\|s3\..*\.amazonaws\.com"; then
   # AWS S3: バケット存在確認
-  aws s3 ls "s3://${MINIO_BUCKET:-title-uploads}" > /dev/null 2>&1 \
-    && echo "  S3バケット確認OK" \
-    || echo "  WARNING: S3バケットにアクセスできません。IAMロールとバケット名を確認してください。"
+  echo "  S3バケット: $BUCKET_NAME (endpoint: $MINIO_ENDPOINT)"
+  if aws s3 ls "s3://$BUCKET_NAME" > /dev/null 2>&1; then
+    echo "  S3バケット確認OK"
+  else
+    echo "  WARNING: S3バケットにアクセスできません"
+    echo "    確認事項:"
+    echo "      - MINIO_BUCKET=$BUCKET_NAME がTerraformで作成したバケット名と一致しているか"
+    echo "      - EC2のIAMロールにS3アクセス権限があるか"
+    echo "      - aws s3 ls s3://$BUCKET_NAME を手動で試してみてください"
+  fi
 else
   # MinIO/ローカル: docker composeのMinIOを使用
   echo "  MinIOエンドポイント: $MINIO_ENDPOINT"
@@ -255,6 +263,12 @@ fi
 # Step 7: Global Config 初期化 + Merkle Tree 作成
 # ---------------------------------------------------------------------------
 echo "[Step 7/8] Global Config 初期化..."
+
+# init-config.mjs の依存インストール
+if [ ! -d "$PROJECT_ROOT/scripts/node_modules" ]; then
+  echo "  npm install (scripts/)..."
+  (cd "$PROJECT_ROOT/scripts" && npm install --silent)
+fi
 
 # TEEエンドポイントの決定
 if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then

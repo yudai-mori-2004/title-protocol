@@ -168,7 +168,9 @@ for e in data:
 else
   # MockRuntime: TEEバイナリを直接起動
   echo "  Enclaveなし。TEEをMockRuntimeで直接起動します。"
-  if ! pgrep -f title-tee &>/dev/null; then
+  # pgrep でバイナリ名を正確に検索（nitro-cli の引数に含まれる "title-tee.eif" を除外）
+  TEE_PID=$(pgrep -x title-tee 2>/dev/null || true)
+  if [ -z "$TEE_PID" ]; then
     if [ -f "target/release/title-tee" ]; then
       MOCK_MODE=true TEE_RUNTIME=mock PROXY_ADDR=direct \
         SOLANA_RPC_URL="$SOLANA_RPC_URL" \
@@ -177,7 +179,7 @@ else
         TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-phash-v1,hardware-google,c2pa-training-v1,c2pa-license-v1}" \
         ARWEAVE_GATEWAY="${ARWEAVE_GATEWAY:-https://arweave.net}" \
         WASM_DIR="$WASM_OUTPUT" \
-        nohup ./target/release/title-tee > /var/log/title-tee.log 2>&1 &
+        nohup ./target/release/title-tee > /tmp/title-tee.log 2>&1 &
       echo "  TEE起動 (MockRuntime, PID=$!)"
       sleep 2
     else

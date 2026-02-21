@@ -8,6 +8,7 @@
 use mpl_bubblegum::instructions::{CreateTreeConfigV2Builder, MintV2Builder};
 use mpl_bubblegum::types::{Creator, MetadataArgsV2, TokenStandard};
 use solana_sdk::{
+    compute_budget::ComputeBudgetInstruction,
     message::Message,
     pubkey::Pubkey,
     signature::Signature,
@@ -48,14 +49,15 @@ pub fn derive_mpl_core_cpi_signer() -> (Pubkey, u8) {
 // ---------------------------------------------------------------------------
 
 /// Merkle Treeアカウントに必要なデータサイズを計算する。
-/// spl-account-compressionのConcurrentMerkleTreeレイアウトに基づく。
+/// spl-account-compression (V2) のConcurrentMerkleTreeレイアウトに基づく。
+/// @solana/spl-account-compression の getConcurrentMerkleTreeAccountSize と一致する。
 pub fn merkle_tree_account_size(max_depth: u32, max_buffer_size: u32) -> usize {
     let d = max_depth as usize;
     let b = max_buffer_size as usize;
 
-    // ヘッダー: discriminator(8) + CompressionAccountType(1) + max_buffer_size(4) +
-    //   max_depth(4) + authority(32) + creation_slot(8) + is_batch_initialized(1) + padding(5)
-    let header_size = 8 + 1 + 4 + 4 + 32 + 8 + 1 + 5; // = 63
+    // アカウントヘッダー: CompressionAccountType(1) + HeaderVersion(1) +
+    //   max_buffer_size(4) + max_depth(4) + authority(32) + creation_slot(8) + padding(6)
+    let header_size = 1 + 1 + 4 + 4 + 32 + 8 + 6; // = 56
 
     // ConcurrentMerkleTree: sequence_number(8) + active_index(8) + buffer_size(8)
     let tree_header = 24;
@@ -63,8 +65,8 @@ pub fn merkle_tree_account_size(max_depth: u32, max_buffer_size: u32) -> usize {
     // ChangeLog: root(32) + path_nodes(d * 32) + index(4) + _padding(4)
     let change_log_size = 32 + d * 32 + 4 + 4;
 
-    // RightMostPath: leaf(32) + proof(d * 32) + index(4)
-    let path_size = 32 + d * 32 + 4;
+    // RightMostPath: proof(d * 32) + leaf(32) + index(4) + _padding(4)
+    let path_size = d * 32 + 32 + 4 + 4;
 
     header_size + tree_header + b * change_log_size + path_size
 }
@@ -99,6 +101,9 @@ pub fn build_create_tree_tx(
     let space = merkle_tree_account_size(max_depth, max_buffer_size);
     let lamports = rent_exempt_minimum(space);
 
+    // 命令0: Compute Budget増加（Merkle Tree初期化は大量のwrite操作を行うため）
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+
     // 命令1: Merkle Treeアカウントの作成
     let create_account_ix = solana_sdk::system_instruction::create_account(
         payer,
@@ -121,7 +126,7 @@ pub fn build_create_tree_tx(
         .instruction();
 
     let message = Message::new_with_blockhash(
-        &[create_account_ix, create_tree_ix],
+        &[compute_budget_ix, create_account_ix, create_tree_ix],
         Some(payer),
         blockhash,
     );
@@ -261,11 +266,10 @@ mod tests {
 
     #[test]
     fn test_merkle_tree_account_size() {
-        // max_depth=20, max_buffer_size=64 の一般的な構成
-        let size = merkle_tree_account_size(20, 64);
-        assert!(size > 0);
-        // 既知の値に近いことを確認（約44KB）
-        assert!(size > 40_000 && size < 50_000, "size={size}");
+        // @solana/spl-account-compression の getConcurrentMerkleTreeAccountSize と一致確認
+        assert_eq!(merkle_tree_account_size(14, 64), 31800);
+        assert_eq!(merkle_tree_account_size(20, 64), 44280);
+        assert_eq!(merkle_tree_account_size(20, 1024), 697080);
     }
 
     #[test]
@@ -300,8 +304,8 @@ mod tests {
 
         // 3つの署名者（payer, tree, tree_creator）
         assert_eq!(tx.message.header.num_required_signatures, 3);
-        // 2つの命令（create_account + create_tree_config_v2）
-        assert_eq!(tx.message.instructions.len(), 2);
+        // 3つの命令（compute_budget + create_account + create_tree_config_v2）
+        assert_eq!(tx.message.instructions.len(), 3);
     }
 
     #[test]

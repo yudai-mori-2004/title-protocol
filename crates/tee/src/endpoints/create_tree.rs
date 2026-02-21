@@ -200,7 +200,8 @@ mod tests {
         let tx: Transaction = bincode::deserialize(&tx_bytes).unwrap();
         // payer = tree_creator なので署名者は2（signing_key + tree_key）
         assert_eq!(tx.message.header.num_required_signatures, 2);
-        assert_eq!(tx.message.instructions.len(), 2);
+        // 3つの命令（compute_budget + create_account + create_tree_config_v2）
+        assert_eq!(tx.message.instructions.len(), 3);
 
         // tree_addressがBase58
         assert!(!response.tree_address.is_empty());

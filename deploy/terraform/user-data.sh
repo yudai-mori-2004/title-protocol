@@ -50,9 +50,14 @@ su - ec2-user -c 'sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"'
 # --- Git ---
 dnf install -y git
 
+# --- ビルド依存 (OpenSSL, pkg-config) ---
+dnf install -y openssl-devel pkg-config
+
 # --- Rust + wasm32ターゲット (WASMモジュールビルド + Dockerビルド用) ---
 su - ec2-user -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
 su - ec2-user -c 'source ~/.cargo/env && rustup target add wasm32-unknown-unknown'
+# EC2直接ビルド時にシステムOpenSSLを使用
+echo 'export OPENSSL_NO_VENDOR=1' >> /home/ec2-user/.bashrc
 
 # --- 作業ディレクトリ ---
 mkdir -p /home/ec2-user/title-protocol

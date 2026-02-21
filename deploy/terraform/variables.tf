@@ -57,5 +57,5 @@ variable "enclave_cpu_count" {
 variable "enclave_memory_mib" {
   description = "Enclaveに割り当てるメモリ（MiB）"
   type        = number
-  default     = 512
+  default     = 1024
 }

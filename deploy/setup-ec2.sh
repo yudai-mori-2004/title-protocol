@@ -81,6 +81,8 @@ mkdir -p "$WASM_OUTPUT"
 
 WASM_TARGETS=(phash-v1 hardware-google c2pa-training-v1 c2pa-license-v1)
 
+export OPENSSL_NO_VENDOR=1
+
 if command -v cargo &>/dev/null && rustup target list --installed | grep -q wasm32-unknown-unknown; then
   for module in "${WASM_TARGETS[@]}"; do
     echo "  ビルド中: $module ..."

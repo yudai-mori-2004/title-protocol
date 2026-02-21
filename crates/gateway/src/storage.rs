@@ -70,8 +70,20 @@ impl S3TempStorage {
         secret_key: &str,
         bucket_name: &str,
     ) -> anyhow::Result<s3::Bucket> {
+        // AWS S3エンドポイント（s3.REGION.amazonaws.com）からリージョンを自動検出。
+        // MinIO等の非AWSエンドポイントではus-east-1をフォールバックとして使用。
+        let detected_region = std::env::var("MINIO_REGION").ok().unwrap_or_else(|| {
+            if let Some(caps) = endpoint.find("s3.").and_then(|start| {
+                let rest = &endpoint[start + 3..];
+                rest.find(".amazonaws.com").map(|end| rest[..end].to_string())
+            }) {
+                caps
+            } else {
+                "us-east-1".to_string()
+            }
+        });
         let region = s3::Region::Custom {
-            region: "us-east-1".to_string(),
+            region: detected_region,
             endpoint: endpoint.to_string(),
         };
 

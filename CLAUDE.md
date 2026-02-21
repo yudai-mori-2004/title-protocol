@@ -160,6 +160,7 @@ handler.rs       — HTTP転送ロジック
                          01〜12 全完了 ──→ 13 コードベース整理
                          01〜16 全完了 ──→ 17 Devnetデプロイ基盤
                          01〜17 全完了 ──→ 18 ベンダー名除去+SDK再設計
+                         01〜18 全完了 ──→ 19 Nitro Enclave実環境テスト
 ```
 
 | # | タスクファイル | 内容 | 状態 |
@@ -182,3 +183,4 @@ handler.rs       — HTTP転送ロジック
 | 16 | `docs/v1/tasks/16-collection-delegate/` | Collection Authority Delegate | **完了** |
 | 17 | `docs/v1/tasks/17-devnet-deploy/` | Devnetデプロイ基盤（Terraform + スクリプト） | **完了** |
 | 18 | `docs/v1/tasks/18-vendor-neutrality/` | ベンダー名除去 + SDK粒度再設計 | **完了** |
+| 19 | `docs/v1/tasks/19-nitro-test/` | Nitro Enclave 実環境テスト | 未着手 |

@@ -29,7 +29,22 @@ use ed25519_dalek::{SigningKey as Ed25519SigningKey, VerifyingKey as Ed25519Veri
 use title_types::*;
 
 use config::GatewayState;
-use storage::S3TempStorage;
+
+/// Temporary Storageを構築する。
+/// vendor-aws feature有効時はS3互換ストレージを使用する。
+#[cfg(feature = "vendor-aws")]
+fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
+    Ok(Box::new(storage::S3TempStorage::from_env()?))
+}
+
+/// vendor-aws feature無効時は起動時エラーで通知する。
+#[cfg(not(feature = "vendor-aws"))]
+fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
+    anyhow::bail!(
+        "title-gatewayの実行にはvendor-aws featureが必要です。\
+         cargo run -p title-gateway --features vendor-aws で起動してください"
+    );
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -60,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Temporary Storage（S3互換）
-    let temp_storage = S3TempStorage::from_env()?;
+    let temp_storage = create_temp_storage()?;
 
     // Solana RPC（sign-and-mint用、オプション）
     let solana_rpc_url = std::env::var("SOLANA_RPC_URL").ok();
@@ -82,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
         http_client: reqwest::Client::new(),
         signing_key,
         verifying_key,
-        temp_storage: Box::new(temp_storage),
+        temp_storage,
         solana_rpc_url,
         solana_keypair,
         supported_extensions,

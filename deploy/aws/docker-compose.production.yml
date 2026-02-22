@@ -11,7 +11,7 @@
 #   - TEE + Proxy は別途 Enclave + systemd で起動
 #
 # 使い方:
-#   docker compose -f deploy/docker-compose.production.yml up -d
+#   docker compose -f deploy/aws/docker-compose.production.yml up -d
 
 services:
   # PostgreSQL (インデクサ用)
@@ -35,13 +35,13 @@ services:
   # Gateway
   gateway:
     build:
-      context: ..
+      context: ../..
       dockerfile: docker/gateway.Dockerfile
     restart: unless-stopped
     ports:
       - "3000:3000"
     env_file:
-      - ../.env
+      - ../../.env
     environment:
       # TEEはEnclave内、Proxyが localhost:4000 で中継
       TEE_ENDPOINT: "http://host.docker.internal:4000"
@@ -54,13 +54,13 @@ services:
   # インデクサ
   indexer:
     build:
-      context: ..
+      context: ../..
       dockerfile: docker/indexer.Dockerfile
     restart: unless-stopped
     ports:
       - "5000:5000"
     env_file:
-      - ../.env
+      - ../../.env
     environment:
       DATABASE_URL: "postgres://${DB_USER:-title}:${DB_PASSWORD}@postgres:5432/title_indexer"
     depends_on:

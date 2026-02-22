@@ -16,8 +16,9 @@ use std::str::FromStr;
 
 use title_types::{CreateTreeRequest, CreateTreeResponse};
 
-use crate::solana_tx;
-use crate::{AppState, TeeState};
+use crate::config::{TeeAppState, TeeState};
+use crate::error::TeeError;
+use crate::blockchain::solana_tx;
 
 /// Base64エンジン（Standard）
 fn b64() -> base64::engine::GeneralPurpose {
@@ -30,55 +31,37 @@ fn b64() -> base64::engine::GeneralPurpose {
 /// このエンドポイントはTEEインスタンスの生存期間中に一度だけ呼び出し可能。
 /// 二度目以降の呼び出しはエラーを返す。
 pub async fn handle_create_tree(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<TeeAppState>>,
     Json(body): Json<serde_json::Value>,
-) -> Result<Json<CreateTreeResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Json<CreateTreeResponse>, TeeError> {
     // inactive状態チェック（二重呼び出し防止）
     {
         let current = state.state.read().await;
         if *current != TeeState::Inactive {
-            return Err((
-                axum::http::StatusCode::CONFLICT,
-                "TEEは既にactive状態です。/create-treeは一度だけ呼び出し可能です".to_string(),
+            return Err(TeeError::Conflict(
+                "TEEは既にactive状態です。/create-treeは一度だけ呼び出し可能です".into(),
             ));
         }
     }
 
     // リクエストパース
-    let request: CreateTreeRequest = serde_json::from_value(body).map_err(|e| {
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("CreateTreeRequestのパースに失敗: {e}"),
-        )
-    })?;
+    let request: CreateTreeRequest = serde_json::from_value(body)
+        .map_err(|e| TeeError::BadRequest(format!("CreateTreeRequestのパースに失敗: {e}")))?;
 
     // recent_blockhash（Base58デコード）
-    let blockhash = solana_sdk::hash::Hash::from_str(&request.recent_blockhash).map_err(|e| {
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("recent_blockhashのBase58デコードに失敗: {e}"),
-        )
-    })?;
+    let blockhash = solana_sdk::hash::Hash::from_str(&request.recent_blockhash)
+        .map_err(|e| TeeError::BadRequest(format!("recent_blockhashのBase58デコードに失敗: {e}")))?;
 
     // Tree公開鍵
-    let tree_pubkey_bytes: [u8; 32] = state.runtime.tree_pubkey().try_into().map_err(|_| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "Tree公開鍵の取得に失敗".to_string(),
-        )
-    })?;
+    let tree_pubkey_bytes: [u8; 32] = state.runtime.tree_pubkey().try_into()
+        .map_err(|_| TeeError::Internal("Tree公開鍵の取得に失敗".into()))?;
     let tree_pubkey = Pubkey::new_from_array(tree_pubkey_bytes);
 
     // TEE署名用公開鍵（payer兼tree_creator）
     // 仕様書 §6.4: payerをTEE内部walletにすることで、
     // Merkle Treeの作成・操作権限が完全にTEE内部に閉じる。
-    let signing_pubkey_bytes: [u8; 32] =
-        state.runtime.signing_pubkey().try_into().map_err(|_| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "署名用公開鍵の取得に失敗".to_string(),
-            )
-        })?;
+    let signing_pubkey_bytes: [u8; 32] = state.runtime.signing_pubkey().try_into()
+        .map_err(|_| TeeError::Internal("署名用公開鍵の取得に失敗".into()))?;
     let tee_signing_pubkey = Pubkey::new_from_array(signing_pubkey_bytes);
 
     // Bubblegum V2 CreateTreeConfig トランザクション構築（仕様書 §6.4 Step 2）
@@ -96,30 +79,16 @@ pub async fn handle_create_tree(
     let message_bytes = tx.message.serialize();
 
     let tree_sig = state.runtime.tree_sign(&message_bytes);
-    solana_tx::apply_partial_signature(&mut tx, &tree_pubkey, &tree_sig).map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Tree署名の適用に失敗: {e}"),
-        )
-    })?;
+    solana_tx::apply_partial_signature(&mut tx, &tree_pubkey, &tree_sig)
+        .map_err(|e| TeeError::Internal(format!("Tree署名の適用に失敗: {e}")))?;
 
     let signing_sig = state.runtime.sign(&message_bytes);
-    solana_tx::apply_partial_signature(&mut tx, &tee_signing_pubkey, &signing_sig).map_err(
-        |e| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("TEE署名の適用に失敗: {e}"),
-            )
-        },
-    )?;
+    solana_tx::apply_partial_signature(&mut tx, &tee_signing_pubkey, &signing_sig)
+        .map_err(|e| TeeError::Internal(format!("TEE署名の適用に失敗: {e}")))?;
 
     // トランザクションシリアライズ
-    let tx_bytes = solana_tx::serialize_transaction(&tx).map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("トランザクションのシリアライズに失敗: {e}"),
-        )
-    })?;
+    let tx_bytes = solana_tx::serialize_transaction(&tx)
+        .map_err(|e| TeeError::Internal(format!("トランザクションのシリアライズに失敗: {e}")))?;
 
     // Tree addressを保存
     {
@@ -156,13 +125,13 @@ mod tests {
     use solana_sdk::transaction::Transaction;
     use tokio::sync::{RwLock, Semaphore};
 
-    fn make_test_state() -> Arc<AppState> {
+    fn make_test_state() -> Arc<TeeAppState> {
         let rt = MockRuntime::new();
         rt.generate_signing_keypair();
         rt.generate_encryption_keypair();
         rt.generate_tree_keypair();
 
-        Arc::new(AppState {
+        Arc::new(TeeAppState {
             runtime: Box::new(rt),
             state: RwLock::new(TeeState::Inactive),
             proxy_addr: "127.0.0.1:0".to_string(),
@@ -241,7 +210,6 @@ mod tests {
 
         let result = handle_create_tree(State(state), Json(body)).await;
         assert!(result.is_err());
-        let (status, _) = result.unwrap_err();
-        assert_eq!(status, axum::http::StatusCode::CONFLICT);
+        assert!(matches!(result.unwrap_err(), TeeError::Conflict(_)));
     }
 }

@@ -8,13 +8,12 @@
 //! 3. /create-tree 呼び出し後、active状態に遷移
 //! 4. /verify, /sign エンドポイントの受付開始
 
+pub mod config;
+pub mod error;
 mod runtime;
 mod endpoints;
-mod gateway_auth;
-mod proxy_client;
-pub mod security;
-#[allow(deprecated)] // solana-sdk 2.x のsystem_instruction/system_program非推奨警告を抑制
-mod solana_tx;
+pub mod infra;
+mod blockchain;
 pub mod wasm_loader;
 
 use std::collections::HashSet;
@@ -23,46 +22,7 @@ use tokio::sync::{RwLock, Semaphore};
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
-/// TEEサーバーの状態。
-/// 仕様書 §6.4
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TeeState {
-    /// 起動直後。/create-tree のみ受付。
-    Inactive,
-    /// /create-tree 完了後。/verify, /sign 受付中。
-    Active,
-}
-
-/// TEEサーバーの共有状態。
-pub struct AppState {
-    /// TEEランタイム実装
-    pub runtime: Box<dyn runtime::TeeRuntime + Send + Sync>,
-    /// サーバーの現在の状態
-    pub state: RwLock<TeeState>,
-    /// vsockプロキシの接続先アドレス（macOS: "127.0.0.1:8000"）
-    pub proxy_addr: String,
-    /// Merkle Treeアドレス（/create-tree後に設定される）
-    pub tree_address: RwLock<Option<[u8; 32]>>,
-    /// MPL-Coreコレクションアドレス（環境変数 COLLECTION_MINT で設定）
-    /// 仕様書 §5.2 Step 1 — Global Configのcore_collection_mintに対応
-    pub collection_mint: Option<Pubkey>,
-    /// Gateway認証用Ed25519公開鍵（環境変数 GATEWAY_PUBKEY で設定）
-    /// 仕様書 §6.2: Global Configのgateway_pubkeyで署名を検証
-    /// Noneの場合はGateway認証をスキップ（開発環境用）
-    pub gateway_pubkey: Option<title_crypto::Ed25519VerifyingKey>,
-    /// WASMバイナリローダー（Extension実行時に使用）
-    /// 仕様書 §7.1: Extension WASMバイナリの取得を抽象化
-    /// Noneの場合、Extension実行は不可（core-c2paのみ対応）
-    pub wasm_loader: Option<Box<dyn wasm_loader::WasmLoader>>,
-    /// グローバルメモリ予約セマフォ。
-    /// 仕様書 §6.4 漸進的重み付きセマフォ予約
-    /// max_concurrent_bytes分のパーミットを持ち、チャンク単位で予約する。
-    pub memory_semaphore: Arc<Semaphore>,
-    /// 信頼されたExtension IDの一覧。
-    /// 仕様書 §6.4 不正WASMインジェクション防御
-    /// Noneの場合は全Extension許可（開発環境用）、Someの場合は一覧にあるIDのみ許可。
-    pub trusted_extension_ids: Option<HashSet<String>>,
-}
+use config::{TeeAppState, TeeState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -75,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("MockRuntimeで起動します");
             Box::new(runtime::mock::MockRuntime::new())
         }
+        #[cfg(feature = "vendor-aws")]
         "nitro" => {
             tracing::info!("NitroRuntimeで起動します");
             Box::new(runtime::nitro::NitroRuntime::new())
@@ -134,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
     let max_concurrent_bytes: usize = std::env::var("MAX_CONCURRENT_BYTES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(security::DEFAULT_MAX_CONCURRENT_BYTES as usize);
+        .unwrap_or(infra::security::DEFAULT_MAX_CONCURRENT_BYTES as usize);
     // Semaphoreのパーミット上限はusize::MAXだが、実用上はu32::MAX以下に抑える
     let semaphore_permits = max_concurrent_bytes.min(u32::MAX as usize);
     let memory_semaphore = Arc::new(Semaphore::new(semaphore_permits));
@@ -151,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("TRUSTED_EXTENSIONSが未設定です。全Extension実行を許可します（開発環境用）");
     }
 
-    let shared_state = Arc::new(AppState {
+    let shared_state = Arc::new(TeeAppState {
         runtime,
         state: RwLock::new(TeeState::Inactive),
         proxy_addr,
@@ -176,9 +137,9 @@ async fn main() -> anyhow::Result<()> {
     // axumルーターの構築
     let app = axum::Router::new()
         .route("/health", axum::routing::get(|| async { "ok" }))
-        .route("/create-tree", axum::routing::post(endpoints::create_tree::handle_create_tree))
-        .route("/verify", axum::routing::post(endpoints::verify::handle_verify))
-        .route("/sign", axum::routing::post(endpoints::sign::handle_sign))
+        .route("/create-tree", axum::routing::post(endpoints::handle_create_tree))
+        .route("/verify", axum::routing::post(endpoints::handle_verify))
+        .route("/sign", axum::routing::post(endpoints::handle_sign))
         .with_state(shared_state);
 
     let addr = "0.0.0.0:4000";

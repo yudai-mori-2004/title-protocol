@@ -10,10 +10,10 @@ package-lock.json
 *.eif
 
 # Terraform
-deploy/terraform/.terraform/
-deploy/terraform/*.tfstate
-deploy/terraform/*.tfstate.backup
-deploy/terraform/.terraform.lock.hcl
+deploy/aws/terraform/.terraform/
+deploy/aws/terraform/*.tfstate
+deploy/aws/terraform/*.tfstate.backup
+deploy/aws/terraform/.terraform.lock.hcl
 
 # WASM build output (deploy時に生成)
 wasm-modules/
@@ -33,5 +33,9 @@ wasm-modules/
 !.env.example
 
 # SSH keys
-deploy/keys/
+deploy/aws/keys/
 *.pem
+
+# Experiments output
+experiments/output-*.json
+experiments/node_modules/

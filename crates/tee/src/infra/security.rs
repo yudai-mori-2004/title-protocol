@@ -16,7 +16,7 @@ use tokio::sync::Semaphore;
 
 use title_types::ResourceLimits;
 
-use crate::proxy_client::ProxyResponse;
+use super::proxy_client::ProxyResponse;
 
 // ---------------------------------------------------------------------------
 // デフォルトリソース制限 (仕様書 §6.4 処理上限の管理)

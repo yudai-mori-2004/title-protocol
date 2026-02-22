@@ -215,7 +215,7 @@ node scripts/init-config.mjs --rpc "$SOLANA_RPC_URL"
 - **`/create-tree` is one-shot**: Each TEE instance only allows one `/create-tree` call per lifecycle.
 - **Port conflicts**: Ensure ports 3000 (Gateway), 4000 (TEE), 5000 (Indexer) are free before starting.
 - **SOL funding**: The TEE internal wallet needs SOL for tree creation rent (~0.5 SOL for depth-14 tree).
-- For production (Nitro Enclave), use `deploy/docker-compose.production.yml` instead.
+- For production (Nitro Enclave), use `deploy/aws/docker-compose.production.yml` instead.
 - See `docs/v1/tasks/17-devnet-deploy/README.md` for detailed operational notes.
 
 ## For Developers

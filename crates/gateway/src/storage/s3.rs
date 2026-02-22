@@ -1,41 +1,12 @@
-//! # Temporary Storage
+//! # S3互換 Temporary Storage 実装
 //!
 //! 仕様書 §6.3
 //!
-//! Gateway運用者が選択可能なTemporary Storageの抽象インターフェースと
-//! S3互換ストレージ実装。
+//! AWS S3, MinIO, Cloudflare R2 等のS3互換APIを使用する
+//! Temporary Storage実装。
 
+use super::{PresignedUrls, TempStorage};
 use crate::error::GatewayError;
-
-/// Temporary Storageの署名付きURL生成結果。
-/// 仕様書 §6.3
-pub struct PresignedUrls {
-    /// クライアントがアップロードに使用するURL（PUT）
-    pub upload_url: String,
-    /// TEEがダウンロードに使用するURL（GET）
-    pub download_url: String,
-}
-
-/// Temporary Storageの抽象インターフェース。
-/// 仕様書 §6.3
-///
-/// Gateway運用者はS3互換ストレージ（MinIO, AWS S3, Cloudflare R2等）や
-/// その他のストレージバックエンドを実装として選択できる。
-#[async_trait::async_trait]
-pub trait TempStorage: Send + Sync {
-    /// 署名付きアップロードURL（PUT）とダウンロードURL（GET）を生成する。
-    ///
-    /// - `upload_url`: クライアントが暗号化ペイロードをアップロードするために使用
-    /// - `download_url`: TEEが暗号化ペイロードをフェッチするために使用
-    ///
-    /// upload_urlとdownload_urlが異なるエンドポイントを指す場合がある
-    /// （例: Docker内部ホスト名 vs 外部ホスト名）。
-    async fn generate_presigned_urls(
-        &self,
-        object_key: &str,
-        expiry_secs: u32,
-    ) -> Result<PresignedUrls, GatewayError>;
-}
 
 /// S3互換ストレージによるTemporary Storage実装。
 /// AWS S3, MinIO, Cloudflare R2 等のS3互換APIを使用する。

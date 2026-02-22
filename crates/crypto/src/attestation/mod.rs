@@ -13,6 +13,7 @@
 //! | `amd_sev_snp` | （将来実装） | AMD SEV-SNP Report | MEASUREMENT |
 //! | `intel_tdx` | （将来実装） | Intel TDX Quote | MRTD, RTMR0〜RTMR3 |
 
+#[cfg(feature = "vendor-aws")]
 pub mod nitro;
 
 use std::collections::BTreeMap;
@@ -89,6 +90,7 @@ pub fn verify_attestation(
     document: &[u8],
 ) -> Result<AttestationResult, AttestationError> {
     match tee_type {
+        #[cfg(feature = "vendor-aws")]
         "aws_nitro" => {
             let nitro_result = nitro::verify_nitro_attestation(document)?;
             Ok(nitro_result.into())
@@ -128,6 +130,7 @@ pub fn verify_public_key(result: &AttestationResult, expected_pubkey: &[u8]) -> 
         .map_or(false, |pk| pk == expected_pubkey)
 }
 
+#[cfg(feature = "vendor-aws")]
 impl From<nitro::NitroAttestationResult> for AttestationResult {
     fn from(nitro: nitro::NitroAttestationResult) -> Self {
         let mut measurements = BTreeMap::new();

@@ -10,6 +10,7 @@
 //! - `nitro` — AWS Nitro Enclaves（NSM API経由）
 
 pub mod mock;
+#[cfg(feature = "vendor-aws")]
 pub mod nitro;
 
 /// TEEランタイムのトレイト。

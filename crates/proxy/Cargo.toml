@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Title Protocol vsock HTTPプロキシ"
 
+[features]
+default = ["vendor-aws"]
+vendor-aws = ["vsock"]
+
 [dependencies]
 reqwest = { workspace = true }
 tokio = { workspace = true }
@@ -15,4 +19,4 @@ anyhow = { workspace = true }
 axum = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-vsock = "0.4"
+vsock = { version = "0.4", optional = true }

@@ -8,16 +8,16 @@
 #   - nitro-cli がインストール済み (Amazon Linux 2023上)
 #
 # 使い方:
-#   ./scripts/build-enclave.sh
+#   ./deploy/aws/build-enclave.sh
 
 set -euo pipefail
 
 echo "=== Title Protocol Enclave Image ビルド ==="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-TEE_DOCKERFILE="$PROJECT_ROOT/docker/tee.Dockerfile"
+TEE_DOCKERFILE="$PROJECT_ROOT/deploy/aws/docker/tee.Dockerfile"
 IMAGE_NAME="title-tee-enclave"
 EIF_OUTPUT="$PROJECT_ROOT/title-tee.eif"
 

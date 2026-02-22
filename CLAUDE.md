@@ -161,6 +161,11 @@ handler.rs       — HTTP転送ロジック
                          01〜16 全完了 ──→ 17 Devnetデプロイ基盤
                          01〜17 全完了 ──→ 18 ベンダー名除去+SDK再設計
                          01〜18 全完了 ──→ 19 Nitro Enclave実環境テスト
+
+21 OSS公開ファイル ──────────────────────────────────────────── (独立)
+22 TEEクレート基盤 ──┬──→ 23 Trait分離 ──┐
+                     │                    ├──→ 25 Feature flags ──→ 26 Deploy分離
+                     └──→ 24 TEE再編成 ──┘
 ```
 
 | # | タスクファイル | 内容 | 状態 |
@@ -184,3 +189,10 @@ handler.rs       — HTTP転送ロジック
 | 17 | `docs/v1/tasks/17-devnet-deploy/` | Devnetデプロイ基盤（Terraform + スクリプト） | **完了** |
 | 18 | `docs/v1/tasks/18-vendor-neutrality/` | ベンダー名除去 + SDK粒度再設計 | **完了** |
 | 19 | `docs/v1/tasks/19-nitro-test/` | Nitro Enclave 実環境テスト | 未着手 |
+| 20 | `docs/v1/tasks/20-structure-analysis/` | 構造分析・OSS品質監査（記録のみ、タスク定義なし） | **完了** |
+| 21 | `docs/v1/tasks/21-oss-legal/` | OSS公開ファイル整備（LICENSE, CONTRIBUTING等） | 未着手 |
+| 22 | `docs/v1/tasks/22-tee-foundation/` | TEEクレート構造基盤（TeeError, TeeAppState, barrel export） | 未着手 |
+| 23 | `docs/v1/tasks/23-trait-dir-split/` | Trait実装のディレクトリ分離（storage/, wasm_loader/） | 未着手 |
+| 24 | `docs/v1/tasks/24-tee-reorganize/` | TEEエンドポイント分割 + モジュール再編成（verify/, infra/, blockchain/） | 未着手 |
+| 25 | `docs/v1/tasks/25-vendor-feature-flags/` | Cargo vendor-aws feature flags | 未着手 |
+| 26 | `docs/v1/tasks/26-deploy-vendor-split/` | デプロイ基盤のベンダー分離（deploy/aws/） | 未着手 |

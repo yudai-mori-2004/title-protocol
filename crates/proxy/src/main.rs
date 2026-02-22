@@ -14,15 +14,15 @@ mod handler;
 mod protocol;
 
 /// vsockリッスンポート
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "vendor-aws"))]
 const VSOCK_PORT: u32 = 8000;
 
 /// TCPフォールバックアドレス（macOS/テスト用）
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", feature = "vendor-aws")))]
 const TCP_ADDR: &str = "127.0.0.1:8000";
 
 /// Linux: vsockでリッスン
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "vendor-aws"))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// 非Linux: TCPフォールバックでリッスン（テスト・開発用）
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", feature = "vendor-aws")))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();

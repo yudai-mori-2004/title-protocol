@@ -18,12 +18,12 @@
 #
 # 使い方:
 #   cd ~/title-protocol
-#   ./deploy/setup-ec2.sh
+#   ./deploy/aws/setup-ec2.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 cd "$PROJECT_ROOT"
 
 echo "=== Title Protocol Devnet デプロイ ==="
@@ -110,7 +110,7 @@ EIF_PATH="$PROJECT_ROOT/title-tee.eif"
 
 if command -v nitro-cli &>/dev/null; then
   # TEE Docker イメージのビルド
-  docker build -t title-tee-enclave -f docker/tee.Dockerfile .
+  docker build -t title-tee-enclave -f deploy/aws/docker/tee.Dockerfile .
 
   # EIF生成
   nitro-cli build-enclave \
@@ -219,7 +219,7 @@ fi
 echo "[Step 5/8] Docker Compose 起動..."
 
 # 本番compose: PostgreSQL + Gateway + Indexer（TEEは別プロセスで起動済み）
-docker compose -f deploy/docker-compose.production.yml up -d --build
+docker compose -f deploy/aws/docker-compose.production.yml up -d --build
 
 echo "  Docker Compose 起動完了"
 

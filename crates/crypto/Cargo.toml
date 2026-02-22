@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Title Protocol 暗号処理 (ECDH, AES-GCM, Ed25519, SHA-256)"
 
+[features]
+default = ["vendor-aws"]
+vendor-aws = []
+
 [dependencies]
 ed25519-dalek = { workspace = true }
 x25519-dalek = { workspace = true }

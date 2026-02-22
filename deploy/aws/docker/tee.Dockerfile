@@ -39,4 +39,10 @@ COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee
 COPY deploy/aws/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# .env（gitignore済み）からEnclave内の環境変数をベイク
+COPY .env /.env
+
+# WASMモジュール（ホスト上で事前ビルド済みのものをコピー）
+COPY wasm-modules/ /wasm-modules/
+
 ENTRYPOINT ["/entrypoint.sh"]

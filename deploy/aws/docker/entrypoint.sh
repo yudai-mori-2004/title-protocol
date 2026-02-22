@@ -20,6 +20,18 @@
 
 set -e
 
+# .env読み込み（Dockerfile内にベイク済み）
+if [ -f /.env ]; then
+  set -a
+  . /.env
+  set +a
+fi
+
+# Enclave固有の上書き（.envの値に関わらず強制）
+export TEE_RUNTIME=nitro
+export PROXY_ADDR=127.0.0.1:8000
+export WASM_DIR=/wasm-modules
+
 # インバウンドブリッジ: vsock port 4000 → TCP localhost:4000
 socat VSOCK-LISTEN:4000,fork TCP:127.0.0.1:4000 &
 

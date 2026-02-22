@@ -162,6 +162,8 @@ handler.rs       — HTTP転送ロジック
                          01〜17 全完了 ──→ 18 ベンダー名除去+SDK再設計
                          01〜18 全完了 ──→ 19 Nitro Enclave実環境テスト
 
+                         19 Nitro実環境テスト ─→ 27 ゼロベースデプロイ一本道化
+
 21 OSS公開ファイル ──────────────────────────────────────────── (独立)
 22 TEEクレート基盤 ──┬──→ 23 Trait分離 ──┐
                      │                    ├──→ 25 Feature flags ──→ 26 Deploy分離
@@ -196,3 +198,4 @@ handler.rs       — HTTP転送ロジック
 | 24 | `docs/v1/tasks/24-tee-reorganize/` | TEEエンドポイント分割 + モジュール再編成（verify/, infra/, blockchain/） | 未着手 |
 | 25 | `docs/v1/tasks/25-vendor-feature-flags/` | Cargo vendor-aws feature flags | 未着手 |
 | 26 | `docs/v1/tasks/26-deploy-vendor-split/` | デプロイ基盤のベンダー分離（deploy/aws/） | 未着手 |
+| 27 | `docs/v1/tasks/27-deploy-zero-base-fix/` | ゼロベースデプロイの一本道化（user-data.sh + S3認証 + setup-ec2.sh修正） | **完了** |

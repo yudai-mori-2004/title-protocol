@@ -36,6 +36,9 @@ if ! groups | grep -q docker; then
   exec sg docker "$0"
 fi
 
+# user-data.sh でインストールされたツールの PATH を確保
+export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
+
 echo "=== Title Protocol Devnet デプロイ ==="
 
 # ---------------------------------------------------------------------------

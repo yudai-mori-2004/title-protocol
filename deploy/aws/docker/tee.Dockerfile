@@ -32,8 +32,11 @@ FROM amazonlinux:2023
 RUN dnf install -y \
     openssl \
     ca-certificates \
+    socat \
     && dnf clean all
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee
+COPY deploy/aws/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-ENTRYPOINT ["/usr/local/bin/title-tee"]
+ENTRYPOINT ["/entrypoint.sh"]

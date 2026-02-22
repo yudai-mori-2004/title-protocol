@@ -159,12 +159,23 @@ for e in data:
   fi
 
   # Enclave起動
-  nitro-cli run-enclave \
+  ENCLAVE_OUTPUT=$(nitro-cli run-enclave \
     --eif-path "$EIF_PATH" \
     --cpu-count "$ENCLAVE_CPU" \
-    --memory "$ENCLAVE_MEM"
+    --memory "$ENCLAVE_MEM")
 
-  echo "  Enclave起動完了 (CPU=$ENCLAVE_CPU, Memory=${ENCLAVE_MEM}MiB)"
+  echo "$ENCLAVE_OUTPUT"
+
+  # Enclave CIDを取得
+  ENCLAVE_CID=$(echo "$ENCLAVE_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['EnclaveCID'])")
+  echo "  Enclave起動完了 (CPU=$ENCLAVE_CPU, Memory=${ENCLAVE_MEM}MiB, CID=$ENCLAVE_CID)"
+
+  # インバウンドブリッジ: Gateway (TCP:4000) → Enclave (vsock:CID:4000)
+  # Enclave内のsocatがvsock:4000→TCP:localhost:4000に中継し、title-teeに到達する
+  pkill -f "socat TCP-LISTEN:4000" 2>/dev/null || true
+  sleep 1
+  socat TCP-LISTEN:4000,fork,reuseaddr VSOCK-CONNECT:"$ENCLAVE_CID":4000 &
+  echo "  インバウンドブリッジ起動 (TCP:4000 → vsock:$ENCLAVE_CID:4000)"
 else
   # MockRuntime: TEEバイナリを直接起動
   echo "  Enclaveなし。TEEをMockRuntimeで直接起動します。"

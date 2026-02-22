@@ -33,6 +33,7 @@ RUN dnf install -y \
     openssl \
     ca-certificates \
     socat \
+    iproute \
     && dnf clean all
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee

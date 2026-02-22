@@ -20,6 +20,12 @@
 
 set -e
 
+# Nitro Enclave内ではloopbackインターフェースがデフォルトで無効。
+# socatがTCP:127.0.0.1を使うため、先に有効化する。
+ifconfig lo 127.0.0.1 netmask 255.0.0.0 up 2>/dev/null \
+  || (ip addr add 127.0.0.1/8 dev lo && ip link set lo up) 2>/dev/null \
+  || true
+
 # .env読み込み（Dockerfile内にベイク済み）
 if [ -f /.env ]; then
   set -a

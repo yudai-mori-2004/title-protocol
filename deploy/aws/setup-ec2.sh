@@ -26,6 +26,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 cd "$PROJECT_ROOT"
 
+# ---------------------------------------------------------------------------
+# Docker グループチェック
+# ---------------------------------------------------------------------------
+# user-data.sh で usermod -aG docker ec2-user するが、初回SSH時には
+# グループが反映されていない。sg docker で再実行して自動解決する。
+if ! groups | grep -q docker; then
+  echo "docker グループ未反映。sg docker で再実行します..."
+  exec sg docker "$0"
+fi
+
 echo "=== Title Protocol Devnet デプロイ ==="
 
 # ---------------------------------------------------------------------------
@@ -71,6 +81,24 @@ fi
 
 echo "  OK（必須変数チェック通過）"
 
+# Solana ウォレットの自動作成
+SOLANA_WALLET="$HOME/.config/solana/id.json"
+if [ ! -f "$SOLANA_WALLET" ]; then
+  echo "  Solana ウォレットが見つかりません。自動作成します..."
+  solana-keygen new --no-bip39-passphrase -o "$SOLANA_WALLET"
+  WALLET_PUBKEY=$(solana-keygen pubkey "$SOLANA_WALLET")
+  echo ""
+  echo "  ⚠ 新規ウォレット作成: $WALLET_PUBKEY"
+  echo "  ⚠ このウォレットに SOL を送金してください（Devnet: solana airdrop 2）"
+  echo ""
+else
+  WALLET_PUBKEY=$(solana-keygen pubkey "$SOLANA_WALLET")
+  echo "  Solana ウォレット: $WALLET_PUBKEY"
+fi
+
+# Devnet に設定
+solana config set --url "$SOLANA_RPC_URL" > /dev/null 2>&1 || true
+
 # ---------------------------------------------------------------------------
 # Step 1: WASMモジュールのビルド
 # ---------------------------------------------------------------------------
@@ -99,6 +127,26 @@ else
       echo "  WARNING: $WASM_OUTPUT/$module.wasm が見つかりません"
     fi
   done
+fi
+
+# ---------------------------------------------------------------------------
+# Step 1B: ホスト側バイナリのビルド
+# ---------------------------------------------------------------------------
+echo "[Step 1B/8] ホスト側バイナリのビルド..."
+
+if command -v cargo &>/dev/null; then
+  if command -v nitro-cli &>/dev/null; then
+    # Nitro モード: Proxy のみホスト側で必要（TEE は Docker 内でビルド）
+    echo "  title-proxy をビルド中..."
+    cargo build --release --bin title-proxy
+  else
+    # Mock モード: TEE をホスト側で直接実行
+    echo "  title-tee をビルド中..."
+    cargo build --release --bin title-tee
+  fi
+  echo "  ホスト側バイナリ ビルド完了"
+else
+  echo "  SKIP: cargo が未インストール"
 fi
 
 # ---------------------------------------------------------------------------

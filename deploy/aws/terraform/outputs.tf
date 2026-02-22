@@ -34,3 +34,14 @@ output "security_group_id" {
   description = "セキュリティグループID"
   value       = aws_security_group.main.id
 }
+
+output "s3_access_key_id" {
+  description = "S3アクセスキーID（.env の S3_ACCESS_KEY に設定）"
+  value       = aws_iam_access_key.s3_user_key.id
+}
+
+output "s3_secret_access_key" {
+  description = "S3シークレットアクセスキー（.env の S3_SECRET_KEY に設定）"
+  value       = aws_iam_access_key.s3_user_key.secret
+  sensitive   = true
+}

@@ -50,8 +50,8 @@ su - ec2-user -c 'sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"'
 # --- Git ---
 dnf install -y git
 
-# --- ビルド依存 (OpenSSL, pkg-config) ---
-dnf install -y openssl-devel pkg-config
+# --- ビルド依存 (Cコンパイラ, OpenSSL, pkg-config, socat) ---
+dnf install -y gcc gcc-c++ openssl-devel pkg-config socat
 
 # --- Rust + wasm32ターゲット (WASMモジュールビルド + Dockerビルド用) ---
 su - ec2-user -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'

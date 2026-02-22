@@ -146,6 +146,44 @@ resource "aws_iam_instance_profile" "ec2_profile" {
 }
 
 # ---------------------------------------------------------------------------
+# IAM ユーザー (Gateway → S3 永続アクセスキー)
+# ---------------------------------------------------------------------------
+# Gateway の S3TempStorage は明示的なアクセスキーを要求するため、
+# IAMロールの一時クレデンシャル（SessionToken必須）では動作しない。
+# 永続アクセスキーを Terraform output で提供し、.env に設定する。
+
+resource "aws_iam_user" "s3_user" {
+  name = "${var.project_name}-s3-user"
+  tags = { Project = var.project_name }
+}
+
+resource "aws_iam_user_policy" "s3_user_access" {
+  name = "${var.project_name}-s3-user-access"
+  user = aws_iam_user.s3_user.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ]
+      Resource = [
+        aws_s3_bucket.uploads.arn,
+        "${aws_s3_bucket.uploads.arn}/*"
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_access_key" "s3_user_key" {
+  user = aws_iam_user.s3_user.name
+}
+
+# ---------------------------------------------------------------------------
 # セキュリティグループ
 # ---------------------------------------------------------------------------
 

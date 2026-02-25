@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # ファイルシステム WASMローダー
 //!
 //! 仕様書 §7.1

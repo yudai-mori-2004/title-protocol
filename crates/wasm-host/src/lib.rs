@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Title Protocol WASM実行環境
 //!
 //! 仕様書セクション7で定義されるWASM実行環境をwasmtimeを直接使用して実装する。

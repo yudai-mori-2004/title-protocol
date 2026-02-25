@@ -2,6 +2,9 @@
 name = "title-config"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/title-protocol/title-protocol"
+authors = ["Title Protocol Contributors"]
 description = "Title Protocol Anchor Solanaプログラム"
 
 [lib]

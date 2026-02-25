@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # c2pa-license-v1 Extension WASM モジュール
 //!
 //! 仕様書 §4.2: C2PAのCreative Workアサーションからライセンス情報を抽出する。

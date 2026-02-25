@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Title Protocol 共有型定義 (TypeScript)
  *

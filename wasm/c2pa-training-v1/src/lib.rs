@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # c2pa-training-v1 Extension WASM モジュール
 //!
 //! 仕様書 §4.2: C2PAの`c2pa.training-mining`アサーションからAI学習許諾フラグを抽出する。

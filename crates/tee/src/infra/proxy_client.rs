@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # vsock経由HTTPクライアント
 //!
 //! 仕様書 §6.4
 //!
 //! TEEはネットワークアクセスを持たないため、全ての外部HTTP通信は
-//! vsockプロキシ経由で行う。prototypeのenclave-c2paで動作実証済みの
-//! length-prefixedプロトコルを踏襲する。
+//! vsockプロキシ経由でlength-prefixedプロトコルを使用して行う。
 //!
 //! ## プロトコル (TEE → Proxy)
 //! ```text

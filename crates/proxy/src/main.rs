@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Title Protocol vsock HTTPプロキシ
 //!
 //! 仕様書 §6.4
 //!
 //! TEEにはネットワークアクセスがないため、全ての外部HTTP通信は
-//! このプロキシを経由する。`prototype/enclave-c2pa/proxy/` をベースに
-//! tokio非同期化した実装。
+//! このプロキシを経由する。
 //!
 //! ## プラットフォーム
 //! - Linux: vsock port 8000 でリッスン

@@ -1,4 +1,6 @@
 #!/usr/bin/env tsx
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * register-photo.ts — 実画像をSDK経由でregisterする実験スクリプト
  *
@@ -10,24 +12,36 @@
  *
  * Examples:
  *   # verify + sign (Arweave保存 → cNFT発行トランザクション取得)
- *   npx tsx register-photo.ts 54.238.1.100 ../--help/pixel_photo_ramen.jpg \
+ *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
  *     --wallet ~/.config/solana/id.json
  *
  *   # verify + sign + broadcast (実際にオンチェーン発行)
- *   npx tsx register-photo.ts 54.238.1.100 ../--help/pixel_photo_ramen.jpg \
+ *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
  *     --wallet ~/.config/solana/id.json --broadcast
  *
  *   # verify のみ (sign スキップ)
- *   npx tsx register-photo.ts 54.238.1.100 ../--help/pixel_photo_ramen.jpg \
+ *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
  *     --wallet ~/.config/solana/id.json --skip-sign
  *
+ *   # TEE port 4000が閉じている場合（encryption_pubkeyを直接指定）
+ *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
+ *     --wallet ~/.config/solana/id.json \
+ *     --encryption-pubkey "nwfxpl7+BSpSxxE+aK3flQA/Yq26/+JKe9kmjilDnUw="
+ *
  *   # 追加オプション
- *   npx tsx register-photo.ts 54.238.1.100 ../--help/pixel_photo_ramen.jpg \
+ *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
  *     --wallet ~/.config/solana/id.json \
  *     --port 3000 \
  *     --rpc https://api.devnet.solana.com \
  *     --processors core-c2pa,phash-v1
  */
+
+import { webcrypto } from "node:crypto";
+// Node.js 20 では crypto.subtle がグローバルに存在しない場合がある
+if (!globalThis.crypto?.subtle) {
+  // @ts-ignore
+  globalThis.crypto = webcrypto;
+}
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -37,11 +51,9 @@ import {
   Keypair,
   Transaction,
   LAMPORTS_PER_SOL,
-  sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
-import { Uploader } from "@irys/upload";
-import { Solana } from "@irys/upload-solana";
+// @irys/upload は crypto.subtle を破壊するため動的importで遅延読み込み
 import {
   TitleClient,
   type TitleClientConfig,
@@ -66,6 +78,7 @@ interface Args {
   skipSign: boolean;
   broadcast: boolean;
   processorIds: string[];
+  encryptionPubkey: string | null;
 }
 
 function parseArgs(): Args {
@@ -85,9 +98,10 @@ Required:
 Options:
   --port <n>           Gateway port (default: 3000)
   --rpc <url>          Solana RPC URL (default: env SOLANA_RPC_URL or devnet)
-  --skip-sign          Stop after /verify, don't call /sign
-  --broadcast          After /sign, co-sign and broadcast tx to Solana
-  --processors <ids>   Comma-separated processor IDs (default: core-c2pa)
+  --skip-sign              Stop after /verify, don't call /sign
+  --broadcast              After /sign, co-sign and broadcast tx to Solana
+  --processors <ids>       Comma-separated processor IDs (default: core-c2pa)
+  --encryption-pubkey <b64> TEE encryption pubkey (skips TEE port 4000 access)
 `);
     process.exit(0);
   }
@@ -102,6 +116,7 @@ Options:
   let skipSign = false;
   let broadcast = false;
   let processorIds = ["core-c2pa"];
+  let encryptionPubkey: string | null = null;
 
   for (let i = 2; i < args.length; i++) {
     switch (args[i]) {
@@ -123,6 +138,9 @@ Options:
       case "--processors":
         processorIds = args[++i].split(",");
         break;
+      case "--encryption-pubkey":
+        encryptionPubkey = args[++i];
+        break;
     }
   }
 
@@ -140,6 +158,7 @@ Options:
     skipSign,
     broadcast,
     processorIds,
+    encryptionPubkey,
   };
 }
 
@@ -162,6 +181,9 @@ function loadKeypair(walletPath: string): Keypair {
  * ユーザーwalletの秘密鍵で署名する。
  */
 async function createIrysUploader(keypair: Keypair, rpcUrl: string) {
+  // 暗号化処理の後にインポートすることで crypto.subtle 破壊を回避
+  const { Uploader } = await import("@irys/upload");
+  const { Solana } = await import("@irys/upload-solana");
   const secretKeyBs58 = bs58.encode(keypair.secretKey);
   const irys = await Uploader(Solana)
     .withWallet(secretKeyBs58)
@@ -254,28 +276,33 @@ async function main() {
   // Step 2: TEE暗号化公開鍵を取得
   // ---------------------------------------------------------------------------
   log("STEP 2", "TEE encryption_pubkey を取得中...");
-  const teeDirectUrl = `http://${args.gatewayHost}:4000`;
   let encryptionPubkey: string;
-  try {
-    const teeInfoRes = await fetch(
-      `${teeDirectUrl}/.well-known/title-node-info`
-    );
-    if (teeInfoRes.ok) {
-      const teeInfo = (await teeInfoRes.json()) as any;
-      encryptionPubkey = teeInfo.encryption_pubkey;
-      log(
-        "STEP 2",
-        `encryption_pubkey: ${encryptionPubkey.slice(0, 20)}...`
+  if (args.encryptionPubkey) {
+    encryptionPubkey = args.encryptionPubkey;
+    log("STEP 2", `encryption_pubkey (CLI指定): ${encryptionPubkey.slice(0, 20)}...`);
+  } else {
+    const teeDirectUrl = `http://${args.gatewayHost}:4000`;
+    try {
+      const teeInfoRes = await fetch(
+        `${teeDirectUrl}/.well-known/title-node-info`
       );
-    } else {
-      throw new Error(`TEE直接アクセス失敗: HTTP ${teeInfoRes.status}`);
+      if (teeInfoRes.ok) {
+        const teeInfo = (await teeInfoRes.json()) as any;
+        encryptionPubkey = teeInfo.encryption_pubkey;
+        log(
+          "STEP 2",
+          `encryption_pubkey: ${encryptionPubkey.slice(0, 20)}...`
+        );
+      } else {
+        throw new Error(`TEE直接アクセス失敗: HTTP ${teeInfoRes.status}`);
+      }
+    } catch (e: any) {
+      console.error(`TEEからencryption_pubkey取得に失敗: ${e.message}`);
+      console.error(
+        "  port 4000が閉じている場合: --encryption-pubkey <base64> を指定してください"
+      );
+      process.exit(1);
     }
-  } catch (e: any) {
-    console.error(`TEEからencryption_pubkey取得に失敗: ${e.message}`);
-    console.error(
-      "  TEEが直接アクセス可能であることを確認してください (port 4000)"
-    );
-    process.exit(1);
   }
 
   // ---------------------------------------------------------------------------
@@ -488,16 +515,20 @@ async function main() {
       const txBytes = Buffer.from(signResponse.partial_txs[i], "base64");
       const tx = Transaction.from(txBytes);
 
-      // ユーザーwalletで共同署名
+      // ユーザーwalletで共同署名（partialSignでTEEの既存署名を保持）
       tx.partialSign(keypair);
 
       log("STEP 7", `  tx[${i}] をSolanaに送信中...`);
       try {
-        const sig = await sendAndConfirmTransaction(connection, tx, [keypair], {
+        const rawTx = tx.serialize();
+        const sig = await connection.sendRawTransaction(rawTx, {
           skipPreflight: false,
-          commitment: "confirmed",
+          preflightCommitment: "confirmed",
         });
-        log("STEP 7", `  tx[${i}] 確認済み: ${sig}`);
+        log("STEP 7", `  tx[${i}] 送信完了: ${sig}`);
+        log("STEP 7", `  確認待ち...`);
+        await connection.confirmTransaction(sig, "confirmed");
+        log("STEP 7", `  tx[${i}] 確認済み!`);
         log("STEP 7", `  https://explorer.solana.com/tx/${sig}?cluster=devnet`);
       } catch (e: any) {
         log("ERROR", `  tx[${i}] ブロードキャスト失敗: ${e.message}`);

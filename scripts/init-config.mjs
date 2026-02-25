@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Title Protocol ローカル開発環境 Global Config初期化スクリプト
  *

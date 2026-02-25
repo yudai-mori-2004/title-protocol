@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Gateway認証検証ユーティリティ
 //!
 //! 仕様書 §6.2

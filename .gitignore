@@ -4,7 +4,6 @@ target/
 # Node.js
 node_modules/
 dist/
-package-lock.json
 
 # AWS Nitro Enclaves
 *.eif
@@ -14,6 +13,7 @@ deploy/aws/terraform/.terraform/
 deploy/aws/terraform/*.tfstate
 deploy/aws/terraform/*.tfstate.backup
 deploy/aws/terraform/.terraform.lock.hcl
+deploy/aws/terraform/tfplan
 
 # WASM build output (deploy時に生成)
 wasm-modules/

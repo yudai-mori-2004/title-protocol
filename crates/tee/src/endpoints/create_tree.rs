@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # /create-tree エンドポイント
 //!
 //! 仕様書 §6.4 Step 2

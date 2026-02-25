@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Gateway設定・共有状態
 //!
 //! 仕様書 §6.2
@@ -21,7 +23,7 @@ pub struct GatewayState {
     pub signing_key: Ed25519SigningKey,
     /// Gateway認証用Ed25519公開鍵
     pub verifying_key: Ed25519VerifyingKey,
-    /// Temporary Storage（S3互換等、トレイトで抽象化）
+    /// Temporary Storage（トレイトで抽象化）
     /// 仕様書 §6.3
     pub temp_storage: Box<dyn TempStorage>,
     /// Solana RPC URL（sign-and-mint用）

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # hardware-google Extension WASM モジュール
 //!
 //! 仕様書 §4.2: C2PAのハードウェア署名チェーンを検証し、

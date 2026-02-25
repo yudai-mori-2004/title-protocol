@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # TEEエンドポイント
 //!
 //! 仕様書 §6.4

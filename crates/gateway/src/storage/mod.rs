@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Temporary Storage
 //!
 //! 仕様書 §6.3
 //!
 //! Gateway運用者が選択可能なTemporary Storageの抽象インターフェース。
-//! S3互換ストレージ実装は `s3` サブモジュールを参照。
 
 #[cfg(feature = "vendor-aws")]
 pub mod s3;
@@ -25,8 +26,7 @@ pub struct PresignedUrls {
 /// Temporary Storageの抽象インターフェース。
 /// 仕様書 §6.3
 ///
-/// Gateway運用者はS3互換ストレージ（MinIO, AWS S3, Cloudflare R2等）や
-/// その他のストレージバックエンドを実装として選択できる。
+/// Gateway運用者は任意のストレージバックエンドを実装として選択できる。
 #[async_trait::async_trait]
 pub trait TempStorage: Send + Sync {
     /// 署名付きアップロードURL（PUT）とダウンロードURL（GET）を生成する。

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # pHash Extension WASM モジュール
 //!
 //! 仕様書 §3.2: 知覚ハッシュを算出する内部完結型Extension。

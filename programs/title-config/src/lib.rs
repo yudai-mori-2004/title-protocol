@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Title Protocol Anchor Solanaプログラム
 //!
 //! 仕様書 §5.2 Step 1: Global Config PDAの管理。
 //!
 //! ## 命令
 //! - `initialize`: Global Configの初期化
+//! - `update_collections`: コレクションMintの更新
 //! - `update_tee_nodes`: 信頼されたTEEノードリストの更新
 //! - `update_wasm_modules`: 信頼されたWASMモジュールリストの更新
 //! - `update_tsa_keys`: 信頼するTSA鍵リストの更新
@@ -27,6 +30,19 @@ pub mod title_config {
     ) -> Result<()> {
         let config = &mut ctx.accounts.global_config;
         config.authority = ctx.accounts.authority.key();
+        config.core_collection_mint = core_collection_mint;
+        config.ext_collection_mint = ext_collection_mint;
+        Ok(())
+    }
+
+    /// コレクションMintアドレスを更新する。
+    /// 仕様書 §5.2 Step 1
+    pub fn update_collections(
+        ctx: Context<UpdateConfig>,
+        core_collection_mint: Pubkey,
+        ext_collection_mint: Pubkey,
+    ) -> Result<()> {
+        let config = &mut ctx.accounts.global_config;
         config.core_collection_mint = core_collection_mint;
         config.ext_collection_mint = ext_collection_mint;
         Ok(())

@@ -2,12 +2,30 @@
   "name": "@title-protocol/sdk",
   "version": "0.1.0",
   "description": "Title Protocol TypeScript SDK",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/title-protocol/title-protocol.git",
+    "directory": "sdk/ts"
+  },
+  "homepage": "https://github.com/title-protocol/title-protocol/tree/main/sdk/ts",
+  "keywords": ["solana", "title-protocol", "c2pa", "tee", "cnft", "attribution"],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "!dist/__tests__"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "source ~/.nvm/nvm.sh && nvm use 24 --silent && node --test dist/__tests__/*.test.js"
+    "test": "node --test dist/__tests__/*.test.js"
   },
   "dependencies": {
     "@noble/curves": "^1.8.0",

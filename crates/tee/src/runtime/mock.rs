@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # ローカル開発用モックランタイム
 //!
 //! 仕様書 §6.4

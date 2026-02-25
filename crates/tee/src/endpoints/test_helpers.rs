@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # エンドポイントテスト用共通ヘルパー
 //!
 //! verify, signテストで共有するモックサーバー群。

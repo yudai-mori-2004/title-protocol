@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # GET /.well-known/title-node-info
 //!
 //! 仕様書 §6.2

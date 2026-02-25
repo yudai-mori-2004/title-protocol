@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # WASMバイナリローダー
 //!
 //! WASM Extensionバイナリの取得を抽象化する。

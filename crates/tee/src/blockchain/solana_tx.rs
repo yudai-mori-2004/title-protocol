@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Solanaトランザクション構築ヘルパー
 //!
 //! 仕様書 §5.1, §6.4

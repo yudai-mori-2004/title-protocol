@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Length-prefixed プロトコル
 //!
 //! 仕様書 §6.4
 //!
 //! TEE ↔ Proxy間の通信に使用するlength-prefixedバイナリプロトコル。
-//! `prototype/enclave-c2pa/proxy/` と同一仕様。
 //!
 //! ## TEE → Proxy
 //! ```text

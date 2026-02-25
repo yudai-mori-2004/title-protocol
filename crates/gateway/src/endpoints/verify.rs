@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # POST /verify
 //!
 //! 仕様書 §6.2

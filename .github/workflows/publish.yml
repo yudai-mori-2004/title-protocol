@@ -1,0 +1,64 @@
+name: Publish npm packages
+
+on:
+  push:
+    tags:
+      - "sdk-v*"
+      - "indexer-v*"
+
+jobs:
+  publish-sdk:
+    name: Publish SDK
+    if: startsWith(github.ref, 'refs/tags/sdk-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install & Build
+        working-directory: sdk/ts
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish
+        working-directory: sdk/ts
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-indexer:
+    name: Publish Indexer
+    if: startsWith(github.ref, 'refs/tags/indexer-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install & Build
+        working-directory: indexer
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish
+        working-directory: indexer
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

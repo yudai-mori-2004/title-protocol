@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Title Protocol 暗号処理
 //!
 //! 仕様書セクション1.1およびセクション6.4で定義されるハイブリッド暗号化仕様を実装する。

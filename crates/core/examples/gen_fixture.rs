@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! C2PAテストフィクスチャ生成ツール
 //!
 //! E2Eテスト用のC2PA署名済みテスト画像を生成する。

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Extension処理: WASM実行
 //!
 //! 仕様書 §3.1, §5.1 Step 5, §7.1

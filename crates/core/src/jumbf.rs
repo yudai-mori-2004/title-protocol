@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! JUMBF（ISO 19566-5）の最小限パーサー。
 //!
 //! C2PA JUMBF データから特定マニフェストの COSE 署名バイト列を抽出する。

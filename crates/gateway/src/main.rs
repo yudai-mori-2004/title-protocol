@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Title Protocol Gateway
 //!
 //! 仕様書 §6.2
@@ -31,18 +33,17 @@ use title_types::*;
 use config::GatewayState;
 
 /// Temporary Storageを構築する。
-/// vendor-aws feature有効時はS3互換ストレージを使用する。
 #[cfg(feature = "vendor-aws")]
 fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
     Ok(Box::new(storage::S3TempStorage::from_env()?))
 }
 
-/// vendor-aws feature無効時は起動時エラーで通知する。
+/// TempStorage実装が有効でない場合は起動時エラーで通知する。
 #[cfg(not(feature = "vendor-aws"))]
 fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
     anyhow::bail!(
-        "title-gatewayの実行にはvendor-aws featureが必要です。\
-         cargo run -p title-gateway --features vendor-aws で起動してください"
+        "TempStorage実装が見つかりません。\
+         ベンダー実装を有効にしてビルドしてください"
     );
 }
 
@@ -74,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // Temporary Storage（S3互換）
+    // Temporary Storage
     let temp_storage = create_temp_storage()?;
 
     // Solana RPC（sign-and-mint用、オプション）

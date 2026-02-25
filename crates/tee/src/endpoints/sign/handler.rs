@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! /sign ハンドラ実装
 
 use std::sync::Arc;

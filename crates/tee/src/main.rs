@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Title Protocol TEEサーバー
 //!
 //! 仕様書セクション6.4で定義されるTEEサーバーのエントリポイント。

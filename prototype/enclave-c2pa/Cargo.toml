@@ -1,4 +1,0 @@
-# Cargo.toml
-[workspace]
-members = ["enclave", "proxy", "parent", "wasm-brightness"]
-resolver = "2"

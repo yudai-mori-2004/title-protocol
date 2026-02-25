@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # TEE設定・共有状態
 //!
 //! 仕様書 §6.4

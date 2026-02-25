@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # AWS Nitro Attestation Document 検証
 //!
 //! 仕様書 §5.2 Step 4.1

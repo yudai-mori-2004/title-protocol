@@ -1,13 +1,32 @@
 {
   "name": "@title-protocol/indexer",
   "version": "0.1.0",
-  "description": "Title Protocol cNFT インデクサ",
+  "description": "Title Protocol cNFT Indexer",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/title-protocol/title-protocol.git",
+    "directory": "indexer"
+  },
+  "homepage": "https://github.com/title-protocol/title-protocol/tree/main/indexer",
+  "keywords": ["solana", "title-protocol", "cnft", "indexer", "das"],
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "!dist/__tests__"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
-    "test": "source ~/.nvm/nvm.sh && nvm use 24 --silent && node --test dist/__tests__/*.test.js"
+    "test": "node --test dist/__tests__/*.test.js"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",

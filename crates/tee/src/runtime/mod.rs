@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # TEEランタイム抽象化
 //!
 //! 仕様書 §6.4

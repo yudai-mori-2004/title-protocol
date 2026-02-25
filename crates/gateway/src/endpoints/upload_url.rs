@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # POST /upload-url
 //!
 //! 仕様書 §6.2

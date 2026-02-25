@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # /sign エンドポイント
 //!
 //! 仕様書 §6.4 /signフェーズの内部処理

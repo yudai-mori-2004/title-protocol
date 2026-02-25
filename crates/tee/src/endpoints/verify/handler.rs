@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # /verify メインハンドラ
 //!
 //! 仕様書 §1.1 Phase 1, §6.4

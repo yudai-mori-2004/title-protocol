@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # S3互換 Temporary Storage 実装
 //!
 //! 仕様書 §6.3

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Core処理: C2PA検証 + 来歴グラフ構築
 //!
 //! 仕様書 §2.1, §2.2, §5.1 Step 4

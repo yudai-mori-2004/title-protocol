@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # /verify エンドポイント
 //!
 //! 仕様書 §6.4 /verifyフェーズの内部処理

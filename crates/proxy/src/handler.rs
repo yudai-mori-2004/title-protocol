@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # HTTP転送ハンドラ
 //!
 //! 仕様書 §6.4
@@ -9,7 +11,7 @@ use crate::protocol;
 /// TEEから受け取ったHTTPリクエストを外部に転送し、レスポンスを返す。
 /// 仕様書 §6.4
 ///
-/// prototypeと同一のHTTPメソッドサポート（GET, POST）。
+/// HTTPメソッドサポート: GET, POST。
 /// 未サポートのメソッドはステータス400を返す。
 pub async fn forward_http(method: &str, url: &str, body: &[u8]) -> (u32, Vec<u8>) {
     let client = reqwest::Client::builder()

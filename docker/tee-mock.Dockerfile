@@ -1,17 +1,18 @@
-# Title Protocol TEE Mock Dockerfile (ローカル開発用)
+# Title Protocol TEE Mock Dockerfile
 #
-# MockRuntimeを使用してTEEハードウェアなしで動作する。
+# MockRuntimeを使用してTEEハードウェアなしでノードを動作させる。
 
 # --- ビルドステージ ---
-FROM amazonlinux:2023 AS builder
+FROM debian:bookworm-slim AS builder
 
-RUN dnf install -y \
+RUN apt-get update && apt-get install -y \
     gcc \
-    gcc-c++ \
-    openssl-devel \
+    g++ \
+    libssl-dev \
     make \
     pkg-config \
-    && dnf clean all
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV OPENSSL_NO_VENDOR=1
 
@@ -25,12 +26,12 @@ COPY crates/ crates/
 RUN cargo build --release --bin title-tee
 
 # --- 実行ステージ ---
-FROM amazonlinux:2023
+FROM debian:bookworm-slim
 
-RUN dnf install -y \
-    openssl \
+RUN apt-get update && apt-get install -y \
+    libssl3 \
     ca-certificates \
-    && dnf clean all
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee
 

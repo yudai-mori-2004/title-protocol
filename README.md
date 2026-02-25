@@ -114,10 +114,54 @@ By utilizing Solana's Compressed NFTs (Bubblegum), the protocol can handle milli
 ## 5. Technical Stack
 
 * **Core Logic:** Rust
-* **Runtime:** AWS Nitro Enclaves (TEE)
+* **TEE Runtime:** Abstracted via `TeeRuntime` trait (reference implementation: AWS Nitro Enclaves)
+* **Temporary Storage:** Abstracted via `TempStorage` trait (reference implementation: S3-compatible)
 * **Blockchain:** Solana (Compressed NFTs)
-* **Storage:** Arweave (via Irys)
+* **Off-chain Storage:** Arweave (via Irys)
 * **Standards:** C2PA (Coalition for Content Provenance and Authenticity)
+
+## 6. Vendor Separation
+
+The protocol core is **vendor-neutral**. All vendor-specific code is isolated behind Cargo feature flags and can be cleanly excluded.
+
+### Protocol Core (vendor-neutral)
+
+| Component | Path | Description |
+|-----------|------|-------------|
+| Type definitions | `crates/types/` | Shared data structures |
+| Cryptography | `crates/crypto/` | ECDH, HKDF, AES-GCM, Ed25519, attestation verification |
+| C2PA verification | `crates/core/` | Provenance graph construction |
+| WASM host | `crates/wasm-host/` | Deterministic extension execution (wasmtime) |
+| TEE server | `crates/tee/` | Endpoint logic, mock runtime |
+| Gateway server | `crates/gateway/` | HTTP API, `TempStorage` trait |
+| Proxy | `crates/proxy/` | HTTP proxy (TCP fallback) |
+| WASM modules | `wasm/` | phash, hardware-proof, training, license |
+| Solana program | `programs/title-config/` | On-chain Global Config |
+| TypeScript SDK | `sdk/ts/` | Client library |
+| Indexer | `indexer/` | cNFT event indexer |
+
+### Vendor Implementation: AWS (`vendor-aws` feature)
+
+| Component | Path | What it adds |
+|-----------|------|-------------|
+| Nitro TEE runtime | `crates/tee/src/runtime/nitro.rs` | `TeeRuntime` impl using NSM API |
+| Nitro attestation | `crates/crypto/src/attestation/nitro.rs` | AWS attestation document verification |
+| S3 storage | `crates/gateway/src/storage/s3.rs` | `TempStorage` impl using S3-compatible API |
+| vsock transport | `crates/proxy/` | vsock listener (Linux/Nitro only) |
+| Deployment | `deploy/aws/` | Terraform, Docker, setup scripts |
+| Docker images | `docker/` | amazonlinux-based container images |
+
+### Building without vendor features
+
+```bash
+# Protocol core only (no AWS dependencies)
+cargo check --workspace --no-default-features
+
+# With AWS vendor implementation (default)
+cargo check --workspace
+```
+
+To create a vendor-neutral distribution, exclude: `deploy/`, `docker/`, and build with `--no-default-features`. The `TeeRuntime` and `TempStorage` traits provide the extension points for alternative vendor implementations.
 
 ---
 
@@ -142,81 +186,27 @@ cd indexer && npm ci && npm run build && cd ..
 
 ```
 crates/
-  types/          — Shared type definitions (§5)
-  crypto/         — Cryptographic primitives: ECDH, HKDF, AES-GCM, Ed25519 (§6.4)
-  core/           — C2PA verification & provenance graph construction (§2)
-  wasm-host/      — WASM execution engine using wasmtime (§7.1)
-  tee/            — TEE server: /verify, /sign, /create-tree (§6.4)
-  gateway/        — Gateway HTTP server: upload-url, relay, sign-and-mint (§6.2)
-  proxy/          — vsock HTTP proxy for TEE network isolation (§6.4)
+  types/          — Shared type definitions
+  crypto/         — Cryptographic primitives: ECDH, HKDF, AES-GCM, Ed25519
+  core/           — C2PA verification & provenance graph construction
+  wasm-host/      — WASM execution engine using wasmtime
+  tee/            — TEE server: /verify, /sign, /create-tree
+  gateway/        — Gateway HTTP server: upload-url, relay, sign-and-mint
+  proxy/          — vsock HTTP proxy for TEE network isolation
 wasm/             — WASM modules: phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1
 programs/
-  title-config/   — Anchor Solana program for Global Config PDA (§8)
+  title-config/   — Anchor Solana program for Global Config PDA
 sdk/ts/           — TypeScript client SDK: register, crypto (E2EE), storage
-indexer/           — TypeScript cNFT indexer: webhook, poller, DAS API
-prototype/        — Reference implementations (read-only)
-docs/                — Versioned development docs (SPECS → COVERAGE → tasks per version)
-  v1/              — Initial implementation (2026-02-21, complete)
-    SPECS_JA.md    — Technical specification (Japanese, ver.9)
-    COVERAGE.md    — Spec-to-implementation coverage (cumulative)
-    tasks/         — AI-driven development tasks (01–13) + work notes
+indexer/          — TypeScript cNFT indexer: webhook, poller, DAS API
+deploy/           — Production deployment (AWS Nitro Enclaves)
+docs/             — Versioned development documentation
 ```
 
-## Running a Node (Local Development)
+## Running a Node
 
-```bash
-# 1. Start infrastructure services
-docker compose up -d
-
-# 2. Initialize local environment (MinIO bucket, Solana config, etc.)
-bash scripts/setup-local.sh
-
-# 3. Run E2E tests
-cd tests/e2e && npm install && npx tsc && node --test dist/e2e.test.js
-```
+Running a Title Protocol node requires a vendor-specific TEE implementation. See [deploy/aws/README.md](deploy/aws/README.md) for the AWS Nitro Enclaves reference deployment.
 
 See `.env.example` for all available configuration options.
-
-## Deploying to Devnet
-
-### Prerequisites
-
-- EC2 instance (c5.xlarge recommended) with Docker & Docker Compose
-- Solana CLI configured for devnet
-- Anchor program deployed: `anchor deploy --provider.cluster devnet`
-- `.env` configured (copy from `.env.example`)
-
-### Steps
-
-```bash
-# 1. Load environment variables
-source .env
-
-# 2. Configure Solana CLI
-solana config set --url "$SOLANA_RPC_URL"
-solana config set --keypair ~/.config/solana/id.json
-
-# 3. Build & start services (use docker-compose.yml for mock TEE)
-docker compose build
-docker compose up -d
-
-# 4. Initialize Global Config & create Merkle Tree
-#    This script will:
-#    - Initialize the on-chain Global Config PDA
-#    - Register TEE node information
-#    - Fund the TEE internal wallet
-#    - Call /create-tree and broadcast the transaction
-node scripts/init-config.mjs --rpc "$SOLANA_RPC_URL"
-```
-
-### Important Notes
-
-- **TEE is stateless**: Keys are regenerated on every restart. After restarting `tee-mock`, re-run `init-config.mjs` to create a new Merkle Tree.
-- **`/create-tree` is one-shot**: Each TEE instance only allows one `/create-tree` call per lifecycle.
-- **Port conflicts**: Ensure ports 3000 (Gateway), 4000 (TEE), 5000 (Indexer) are free before starting.
-- **SOL funding**: The TEE internal wallet needs SOL for tree creation rent (~0.5 SOL for depth-14 tree).
-- For production (Nitro Enclave), use `deploy/aws/docker-compose.production.yml` instead.
-- See `docs/v1/tasks/17-devnet-deploy/README.md` for detailed operational notes.
 
 ## For Developers
 
@@ -226,6 +216,14 @@ This project uses an AI-driven development workflow:
 - **`docs/`** — Versioned documentation: each version contains SPECS (what to build) → COVERAGE (what's built) → tasks (how to build it + notes)
 - **`docs/v1/`** — Initial implementation phase (2026-02-21, all 13 tasks complete)
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and pull request guidelines.
+
+## Security
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
 ## License
 
-This project is open-source infrastructure. See LICENSE for details.
+Apache-2.0 — see [LICENSE](LICENSE) for details.

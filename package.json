@@ -1,9 +1,9 @@
 {
   "name": "title-protocol",
   "private": true,
+  "license": "Apache-2.0",
   "workspaces": [
     "sdk/ts",
-    "indexer",
-    "tests/e2e"
+    "indexer"
   ]
 }

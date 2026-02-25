@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Title Protocol コンテンツ登録スクリプト（クライアントE2E）
  *

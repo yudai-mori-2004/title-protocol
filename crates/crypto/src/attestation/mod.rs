@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Attestation Document 検証
 //!
 //! 仕様書 §5.2 Step 4.1

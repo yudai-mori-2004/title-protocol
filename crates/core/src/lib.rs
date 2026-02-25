@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # Title Protocol Core
 //!
 //! 仕様書セクション2で定義されるC2PA検証と来歴グラフ構築を実装する。

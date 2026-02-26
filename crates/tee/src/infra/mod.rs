@@ -6,7 +6,7 @@
 //!
 //! TEEの外部通信・認証・セキュリティに関するモジュール。
 //! - `gateway_auth`: Gateway認証検証
-//! - `proxy_client`: vsock/HTTPプロキシクライアント
+//! - `proxy_client`: TEE外部通信プロキシクライアント
 //! - `security`: DoS対策・リソース制限
 
 pub mod gateway_auth;

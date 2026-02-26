@@ -7,8 +7,7 @@ Thank you for your interest in contributing to Title Protocol. This document pro
 | Tool | Version | Purpose |
 |------|---------|---------|
 | Rust | 1.82+ | Core logic, TEE, Gateway, Proxy, WASM modules |
-| Node.js | 20+ (24+ for tests) | TypeScript SDK, Indexer, scripts |
-| Docker Compose | v2+ | Local development environment |
+| Node.js | 24+ | TypeScript SDK, Indexer, scripts |
 | Solana CLI | 1.18+ | Blockchain interaction, key management |
 | Anchor CLI | 0.30+ | Solana program builds (optional) |
 
@@ -16,7 +15,7 @@ Thank you for your interest in contributing to Title Protocol. This document pro
 
 ```bash
 # Clone the repository
-git clone https://github.com/title-protocol/title-protocol.git
+git clone https://github.com/yudai-mori-2004/title-protocol.git
 cd title-protocol
 
 # Build and test the Rust workspace
@@ -73,7 +72,7 @@ cargo check --workspace --no-default-features
 cargo check --workspace
 ```
 
-The `vendor-aws` feature controls: S3 temporary storage, AWS Nitro TEE runtime, and vsock transport. Alternative vendor implementations can be added by implementing the `TeeRuntime` and `TempStorage` traits.
+The `vendor-aws` feature includes: S3-based `TempStorage` implementation, AWS Nitro `TeeRuntime` implementation, and vsock transport. The `TeeRuntime` trait (`crates/tee/src/runtime/`) and `TempStorage` trait (`crates/gateway/src/storage/`) define the vendor-neutral interfaces — alternative implementations (other cloud TEEs, MinIO, etc.) can be added by implementing these traits.
 
 ## Coding Standards
 
@@ -139,7 +138,7 @@ This project uses an AI-driven development workflow:
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/title-protocol/title-protocol/issues) for bug reports and feature requests
+- Use [GitHub Issues](https://github.com/yudai-mori-2004/title-protocol/issues) for bug reports and feature requests
 - For security vulnerabilities, see [SECURITY.md](SECURITY.md)
 
 ## License

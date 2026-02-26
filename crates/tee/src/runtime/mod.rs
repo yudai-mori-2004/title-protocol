@@ -7,9 +7,12 @@
 //! TEEの鍵生成・Attestation取得を抽象化するトレイト。
 //! 環境変数 `TEE_RUNTIME` で実装を切り替える。
 //!
-//! 現在のランタイム実装:
+//! VM型TEE（Remote Attestation対応のConfidential Computing環境）を対象とし、
+//! ベンダー実装はfeature flagで分離される。
+//!
+//! ランタイム実装:
 //! - `mock` — ローカル開発・テスト用（メモリ内鍵生成）
-//! - `nitro` — AWS Nitro Enclaves（NSM API経由）
+//! - （ベンダー実装はfeature flagで追加される）
 
 pub mod mock;
 #[cfg(feature = "vendor-aws")]

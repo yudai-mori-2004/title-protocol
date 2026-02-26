@@ -32,7 +32,7 @@ pub struct TeeAppState {
     pub runtime: Box<dyn TeeRuntime + Send + Sync>,
     /// サーバーの現在の状態
     pub state: RwLock<TeeState>,
-    /// vsockプロキシの接続先アドレス（macOS: "127.0.0.1:8000"）
+    /// 外部通信プロキシの接続先アドレス（"direct" で直接HTTP、それ以外はTCPアドレス）
     pub proxy_addr: String,
     /// Merkle Treeアドレス（/create-tree後に設定される）
     pub tree_address: RwLock<Option<[u8; 32]>>,

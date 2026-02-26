@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in Title Protocol, please report it responsibly.
 
-**Preferred method:** [GitHub Security Advisories](https://github.com/title-protocol/title-protocol/security/advisories/new)
+**Preferred method:** [GitHub Security Advisories](https://github.com/yudai-mori-2004/title-protocol/security/advisories/new)
 
 **Alternative:** Email `contact@titleprotocol.org`
 
@@ -28,7 +28,7 @@ The following components are in scope for security reports:
 
 ### Out of Scope
 
-- `experiments/` — Development experiments, not deployed
+- `integration-tests/` — Integration tests, not deployed
 - `docs/` — Documentation only
 
 ## Response Timeline

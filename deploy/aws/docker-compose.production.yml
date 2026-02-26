@@ -1,16 +1,13 @@
-# Title Protocol 本番デプロイ用 Docker Compose
+# Title Protocol — AWS Production Docker Compose
 #
-# ローカル開発版（docker-compose.yml）との違い:
-#   - MinIO, arlocal を除外（AWS S3 + Arweave/Irys を使用）
-#   - TEE は Enclave 内で稼働（Docker外）
-#   - Gateway は外部S3に接続
-#   - PostgreSQL は永続ボリューム付き
+# Runs Gateway, Indexer, and PostgreSQL as containers.
+# TEE + Proxy run separately inside the Nitro Enclave (not in Docker).
 #
-# 前提:
-#   - .env に本番設定が記載済み
-#   - TEE + Proxy は別途 Enclave + systemd で起動
+# Prerequisites:
+#   - .env is configured with production values (see .env.example)
+#   - TEE + Proxy are started via Enclave + systemd
 #
-# 使い方:
+# Usage:
 #   docker compose -f deploy/aws/docker-compose.production.yml up -d
 
 services:

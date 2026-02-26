@@ -101,18 +101,8 @@ export interface TrustedTeeNode {
   expected_measurements: ExpectedMeasurements;
 }
 
-/** TEEの期待される測定値。仕様書 §5.2 Step 1 */
-export interface ExpectedMeasurements {
-  pcr0?: string;
-  pcr1?: string;
-  pcr2?: string;
-  measurement?: string;
-  mrtd?: string;
-  rtmr0?: string;
-  rtmr1?: string;
-  rtmr2?: string;
-  rtmr3?: string;
-}
+/** TEEの期待される測定値。tee_typeに応じてキー名が異なる。仕様書 §5.2 Step 1 */
+export type ExpectedMeasurements = Record<string, string>;
 
 /** 信頼されたWASMモジュール。仕様書 §5.2 Step 1 */
 export interface TrustedWasmModule {

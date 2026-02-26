@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Title Protocol Core - C2PA検証 + 来歴グラフ構築"
+description = "Title Protocol Core: C2PA verification and provenance graph construction"
 
 [dependencies]
 title-types = { path = "../types" }

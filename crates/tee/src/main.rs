@@ -43,7 +43,11 @@ async fn main() -> anyhow::Result<()> {
             Box::new(runtime::nitro::NitroRuntime::new())
         }
         other => {
-            anyhow::bail!("未対応のTEEランタイム: {other} (対応: mock, nitro)");
+            #[allow(unused_mut)]
+            let mut supported = vec!["mock"];
+            #[cfg(feature = "vendor-aws")]
+            supported.push("nitro");
+            anyhow::bail!("未対応のTEEランタイム: {other} (対応: {})", supported.join(", "));
         }
     };
 

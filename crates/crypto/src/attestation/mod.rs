@@ -5,15 +5,15 @@
 //! 仕様書 §5.2 Step 4.1
 //!
 //! TEE種別に応じたAttestation Documentの検証を提供する。
-//! 各TEE実装はサブモジュールとして配置される。
+//! 各TEE実装はサブモジュールとして配置され、対応TEE種別はfeature flagに応じて追加される。
 //!
-//! ## 対応TEE種別
+//! ## TEE種別と測定値
 //!
-//! | `tee_type` | サブモジュール | Attestation形式 | 測定値 |
-//! |------------|--------------|----------------|--------|
-//! | `aws_nitro` | [`nitro`] | COSE Sign1 + CBOR | PCR0, PCR1, PCR2 |
-//! | `amd_sev_snp` | （将来実装） | AMD SEV-SNP Report | MEASUREMENT |
-//! | `intel_tdx` | （将来実装） | Intel TDX Quote | MRTD, RTMR0〜RTMR3 |
+//! | `tee_type` | Attestation形式 | 測定値キー |
+//! |------------|----------------|-----------|
+//! | `aws_nitro` | COSE Sign1 + CBOR | PCR0, PCR1, PCR2 |
+//! | `amd_sev_snp` | AMD SEV-SNP Report | MEASUREMENT |
+//! | `intel_tdx` | Intel TDX Quote | MRTD, RTMR0〜RTMR3 |
 
 #[cfg(feature = "vendor-aws")]
 pub mod nitro;

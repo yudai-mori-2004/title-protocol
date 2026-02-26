@@ -5,10 +5,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/title-protocol/title-protocol.git",
+    "url": "https://github.com/yudai-mori-2004/title-protocol.git",
     "directory": "sdk/ts"
   },
-  "homepage": "https://github.com/title-protocol/title-protocol/tree/main/sdk/ts",
+  "homepage": "https://github.com/yudai-mori-2004/title-protocol/tree/main/sdk/ts",
+  "author": "Title Protocol Contributors",
   "keywords": ["solana", "title-protocol", "c2pa", "tee", "cnft", "attribution"],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

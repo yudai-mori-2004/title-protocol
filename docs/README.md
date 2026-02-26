@@ -1,5 +1,7 @@
 # docs/
 
+> Note: Technical specifications (`SPECS_JA.md`) are written in Japanese.
+
 Title Protocolの開発ドキュメント。バージョン単位で管理する。
 
 ## 構造

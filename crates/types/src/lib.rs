@@ -8,6 +8,7 @@
 //! - Base58: Solanaアドレス、公開鍵（人間が読みやすく、紛らわしい文字を除外）
 //! - Base64: バイナリデータ（暗号文、署名等）
 
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -188,38 +189,16 @@ pub struct TrustedTeeNode {
     pub expected_measurements: ExpectedMeasurements,
 }
 
-/// TEEの期待される測定値。tee_typeに応じて内部構造が異なる。
+/// TEEの期待される測定値。tee_typeに応じてキー名が異なる。
 /// 仕様書 §5.2 Step 1
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExpectedMeasurements {
-    /// AWS Nitro: Enclave Imageのハッシュ
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pcr0: Option<String>,
-    /// AWS Nitro: カーネルのハッシュ
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pcr1: Option<String>,
-    /// AWS Nitro: アプリケーションのハッシュ
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pcr2: Option<String>,
-    /// AMD SEV-SNP: ゲストVMの初期状態ハッシュ
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub measurement: Option<String>,
-    /// Intel TDX: TD初期測定値
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mrtd: Option<String>,
-    /// Intel TDX: ランタイム測定レジスタ0
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rtmr0: Option<String>,
-    /// Intel TDX: ランタイム測定レジスタ1
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rtmr1: Option<String>,
-    /// Intel TDX: ランタイム測定レジスタ2
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rtmr2: Option<String>,
-    /// Intel TDX: ランタイム測定レジスタ3
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rtmr3: Option<String>,
-}
+///
+/// キー名の慣例:
+/// | tee_type | キー | 説明 |
+/// |----------|------|------|
+/// | `aws_nitro` | `PCR0`, `PCR1`, `PCR2` | Platform Configuration Registers |
+/// | `amd_sev_snp` | `MEASUREMENT` | Guest VM initial state hash |
+/// | `intel_tdx` | `MRTD`, `RTMR0`〜`RTMR3` | TD measurement registers |
+pub type ExpectedMeasurements = HashMap<String, String>;
 
 /// 信頼されたWASMモジュール情報。
 /// 仕様書 §5.2 Step 1

@@ -5,7 +5,7 @@ target/
 node_modules/
 dist/
 
-# AWS Nitro Enclaves
+# TEE image artifacts
 *.eif
 
 # Terraform
@@ -15,7 +15,7 @@ deploy/aws/terraform/*.tfstate.backup
 deploy/aws/terraform/.terraform.lock.hcl
 deploy/aws/terraform/tfplan
 
-# WASM build output (deploy時に生成)
+# WASM build output
 wasm-modules/
 
 # OS
@@ -27,6 +27,9 @@ wasm-modules/
 *.swp
 *.swo
 
+# AI assistant config (not part of the project)
+CLAUDE.md
+
 # Environment
 .env
 .env.*
@@ -36,6 +39,5 @@ wasm-modules/
 deploy/aws/keys/
 *.pem
 
-# Experiments output
-experiments/output-*.json
-experiments/node_modules/
+# Integration test output
+integration-tests/output-*.json

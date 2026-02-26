@@ -17,12 +17,12 @@ use super::TeeRuntime;
 /// モックAttestation Documentの構造体。
 /// 仕様書 §5.2 Step 4.1
 ///
-/// Nitro Enclaveのdebug-modeと同等（PCR値が全てゼロ）。
+/// TEEのdebug-modeを模擬（測定値が全てゼロ）。
 #[derive(serde::Serialize)]
 struct MockAttestationDocument {
     /// モジュールID
     module_id: String,
-    /// PCR0（エンクレーブイメージ測定値）— debug-modeでは全ゼロ（48バイト）
+    /// PCR0（イメージ測定値）— debug-modeでは全ゼロ（48バイト）
     pcr0: Vec<u8>,
     /// PCR1（カーネル測定値）— debug-modeでは全ゼロ（48バイト）
     pcr1: Vec<u8>,
@@ -81,13 +81,13 @@ impl TeeRuntime for MockRuntime {
     /// 固定のモックAttestation Documentを返す。
     /// 仕様書 §5.2 Step 4.1
     ///
-    /// PCR値は全てゼロ（Nitroのdebug-modeと同等）。
+    /// 測定値は全てゼロ（debug-modeと同等）。
     fn get_attestation(&self) -> Vec<u8> {
         let signing_pubkey = self.signing_pubkey();
         let encryption_pubkey = self.encryption_pubkey();
 
         let doc = MockAttestationDocument {
-            module_id: "mock-enclave".to_string(),
+            module_id: "mock-tee".to_string(),
             pcr0: vec![0u8; 48],
             pcr1: vec![0u8; 48],
             pcr2: vec![0u8; 48],
@@ -244,7 +244,7 @@ mod tests {
         let doc: serde_json::Value =
             serde_json::from_slice(&attestation).expect("有効なJSON");
 
-        assert_eq!(doc["module_id"], "mock-enclave");
+        assert_eq!(doc["module_id"], "mock-tee");
         // PCR値が全てゼロ（48バイトのゼロ配列）
         let pcr0: Vec<u8> = serde_json::from_value(doc["pcr0"].clone()).unwrap();
         assert_eq!(pcr0.len(), 48);

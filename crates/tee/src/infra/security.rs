@@ -438,7 +438,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        // macOSではTCPレベルでConnectionResetが先に発生する場合がある
+        // 一部環境ではTCPレベルでConnectionResetが先に発生する場合がある
         assert!(
             matches!(err, SecurityError::PayloadTooLarge { .. } | SecurityError::Io(_)),
             "PayloadTooLargeまたはIoエラーが期待される: {err:?}"

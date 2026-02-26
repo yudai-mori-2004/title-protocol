@@ -1,6 +1,6 @@
 # @title-protocol/indexer
 
-cNFT indexer for [Title Protocol](https://github.com/title-protocol/title-protocol) — indexes compressed NFTs minted by Title Protocol TEE nodes.
+cNFT indexer for [Title Protocol](https://github.com/yudai-mori-2004/title-protocol) — indexes compressed NFTs minted by Title Protocol TEE nodes.
 
 ## Overview
 

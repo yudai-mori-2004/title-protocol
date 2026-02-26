@@ -14,7 +14,8 @@
 //! | ハッシュ | SHA-256 |
 //!
 //! ## Attestation Document検証
-//! `attestation` モジュールでAWS Nitro Attestation Documentの検証を提供する。
+//! `attestation` モジュールでVM型TEEのAttestation Document検証を提供する。
+//! ベンダー実装はfeature flagで分離される。
 
 pub mod attestation;
 

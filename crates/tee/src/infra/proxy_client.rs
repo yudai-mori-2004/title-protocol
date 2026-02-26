@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! # vsock経由HTTPクライアント
+//! # TEE外部通信プロキシクライアント
 //!
 //! 仕様書 §6.4
 //!
-//! TEEはネットワークアクセスを持たないため、全ての外部HTTP通信は
-//! vsockプロキシ経由でlength-prefixedプロトコルを使用して行う。
+//! TEEはネットワーク隔離されているため、外部HTTP通信はプロキシ経由で行う。
+//! length-prefixedプロトコルを使用する。
 //!
 //! ## プロトコル (TEE → Proxy)
 //! ```text
@@ -17,13 +17,13 @@
 //! [4B: status_code][4B: body_len][body]
 //! ```
 //!
-//! ## 接続先
-//! - Linux: vsock CID=3 (親インスタンス), Port=8000
-//! - macOS: TCP 127.0.0.1:8000（テスト用フォールバック）
+//! ## 接続モード
+//! - 本番: PROXY_ADDR(TCP) → socat → vsock → ホスト側proxy
+//! - 開発: PROXY_ADDR="direct" で直接HTTP
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// vsock経由のHTTPレスポンス。
+/// プロキシ経由のHTTPレスポンス。
 #[derive(Debug)]
 pub struct ProxyResponse {
     /// HTTPステータスコード
@@ -84,9 +84,9 @@ async fn direct_http_request(
 /// `proxy_addr` が `"direct"` の場合、プロキシプロトコルを経由せず
 /// 直接HTTPリクエストを送信する（Docker Compose / ローカル開発用）。
 ///
-/// それ以外の場合はTCPフォールバック用のアドレス（例: "127.0.0.1:8000"）として扱い、
+/// それ以外の場合はTCPアドレス（例: "127.0.0.1:8000"）として扱い、
 /// length-prefixedプロトコルでプロキシに接続する。
-/// Linux本番環境ではvsock接続を使用する（TODO: タスク11で実装）。
+/// 本番環境ではTEE VM内のsocatがこのTCPポートをvsockにブリッジする。
 async fn proxy_request(
     proxy_addr: &str,
     method: &str,
@@ -98,8 +98,7 @@ async fn proxy_request(
         return direct_http_request(method, url, body).await;
     }
 
-    // TODO: #[cfg(target_os = "linux")] vsock::VsockStream::connect_with_cid_port(3, 8000)
-    // 現在はTCPフォールバックのみ実装
+    // TEE VM内ではsocatがTCP→vsockをブリッジするため、常にTCP接続を使用する
     let mut stream = tokio::net::TcpStream::connect(proxy_addr).await?;
 
     // method
@@ -144,7 +143,7 @@ async fn proxy_request(
     })
 }
 
-/// vsock経由でHTTP GETリクエストを送信する。
+/// プロキシ経由でHTTP GETリクエストを送信する。
 /// 仕様書 §6.4
 pub async fn proxy_get(proxy_addr: &str, url: &str) -> Result<ProxyResponse, std::io::Error> {
     proxy_request(proxy_addr, "GET", url, &[]).await

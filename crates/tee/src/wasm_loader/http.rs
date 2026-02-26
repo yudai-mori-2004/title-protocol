@@ -16,10 +16,10 @@ use super::WasmLoader;
 /// URL経由でWASMバイナリを取得するローダー。
 /// 本番環境用（Arweave等のオフチェーンストレージ）。
 ///
-/// TEEはネットワークアクセスを持たないため、vsockプロキシ経由で取得する。
+/// TEEはネットワーク隔離されているため、プロキシ経由で取得する。
 /// URL形式: `{base_url}/{extension_id}.wasm`
 pub struct HttpLoader {
-    /// vsockプロキシのアドレス
+    /// プロキシのアドレス
     proxy_addr: String,
     /// WASMバイナリのベースURL
     base_url: String,
@@ -29,7 +29,7 @@ impl HttpLoader {
     /// 新しいHttpLoaderを作成する。
     ///
     /// # 引数
-    /// - `proxy_addr`: vsockプロキシのアドレス（例: "127.0.0.1:8000"）
+    /// - `proxy_addr`: プロキシのアドレス（例: "127.0.0.1:8000"）
     /// - `base_url`: WASMバイナリのベースURL（例: "https://arweave.net/wasm"）
     pub fn new(proxy_addr: String, base_url: String) -> Self {
         Self {

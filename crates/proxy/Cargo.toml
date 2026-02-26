@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Title Protocol vsock HTTPプロキシ"
+description = "Title Protocol TEE HTTP proxy"
 
 [features]
 default = ["vendor-aws"]

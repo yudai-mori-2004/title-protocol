@@ -234,7 +234,7 @@ else
   TEE_PID=$(pgrep -x title-tee 2>/dev/null || true)
   if [ -z "$TEE_PID" ]; then
     if [ -f "target/release/title-tee" ]; then
-      MOCK_MODE=true TEE_RUNTIME=mock PROXY_ADDR=direct \
+      TEE_RUNTIME=mock PROXY_ADDR=direct \
         SOLANA_RPC_URL="$SOLANA_RPC_URL" \
         COLLECTION_MINT="${COLLECTION_MINT:-}" \
         GATEWAY_PUBKEY="${GATEWAY_PUBKEY:-}" \

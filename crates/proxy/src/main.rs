@@ -1,33 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! # Title Protocol vsock HTTPプロキシ
+//! # Title Protocol TEE HTTPプロキシ
 //!
 //! 仕様書 §6.4
 //!
-//! TEEにはネットワークアクセスがないため、全ての外部HTTP通信は
+//! TEEはネットワーク隔離されているため、全ての外部HTTP通信は
 //! このプロキシを経由する。
 //!
 //! ## プラットフォーム
-//! - Linux: vsock port 8000 でリッスン
-//! - macOS/Windows: TCP `127.0.0.1:8000` でリッスン（テスト用フォールバック）
+//! - 本番環境(vendor-aws): vsock port 8000 でリッスン
+//! - 開発環境: TCP 127.0.0.1:8000 でリッスン
 
 mod handler;
 mod protocol;
 
-/// vsockリッスンポート
+/// 本番環境リッスンポート（vsock）
 #[cfg(all(target_os = "linux", feature = "vendor-aws"))]
 const VSOCK_PORT: u32 = 8000;
 
-/// TCPフォールバックアドレス（macOS/テスト用）
+/// 開発環境リッスンアドレス（TCP）
 #[cfg(not(all(target_os = "linux", feature = "vendor-aws")))]
 const TCP_ADDR: &str = "127.0.0.1:8000";
 
-/// Linux: vsockでリッスン
+/// 本番環境: vsockでリッスン (vendor-aws feature)
 #[cfg(all(target_os = "linux", feature = "vendor-aws"))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    tracing::info!("vsock HTTPプロキシを port {} で起動します", VSOCK_PORT);
+    tracing::info!("TEE HTTPプロキシを vsock port {} で起動します", VSOCK_PORT);
 
     let listener =
         vsock::VsockListener::bind_with_cid_port(vsock::VMADDR_CID_ANY, VSOCK_PORT)?;
@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
                         break;
                     }
                 }
-                Err(e) => tracing::error!("vsock acceptエラー: {}", e),
+                Err(e) => tracing::error!("acceptエラー: {}", e),
             }
         }
     });
@@ -57,13 +57,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 非Linux: TCPフォールバックでリッスン（テスト・開発用）
+/// 開発環境: TCPでリッスン
 #[cfg(not(all(target_os = "linux", feature = "vendor-aws")))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     tracing::info!(
-        "TCPフォールバック HTTPプロキシを {} で起動します",
+        "TEE HTTPプロキシを TCP {} で起動します（開発環境）",
         TCP_ADDR
     );
 

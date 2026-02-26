@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee
 
-ENV MOCK_MODE=true
+ENV TEE_RUNTIME=mock
 EXPOSE 4000
 
 ENTRYPOINT ["/usr/local/bin/title-tee"]

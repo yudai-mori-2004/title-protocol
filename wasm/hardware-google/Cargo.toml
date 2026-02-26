@@ -3,9 +3,9 @@ name = "hardware-google"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/title-protocol/title-protocol"
+repository = "https://github.com/yudai-mori-2004/title-protocol"
 authors = ["Title Protocol Contributors"]
-description = "Title Protocol Extension: Google Pixel ハードウェア署名検証"
+description = "Title Protocol Extension: Google Pixel hardware signature verification"
 
 [lib]
 crate-type = ["cdylib"]

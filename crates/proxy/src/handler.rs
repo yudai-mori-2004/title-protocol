@@ -55,10 +55,10 @@ pub async fn forward_http(method: &str, url: &str, body: &[u8]) -> (u32, Vec<u8>
     }
 }
 
-/// TCP経由の接続を処理する（非Linux / テスト用フォールバック）。
+/// TCP経由の接続を処理する（開発環境 / テスト用）。
 /// 仕様書 §6.4
 ///
-/// vsockと同一のlength-prefixedプロトコルを使用。
+/// 本番環境と同一のlength-prefixedプロトコルを使用。
 #[cfg(any(not(target_os = "linux"), test))]
 pub async fn handle_tcp_connection(mut stream: tokio::net::TcpStream) {
     let method = match protocol::read_string_async(&mut stream).await {

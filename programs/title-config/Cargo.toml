@@ -3,9 +3,9 @@ name = "title-config"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/title-protocol/title-protocol"
+repository = "https://github.com/yudai-mori-2004/title-protocol"
 authors = ["Title Protocol Contributors"]
-description = "Title Protocol Anchor Solanaプログラム"
+description = "Title Protocol Anchor Solana program (GlobalConfig PDA)"
 
 [lib]
 crate-type = ["cdylib", "lib"]

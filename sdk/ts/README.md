@@ -1,6 +1,6 @@
 # @title-protocol/sdk
 
-TypeScript SDK for [Title Protocol](https://github.com/title-protocol/title-protocol) — the identity layer for digital content.
+TypeScript SDK for [Title Protocol](https://github.com/yudai-mori-2004/title-protocol) — the identity layer for digital content.
 
 ## Install
 

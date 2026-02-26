@@ -93,7 +93,7 @@ graph LR
 
 1. **Encryption:** The client encrypts the content and the destination wallet address using the TEE's public key (E2EE).
 2. **Blind Processing:** The Node Operator (Gateway) relays the encrypted payload to the TEE. The operator **cannot** see the content or the wallet address.
-3. **Verification:** The TEE decrypts the payload in a secure enclave, verifies the C2PA signatures, and executes WASM modules.
+3. **Verification:** The TEE decrypts the payload in a secure environment, verifies the C2PA signatures, and executes WASM modules.
 4. **Signing:** The TEE signs the result with its private key.
 5. **Minting:** The result is stored on Arweave, and a **Compressed NFT (cNFT)** is minted on Solana, linking the content hash to the user's wallet.
 
@@ -149,7 +149,7 @@ The protocol core is **vendor-neutral**. All vendor-specific code is isolated be
 | S3 storage | `crates/gateway/src/storage/s3.rs` | `TempStorage` impl using S3-compatible API |
 | vsock transport | `crates/proxy/` | vsock listener (Linux/Nitro only) |
 | Deployment | `deploy/aws/` | Terraform, Docker, setup scripts |
-| Docker images | `docker/` | amazonlinux-based container images |
+| Docker images | `docker/` | Container images (debian-based) |
 
 ### Building without vendor features
 
@@ -192,21 +192,29 @@ crates/
   wasm-host/      — WASM execution engine using wasmtime
   tee/            — TEE server: /verify, /sign, /create-tree
   gateway/        — Gateway HTTP server: upload-url, relay, sign-and-mint
-  proxy/          — vsock HTTP proxy for TEE network isolation
+  proxy/          — HTTP proxy for TEE network isolation
 wasm/             — WASM modules: phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1
 programs/
   title-config/   — Anchor Solana program for Global Config PDA
 sdk/ts/           — TypeScript client SDK: register, crypto (E2EE), storage
 indexer/          — TypeScript cNFT indexer: webhook, poller, DAS API
-deploy/           — Production deployment (AWS Nitro Enclaves)
+docker/           — Container images (Gateway, TEE, Proxy, Indexer)
+deploy/           — Vendor-specific deployment (e.g., deploy/aws/ for Nitro Enclaves)
+scripts/          — Operational scripts: Devnet initialization, content registration
+integration-tests/ — Integration tests and stress tests (not published)
 docs/             — Versioned development documentation
 ```
 
 ## Running a Node
 
-Running a Title Protocol node requires a vendor-specific TEE implementation. See [deploy/aws/README.md](deploy/aws/README.md) for the AWS Nitro Enclaves reference deployment.
+Running a Title Protocol node requires a TEE-backed deployment pipeline. You can either:
 
-See `.env.example` for all available configuration options.
+1. **Use an existing deployment example** — see [deploy/aws/](deploy/aws/) for the AWS Nitro reference implementation.
+2. **Create your own pipeline** — implement the `TeeRuntime` and `TempStorage` traits for your TEE platform, and create a `deploy/<vendor>/` directory following the same pattern.
+
+The only requirement is that the deployment pipeline is **open-source and reproducible** — anyone must be able to verify that a given TEE node runs the same code. As long as this is provable, any TEE platform is valid for the protocol.
+
+See `.env.example` for configuration options.
 
 ## For Developers
 
@@ -214,7 +222,7 @@ This project uses an AI-driven development workflow:
 
 - **`CLAUDE.md`** — Instructions for AI coding assistants (project conventions, architecture)
 - **`docs/`** — Versioned documentation: each version contains SPECS (what to build) → COVERAGE (what's built) → tasks (how to build it + notes)
-- **`docs/v1/`** — Initial implementation phase (2026-02-21, all 13 tasks complete)
+- **`docs/v1/`** — Initial implementation phase (2026-02-21, all tasks complete)
 
 ## Contributing
 

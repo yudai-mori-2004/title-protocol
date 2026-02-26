@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Title Protocol WASM実行環境 (wasmtime直接使用)"
+description = "Title Protocol WASM execution engine (wasmtime)"
 
 [dependencies]
 wasmtime = { workspace = true }

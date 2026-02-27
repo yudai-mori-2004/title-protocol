@@ -151,8 +151,11 @@ pub mod title_config {
         Ok(())
     }
 
-    /// 信頼されたWASMモジュールを追加する。
+    /// 信頼されたWASMモジュールを追加または更新する（upsert）。
     /// 仕様書 §7.3
+    ///
+    /// 同じextension_idが既に登録されている場合はwasm_hashとwasm_sourceを更新する。
+    /// 存在しない場合は新規追加する。
     pub fn add_wasm_module(
         ctx: Context<UpdateConfig>,
         extension_id: [u8; 32],
@@ -162,17 +165,20 @@ pub mod title_config {
         require!(wasm_source.len() <= 256, ErrorCode::WasmSourceTooLong);
 
         let config = &mut ctx.accounts.global_config;
-        let exists = config
+        if let Some(existing) = config
             .trusted_wasm_modules
-            .iter()
-            .any(|m| m.extension_id == extension_id);
-        require!(!exists, ErrorCode::DuplicateWasmModule);
-
-        config.trusted_wasm_modules.push(WasmModuleEntry {
-            extension_id,
-            wasm_hash,
-            wasm_source,
-        });
+            .iter_mut()
+            .find(|m| m.extension_id == extension_id)
+        {
+            existing.wasm_hash = wasm_hash;
+            existing.wasm_source = wasm_source;
+        } else {
+            config.trusted_wasm_modules.push(WasmModuleEntry {
+                extension_id,
+                wasm_hash,
+                wasm_source,
+            });
+        }
         Ok(())
     }
 

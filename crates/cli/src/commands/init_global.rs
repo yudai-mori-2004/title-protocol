@@ -24,7 +24,7 @@ use crate::error::CliError;
 use crate::rpc::SolanaRpc;
 
 /// デフォルトプログラムID。
-const DEFAULT_PROGRAM_ID: &str = "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP";
+const DEFAULT_PROGRAM_ID: &str = "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq";
 
 /// WASM モジュールID一覧。
 const WASM_MODULES: &[&str] = &[

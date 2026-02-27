@@ -26,7 +26,7 @@
 
 use anchor_lang::prelude::*;
 
-declare_id!("GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP");
+declare_id!("CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq");
 
 #[program]
 pub mod title_config {

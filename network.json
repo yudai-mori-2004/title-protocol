@@ -1,0 +1,22 @@
+{
+  "cluster": "devnet",
+  "program_id": "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq",
+  "global_config_pda": "CLizWsiGX2Lva42boGuGuutessekt2HV8JyAHWYcmFYk",
+  "authority": "wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna",
+  "core_collection_mint": "H51zy5FPdoePeV4CHgB724SiuoUMfaRnFgYtxCTni9xv",
+  "ext_collection_mint": "5cJGwZXp3YRM22hqHRPYNTfA528rfMv9TNZL9mZJLXFY",
+  "wasm_modules": {
+    "phash-v1": {
+      "hash": "1cede7db866cc1e1b525ace4ab7bb17219792723d2d5c4fc7e464bdaea88e677"
+    },
+    "hardware-google": {
+      "hash": "d26636da77fb4c5efd294f9b97ae22c27c56897af3df638ea1710f417e30a4f8"
+    },
+    "c2pa-training-v1": {
+      "hash": "38ea26c12f1d8f4c32d50208d6b9acc278da7a3414b7c9d4a61568ad4040093a"
+    },
+    "c2pa-license-v1": {
+      "hash": "65725b1c312828a1a6c1bb8c36fdb724f5360ea8cb156dc43bec8f0d38562d91"
+    }
+  }
+}

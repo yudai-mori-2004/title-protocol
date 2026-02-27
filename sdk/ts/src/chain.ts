@@ -25,7 +25,7 @@ import type {
 
 /** Default Title Config program ID (devnet). */
 export const TITLE_CONFIG_PROGRAM_ID = new PublicKey(
-  "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP"
+  "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq"
 );
 
 /** Anchor account discriminator for GlobalConfigAccount. */

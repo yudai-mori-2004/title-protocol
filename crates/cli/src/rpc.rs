@@ -151,7 +151,7 @@ impl SolanaRpc {
         let sig: String = self
             .call(
                 "sendTransaction",
-                serde_json::json!([encoded, {"encoding": "base64", "skipPreflight": false}]),
+                serde_json::json!([encoded, {"encoding": "base64", "skipPreflight": false, "preflightCommitment": "confirmed"}]),
             )
             .await?;
         Ok(sig)

@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_find_global_config_pda() {
-        let program_id: Pubkey = "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP"
+        let program_id: Pubkey = "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq"
             .parse()
             .unwrap();
         let (pda, bump) = find_global_config_pda(&program_id);
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_find_tee_node_pda() {
-        let program_id: Pubkey = "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP"
+        let program_id: Pubkey = "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq"
             .parse()
             .unwrap();
         let key = [42u8; 32];

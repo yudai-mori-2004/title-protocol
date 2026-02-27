@@ -19,10 +19,11 @@
  *   node init-devnet.mjs --gateway http://<EC2_IP>:3000
  *
  * オプション:
- *   --rpc <url>       Solana RPC (default: SOLANA_RPC_URL env or devnet)
- *   --gateway <url>   Gateway URL (default: http://localhost:3000)
- *   --skip-tree       Merkle Tree作成をスキップ
- *   --skip-delegate   Collection Authority委譲をスキップ
+ *   --rpc <url>              Solana RPC (default: SOLANA_RPC_URL env or devnet)
+ *   --gateway <url>          Gateway URL for API calls (default: http://localhost:3000)
+ *   --public-endpoint <url>  外部公開用URL。オンチェーンに記録される (default: --gateway の値)
+ *   --skip-tree              Merkle Tree作成をスキップ
+ *   --skip-delegate          Collection Authority委譲をスキップ
  */
 
 import {
@@ -69,6 +70,7 @@ const hasFlag = (name) => args.includes(`--${name}`);
 
 const RPC_URL = getArg("rpc", process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com");
 const GATEWAY_URL = getArg("gateway", process.env.GATEWAY_URL || "http://localhost:3000");
+const PUBLIC_ENDPOINT = getArg("public-endpoint", null); // 外部公開用URL（省略時はGATEWAY_URL）
 const SKIP_TREE = hasFlag("skip-tree");
 const SKIP_DELEGATE = hasFlag("skip-delegate");
 
@@ -101,6 +103,7 @@ function anchorDisc(method) {
 const DISC_INITIALIZE = anchorDisc("initialize");
 const DISC_UPDATE_COLLECTIONS = anchorDisc("update_collections");
 const DISC_REGISTER_TEE_NODE = anchorDisc("register_tee_node");
+const DISC_UPDATE_TEE_NODE = anchorDisc("update_tee_node");
 const DISC_ADD_WASM_MODULE = anchorDisc("add_wasm_module");
 const DISC_DELEGATE_COLLECTION_AUTHORITY = anchorDisc("delegate_collection_authority");
 
@@ -136,6 +139,25 @@ function u32le(n) {
 
 async function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Borsh Option<T> encoding: 0 = None, 1 + data = Some(data) */
+function borshOptionBytes(value) {
+  if (value === null) return Buffer.from([0]);
+  return Buffer.concat([Buffer.from([1]), value]);
+}
+function borshOptionString(value) {
+  if (value === null) return Buffer.from([0]);
+  return Buffer.concat([Buffer.from([1]), borshString(value)]);
+}
+function borshOptionU8(value) {
+  if (value === null) return Buffer.from([0]);
+  return Buffer.from([1, value]);
+}
+function borshOptionVec(entries) {
+  // Option<Vec<MeasurementEntry>>
+  if (entries === null) return Buffer.from([0]);
+  return Buffer.concat([Buffer.from([1]), u32le(entries.length), ...entries]);
 }
 
 async function airdropIfNeeded(connection, pubkey, minSol = 2) {
@@ -497,6 +519,65 @@ async function main() {
     }
   } else {
     console.log("\n[Step 6] TEE ノード登録 → スキップ（Gateway公開鍵が不明）");
+  }
+
+  // =====================================================================
+  // Step 6B: TEE ノード情報の更新 (update_tee_node)
+  //   オンチェーン GlobalConfig.trusted_node_keys から signing_pubkey を読み、
+  //   対応する TeeNodeAccount の gateway_endpoint / encryption_pubkey を更新。
+  // =====================================================================
+  {
+    const publicEndpoint = PUBLIC_ENDPOINT || GATEWAY_URL;
+    console.log(`\n[Step 6B] TEE ノード情報の更新 (update_tee_node)`);
+
+    const gcData = (await connection.getAccountInfo(globalConfigPda))?.data;
+    const nodeCount = gcData ? gcData.readUInt32LE(8 + 32 + 32 + 32) : 0;
+
+    if (nodeCount === 0) {
+      console.log("  スキップ: オンチェーンにTEEノードが未登録です");
+    } else {
+      for (let i = 0; i < nodeCount; i++) {
+        const offset = 8 + 32 + 32 + 32 + 4 + (i * 32);
+        const sigPubkeyBytes = gcData.subarray(offset, offset + 32);
+        const sigPubkey = new PublicKey(sigPubkeyBytes);
+        const [teeNodePda] = findTeeNodePDA(sigPubkeyBytes);
+
+        console.log(`  ノード ${i + 1}/${nodeCount}: ${sigPubkey.toBase58()}`);
+        console.log(`    gateway_endpoint → ${publicEndpoint}`);
+
+        const encPubkeyBuf = teeEncryptionPubkey
+          ? Buffer.from(teeEncryptionPubkey, "base64")
+          : null;
+        if (encPubkeyBuf) console.log(`    encryption_pubkey → ${teeEncryptionPubkey}`);
+
+        const updateData = Buffer.concat([
+          DISC_UPDATE_TEE_NODE,
+          borshOptionBytes(encPubkeyBuf && encPubkeyBuf.length === 32 ? encPubkeyBuf : null),
+          borshOptionBytes(null),               // gateway_pubkey
+          borshOptionString(publicEndpoint),     // gateway_endpoint
+          borshOptionU8(null),                   // status
+          borshOptionVec(null),                  // measurements
+        ]);
+
+        const updateIx = new TransactionInstruction({
+          keys: [
+            { pubkey: globalConfigPda, isSigner: false, isWritable: false },
+            { pubkey: teeNodePda, isSigner: false, isWritable: true },
+            { pubkey: authority.publicKey, isSigner: true, isWritable: false },
+          ],
+          programId: PROGRAM_ID,
+          data: updateData,
+        });
+
+        const updateTx = new Transaction().add(updateIx);
+        try {
+          const sig = await sendAndConfirmTransaction(connection, updateTx, [authority]);
+          console.log(`    update_tee_node 完了: ${sig}`);
+        } catch (e) {
+          console.log(`    update_tee_node 失敗: ${e.message?.substring(0, 100)}`);
+        }
+      }
+    }
   }
 
   // =====================================================================

@@ -328,23 +328,15 @@ fi
 # ---------------------------------------------------------------------------
 echo "[Step 7/8] Global Config 初期化..."
 
-# init-config.mjs の依存インストール
+# init-devnet.mjs の依存インストール
 if [ ! -d "$PROJECT_ROOT/scripts/node_modules" ]; then
   echo "  npm install (scripts/)..."
   (cd "$PROJECT_ROOT/scripts" && npm install --silent)
 fi
 
-# TEEエンドポイントの決定
-if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
-  TEE_URL="http://localhost:4000"  # Proxy経由
-else
-  TEE_URL="${TEE_ENDPOINT:-http://localhost:4000}"
-fi
-
-node scripts/init-config.mjs \
+node scripts/init-devnet.mjs \
   --rpc "$SOLANA_RPC_URL" \
-  --gateway "http://localhost:3000" \
-  --tee "$TEE_URL"
+  --gateway "http://localhost:3000"
 
 echo "  OK"
 

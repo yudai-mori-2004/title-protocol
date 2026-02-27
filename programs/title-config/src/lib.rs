@@ -123,6 +123,22 @@ pub mod title_config {
         Ok(())
     }
 
+    /// TEEノードを完全削除する。
+    /// 仕様書 §8.2 TEEノードの削除
+    ///
+    /// trusted_node_keysリストから削除し、TeeNodeAccountをクローズする。
+    pub fn remove_tee_node(ctx: Context<RemoveTeeNode>) -> Result<()> {
+        let signing_pubkey = ctx.accounts.tee_node.signing_pubkey;
+        let config = &mut ctx.accounts.global_config;
+        config.trusted_node_keys.retain(|k| k != &signing_pubkey);
+
+        emit!(TeeNodeDeactivated {
+            signing_pubkey: Pubkey::new_from_array(signing_pubkey),
+        });
+
+        Ok(())
+    }
+
     /// TEEノードを無効化する。
     /// 仕様書 §8.2 TEEノードの削除時
     ///
@@ -470,6 +486,31 @@ pub struct RegisterTeeNode<'info> {
     )]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+/// TEEノード削除命令のアカウント。
+/// 仕様書 §8.2
+#[derive(Accounts)]
+pub struct RemoveTeeNode<'info> {
+    #[account(
+        mut,
+        seeds = [b"global-config"],
+        bump,
+        has_one = authority
+    )]
+    pub global_config: Account<'info, GlobalConfigAccount>,
+    #[account(
+        mut,
+        close = rent_recipient,
+        seeds = [b"tee-node", tee_node.signing_pubkey.as_ref()],
+        bump = tee_node.bump
+    )]
+    pub tee_node: Account<'info, TeeNodeAccount>,
+    pub authority: Signer<'info>,
+    /// rent返還先
+    /// CHECK: rent lamportsの受取先。任意のアカウント。
+    #[account(mut)]
+    pub rent_recipient: UncheckedAccount<'info>,
 }
 
 /// TEEノード更新命令のアカウント。

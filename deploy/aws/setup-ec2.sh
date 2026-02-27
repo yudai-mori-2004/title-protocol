@@ -355,7 +355,22 @@ fi
 # ---------------------------------------------------------------------------
 echo "[Step 8/10] TEEノード登録..."
 
-PUBLIC_ENDPOINT="${PUBLIC_ENDPOINT:-http://localhost:3000}"
+# EC2メタデータから公開IPを自動取得（IMDSv2）
+if [ -z "${PUBLIC_ENDPOINT:-}" ]; then
+  TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null) || true
+  if [ -n "$TOKEN" ]; then
+    PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+      http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null) || true
+  fi
+  if [ -n "${PUBLIC_IP:-}" ]; then
+    PUBLIC_ENDPOINT="http://${PUBLIC_IP}:3000"
+    echo "  公開IP自動取得: ${PUBLIC_IP}"
+  else
+    PUBLIC_ENDPOINT="http://localhost:3000"
+    echo "  WARNING: 公開IP取得失敗、localhost使用"
+  fi
+fi
 
 ./target/release/title-cli register-node \
   --tee-url http://localhost:4000 \

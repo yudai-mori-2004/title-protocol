@@ -59,6 +59,7 @@ interface Args {
   walletPath: string;
   encryptionPubkey: string;
   solanaRpc: string;
+  programId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,17 +92,21 @@ function record(r: TestResult) {
 
 function parseArgs(): Args {
   const args = process.argv.slice(2);
-  if (args.length < 2) {
+  if (args.length < 1) {
     console.error(
-      "Usage: npx tsx stress-test.ts <gateway-ip> <image-path> --wallet <keypair.json> --encryption-pubkey <base64> [--rpc <url>]"
+      "Usage: npx tsx stress-test.ts <image-path> --wallet <keypair.json> [--rpc <url>] [--program-id <pubkey>] [--gateway <host>] [--encryption-pubkey <base64>]"
     );
     process.exit(1);
   }
   let port = 3000;
   let walletPath = "";
   let encryptionPubkey = "";
+  let gatewayHost = "";
   let solanaRpc = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
-  for (let i = 2; i < args.length; i++) {
+  let programId = "";
+  // First positional arg is image path
+  const imagePath = args[0];
+  for (let i = 1; i < args.length; i++) {
     switch (args[i]) {
       case "--port":
         port = parseInt(args[++i], 10);
@@ -115,19 +120,26 @@ function parseArgs(): Args {
       case "--rpc":
         solanaRpc = args[++i];
         break;
+      case "--program-id":
+        programId = args[++i];
+        break;
+      case "--gateway":
+        gatewayHost = args[++i];
+        break;
     }
   }
-  if (!walletPath || !encryptionPubkey) {
-    console.error("--wallet と --encryption-pubkey は必須です");
+  if (!walletPath) {
+    console.error("--wallet は必須です");
     process.exit(1);
   }
   return {
-    gatewayHost: args[0],
-    imagePath: args[1],
+    gatewayHost,
+    imagePath,
     port,
     walletPath,
     encryptionPubkey,
     solanaRpc,
+    programId,
   };
 }
 
@@ -2295,7 +2307,6 @@ async function testBoundaryValues() {
 
 async function main() {
   const args = parseArgs();
-  gatewayUrl = `http://${args.gatewayHost}:${args.port}`;
 
   imageBytes = fs.readFileSync(path.resolve(args.imagePath));
   keypair = Keypair.fromSecretKey(
@@ -2303,23 +2314,31 @@ async function main() {
       JSON.parse(fs.readFileSync(path.resolve(args.walletPath), "utf-8"))
     )
   );
-  encPubkeyBytes = new Uint8Array(
-    Buffer.from(args.encryptionPubkey, "base64")
-  );
 
-  // SDK client setup (on-chain GlobalConfig)
+  // Fetch on-chain GlobalConfig (primary source of truth)
   const connection = new Connection(args.solanaRpc, "confirmed");
+  const programId = args.programId
+    ? new PublicKey(args.programId)
+    : undefined;
   let globalConfig: GlobalConfig;
   try {
-    globalConfig = await fetchGlobalConfig(connection);
-  } catch {
+    globalConfig = await fetchGlobalConfig(connection, programId);
+    log("INFO", `GlobalConfig fetched from chain (${globalConfig.trusted_tee_nodes.length} TEE nodes)`);
+  } catch (e: any) {
+    if (!args.gatewayHost || !args.encryptionPubkey) {
+      console.error(
+        `GlobalConfig fetch failed: ${e.message}\n` +
+        `On-chain config unavailable. Provide --gateway and --encryption-pubkey as fallback.`
+      );
+      process.exit(1);
+    }
     // Fallback: construct minimal config from CLI args
     const teeNode: TrustedTeeNode = {
       signing_pubkey: "",
       encryption_pubkey: args.encryptionPubkey,
       encryption_algorithm: "x25519-hkdf-sha256-aes256gcm",
       gateway_pubkey: "",
-      gateway_endpoint: gatewayUrl,
+      gateway_endpoint: `http://${args.gatewayHost}:${args.port}`,
       status: "active",
       tee_type: "mock",
       expected_measurements: {},
@@ -2332,8 +2351,27 @@ async function main() {
       trusted_tsa_keys: [],
       trusted_wasm_modules: [],
     };
-    log("WARN", "GlobalConfig not found on-chain, using fallback config");
+    log("WARN", "GlobalConfig not found on-chain, using CLI fallback");
   }
+
+  // Resolve gateway endpoint and encryption pubkey from on-chain or CLI
+  const activeNode = globalConfig.trusted_tee_nodes.find(n => n.status === "active")
+    || globalConfig.trusted_tee_nodes[0];
+  if (!activeNode) {
+    console.error("No TEE nodes found in GlobalConfig");
+    process.exit(1);
+  }
+
+  // CLI args override on-chain values
+  gatewayUrl = args.gatewayHost
+    ? `http://${args.gatewayHost}:${args.port}`
+    : activeNode.gateway_endpoint;
+  const encPubkeyB64 = args.encryptionPubkey || activeNode.encryption_pubkey;
+  encPubkeyBytes = new Uint8Array(Buffer.from(encPubkeyB64, "base64"));
+
+  log("INFO", `Gateway: ${gatewayUrl}`);
+  log("INFO", `Encryption pubkey: ${encPubkeyB64.slice(0, 20)}...`);
+
   client = new TitleClient({
     teeNodes: [gatewayUrl],
     solanaRpcUrl: args.solanaRpc,

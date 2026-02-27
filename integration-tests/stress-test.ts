@@ -16,8 +16,10 @@
  *   9. リソース枯渇テスト（高速連打）
  *
  * Usage:
- *   npx tsx stress-test.ts <gateway-ip> <image-path> \
- *     --wallet <keypair.json> --encryption-pubkey <base64>
+ *   npx tsx stress-test.ts <image-path> --wallet <keypair.json> [--rpc <url>]
+ *
+ * Gateway endpoint and encryption pubkey are discovered from on-chain
+ * GlobalConfig automatically.
  */
 
 import { webcrypto } from "node:crypto";

@@ -246,11 +246,7 @@ pub async fn run(
     println!("次のステップ:");
     println!("  1. network.json をリポジトリにコミット");
     println!("  2. ノード起動: deploy/aws/setup-ec2.sh");
-    if cluster == "devnet" {
-        println!("  ※ programs/title-config/keys/authority.json を各ノードにコピーすれば自動承認可能");
-    } else {
-        println!("  ※ mainnet: ノード登録TXはDAO承認が必要");
-    }
+    println!("  ※ programs/title-config/keys/authority.json を各ノードにコピーすれば自動承認可能");
     println!();
 
     Ok(())

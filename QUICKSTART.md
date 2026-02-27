@@ -65,14 +65,14 @@ The project maintains a reference GlobalConfig on devnet for integration testing
 
 | Item | Value |
 |------|-------|
-| Program ID | `GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP` |
-| GlobalConfig PDA | `JCY1KfHLVR1YNAUcDS3S2qSY7ofhTGz9WrqcHLiubs5S` |
+| Program ID | `CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq` |
+| GlobalConfig PDA | `CLizWsiGX2Lva42boGuGuutessekt2HV8JyAHWYcmFYk` |
 | Authority | `wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna` |
-| Core Collection | `CGoxGQtbgNGJaegRzV6yGr8BFkHaphvsLjBYbFKPhWPm` |
-| Extension Collection | `A8FFxPMh8vXM94pnqJ3fUuv9BPcmj9AMbMLVe8pWHvz1` |
+| Core Collection | `H51zy5FPdoePeV4CHgB724SiuoUMfaRnFgYtxCTni9xv` |
+| Extension Collection | `5cJGwZXp3YRM22hqHRPYNTfA528rfMv9TNZL9mZJLXFY` |
 
 ```bash
-solana account JCY1KfHLVR1YNAUcDS3S2qSY7ofhTGz9WrqcHLiubs5S --url devnet
+solana account CLizWsiGX2Lva42boGuGuutessekt2HV8JyAHWYcmFYk --url devnet
 ```
 
 ## Two-Phase Setup
@@ -118,7 +118,20 @@ rm -f Cargo.lock && cargo generate-lockfile
 cargo-build-sbf --manifest-path Cargo.toml --tools-version v1.52
 ```
 
-> **Custom Program ID:** The binary contains a hardcoded program ID (`declare_id!` in `lib.rs`). To deploy under a different ID, generate a new keypair with `solana-keygen new -o program-keypair.json`, update `declare_id!` to match, and rebuild.
+The first build generates a program keypair at `target/deploy/title_config-keypair.json`. Verify the program ID matches `declare_id!` in `src/lib.rs`:
+
+```bash
+solana-keygen pubkey target/deploy/title_config-keypair.json
+```
+
+If the IDs differ (e.g. fresh deploy), update `declare_id!` and all references, then rebuild:
+
+- `programs/title-config/src/lib.rs` — `declare_id!("...")`
+- `Anchor.toml` — `[programs.localnet]` and `[programs.devnet]`
+- `crates/cli/src/commands/init_global.rs` — `DEFAULT_PROGRAM_ID`
+- `crates/cli/src/anchor.rs` — test program IDs
+- `crates/tee/src/endpoints/register_node.rs` — test program IDs
+- `sdk/ts/src/chain.ts` — `TITLE_CONFIG_PROGRAM_ID`
 
 ```bash
 # Deploy (uses the default program ID)
@@ -162,12 +175,12 @@ This is **idempotent** — safe to run multiple times. It will:
 network.json
 {
   "cluster": "devnet",
-  "program_id": "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP",
-  "global_config_pda": "JCY1KfHLVR1YNAUcDS3S2qSY7ofhTGz9WrqcHLiubs5S",
+  "program_id": "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq",
+  "global_config_pda": "CLizWsiGX2Lva42boGuGuutessekt2HV8JyAHWYcmFYk",
   "authority": "wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna",
-  "core_collection_mint": "CGox...",
-  "ext_collection_mint": "A8FF...",
-  "wasm_modules": { "phash-v1": { "hash": "ab12..." }, ... }
+  "core_collection_mint": "H51z...",
+  "ext_collection_mint": "5cJG...",
+  "wasm_modules": { "phash-v1": { "hash": "1ced..." }, ... }
 }
 ```
 
@@ -213,16 +226,22 @@ The protocol core is **vendor-neutral**; all vendor-specific code is isolated be
 cd deploy/aws/terraform
 terraform init && terraform apply
 
-# 2. SSH into the EC2 instance
+# 2. SSH into the EC2 instance, clone and configure
 ssh -i deploy/aws/keys/<key>.pem ec2-user@<IP>
-
-# 3. Clone and configure
 git clone <REPO_URL> ~/title-protocol
 cd ~/title-protocol
 cp .env.example .env
 # Edit .env with Terraform output values (S3 keys, RPC URL, etc.)
+exit
 
-# 4. Deploy everything (builds, enclave, services, registration)
+# 3. Copy the authority keypair from local (enables auto-signing during setup)
+scp -i deploy/aws/keys/<key>.pem \
+  programs/title-config/keys/authority.json \
+  ec2-user@<IP>:~/title-protocol/programs/title-config/keys/
+
+# 4. SSH back in and deploy everything
+ssh -i deploy/aws/keys/<key>.pem ec2-user@<IP>
+cd ~/title-protocol
 ./deploy/aws/setup-ec2.sh
 ```
 
@@ -255,10 +274,10 @@ The node registration uses a **partial-signature pattern**:
 
 Then, depending on the environment:
 
-| Environment | `programs/title-config/keys/authority.json` | Behavior |
-|---|---|---|
-| **Devnet** | Exists | CLI loads authority, co-signs, broadcasts immediately |
-| **Mainnet** | Does not exist | CLI outputs partial TX for DAO multi-sig approval |
+| `programs/title-config/keys/authority.json` | Behavior |
+|---|---|
+| Exists (your own GlobalConfig) | CLI loads authority, co-signs, broadcasts immediately |
+| Does not exist (e.g. DAO-controlled) | CLI outputs partial TX for multi-sig approval |
 
 After registration, `GlobalConfig.trusted_node_keys` gains the new node's pubkey, and a `TeeNodeAccount` PDA is created with the node's full specification.
 
@@ -421,6 +440,6 @@ The trust model on mainnet:
 - WASM module hashes are pinned — only binaries matching the registered SHA-256 hash can execute
 - Collection Authority delegation is explicit — only registered TEE nodes can mint cNFTs into the official collections
 
-The only behavioral difference between devnet and mainnet is in `title-cli register-node`:
-- **Devnet:** If `programs/title-config/keys/authority.json` exists locally, the CLI auto-signs and broadcasts
-- **Mainnet:** The CLI outputs a partial transaction for the DAO to review and co-sign
+The behavioral difference in `title-cli register-node` depends on whether the node has access to the authority keypair:
+- **Authority keypair present:** CLI auto-signs and broadcasts (typical for your own GlobalConfig)
+- **Authority keypair absent:** CLI outputs a partial transaction for the authority (e.g. DAO multi-sig) to review and co-sign

@@ -365,7 +365,7 @@ else
 fi
 
 check_service "Gateway" "http://localhost:3000/.well-known/title-node-info"
-check_service "TEE" "$TEE_URL/health"
+check_service "TEE" "${TEE_ENDPOINT:-http://localhost:4000}/health"
 check_service "Indexer" "http://localhost:5000/health"
 
 # Gateway ノード情報の表示

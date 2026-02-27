@@ -74,21 +74,12 @@ const { encryptPayload, decryptResponse } = await import(
 );
 
 // ---------------------------------------------------------------------------
-// Step 0: Gateway node-info + TEE情報取得
+// Step 0: TEE情報取得 (tee-info.json)
 // ---------------------------------------------------------------------------
 
 console.log("\n--- Step 0: ノード情報取得 ---");
 
-const nodeInfoRes = await fetch(`${GATEWAY_URL}/.well-known/title-node-info`);
-if (!nodeInfoRes.ok) {
-  console.error(`ERROR: Gateway node-info 取得失敗: HTTP ${nodeInfoRes.status}`);
-  process.exit(1);
-}
-const nodeInfo = await nodeInfoRes.json();
-console.log(`  Gateway signing_pubkey: ${nodeInfo.signing_pubkey}`);
-console.log(`  Supported extensions: ${nodeInfo.supported_extensions?.join(", ")}`);
-
-// tee-info.json からTEE暗号化公開鍵を取得
+// tee-info.json からTEE signing/encryption 公開鍵を取得
 const teeInfoPath = join(PROJECT_ROOT, "tests", "e2e", "fixtures", "tee-info.json");
 if (!existsSync(teeInfoPath)) {
   console.error(`ERROR: tee-info.json が見つかりません: ${teeInfoPath}`);

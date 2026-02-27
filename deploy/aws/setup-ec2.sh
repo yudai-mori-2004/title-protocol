@@ -290,7 +290,7 @@ echo "  Docker Compose 起動完了"
 # サービスの起動待ち
 echo "  サービスの起動を待機中..."
 for i in $(seq 1 30); do
-  if curl -sf http://localhost:3000/.well-known/title-node-info > /dev/null 2>&1; then
+  if curl -sf -X POST -H "Content-Type: application/json" -d '{"content_size":1,"content_type":"image/jpeg"}' http://localhost:3000/upload-url > /dev/null 2>&1; then
     echo "  Gateway 応答確認"
     break
   fi
@@ -365,14 +365,16 @@ else
   echo "  NG  Solana RPC ($SOLANA_RPC_URL)"
 fi
 
-check_service "Gateway" "http://localhost:3000/.well-known/title-node-info"
+# Gateway にはシンプルな /health がないため、upload-url で確認
+if curl -sf -X POST -H "Content-Type: application/json" \
+  -d '{"content_size":1,"content_type":"image/jpeg"}' \
+  http://localhost:3000/upload-url > /dev/null 2>&1; then
+  echo "  OK  Gateway"
+else
+  echo "  NG  Gateway (http://localhost:3000/upload-url)"
+fi
 check_service "TEE" "${TEE_ENDPOINT:-http://localhost:4000}/health"
 check_service "Indexer" "http://localhost:5000/health"
-
-# Gateway ノード情報の表示
-echo ""
-echo "--- ノード情報 ---"
-curl -sf http://localhost:3000/.well-known/title-node-info 2>/dev/null | python3 -m json.tool 2>/dev/null || true
 
 echo ""
 echo "=== デプロイ完了 ==="

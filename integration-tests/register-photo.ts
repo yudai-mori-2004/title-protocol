@@ -23,7 +23,7 @@
  *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
  *     --wallet ~/.config/solana/id.json --skip-sign
  *
- *   # TEE port 4000が閉じている場合（encryption_pubkeyを直接指定）
+ *   # encryption_pubkeyをオーバーライド（オンチェーン値と異なる場合）
  *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
  *     --wallet ~/.config/solana/id.json \
  *     --encryption-pubkey "nwfxpl7+BSpSxxE+aK3flQA/Yq26/+JKe9kmjilDnUw="
@@ -59,10 +59,10 @@ import {
   type TitleClientConfig,
   type GlobalConfig,
   type TrustedTeeNode,
-  type NodeInfo,
   type VerifyResponse,
   encryptPayload,
   decryptResponse,
+  fetchGlobalConfig,
 } from "@title-protocol/sdk";
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ interface Args {
   skipSign: boolean;
   broadcast: boolean;
   processorIds: string[];
-  encryptionPubkey: string | null;
+  encryptionPubkey: string;
 }
 
 function parseArgs(): Args {
@@ -101,7 +101,7 @@ Options:
   --skip-sign              Stop after /verify, don't call /sign
   --broadcast              After /sign, co-sign and broadcast tx to Solana
   --processors <ids>       Comma-separated processor IDs (default: core-c2pa)
-  --encryption-pubkey <b64> TEE encryption pubkey (skips TEE port 4000 access)
+  --encryption-pubkey <b64> TEE encryption pubkey (overrides on-chain value)
 `);
     process.exit(0);
   }
@@ -252,82 +252,46 @@ async function main() {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 1: Gateway node-info 取得
+  // Step 1: オンチェーン GlobalConfig + TeeNodeAccount を取得
   // ---------------------------------------------------------------------------
-  log("STEP 1", "node-info を取得中...");
-  const nodeInfoRes = await fetch(
-    `${gatewayUrl}/.well-known/title-node-info`
-  );
-  if (!nodeInfoRes.ok) {
-    console.error(
-      `Gateway接続失敗: HTTP ${nodeInfoRes.status} ${await nodeInfoRes.text()}`
-    );
+  log("STEP 1", "オンチェーン GlobalConfig を取得中...");
+  let globalConfig: GlobalConfig;
+  try {
+    globalConfig = await fetchGlobalConfig(connection);
+  } catch (e: any) {
+    console.error(`GlobalConfig取得失敗: ${e.message}`);
     process.exit(1);
   }
-  const nodeInfo = (await nodeInfoRes.json()) as NodeInfo;
-  log("STEP 1", `signing_pubkey: ${nodeInfo.signing_pubkey}`);
-  log("STEP 1", `extensions: [${nodeInfo.supported_extensions.join(", ")}]`);
-  log(
-    "STEP 1",
-    `limits: max_single=${(nodeInfo.limits.max_single_content_bytes / 1024 / 1024).toFixed(1)}MB`
-  );
+  log("STEP 1", `trusted_tee_nodes: ${globalConfig.trusted_tee_nodes.length}`);
+  log("STEP 1", `trusted_wasm_modules: ${globalConfig.trusted_wasm_modules.length}`);
+
+  // Gateway URLに一致するTEEノードを探す
+  const teeNode = globalConfig.trusted_tee_nodes.find(
+    (n) => n.gateway_endpoint === gatewayUrl
+  ) ?? globalConfig.trusted_tee_nodes[0];
+
+  if (!teeNode) {
+    console.error("エラー: オンチェーンにTEEノード情報が登録されていません");
+    process.exit(1);
+  }
+  log("STEP 1", `signing_pubkey: ${teeNode.signing_pubkey}`);
+  log("STEP 1", `gateway_endpoint: ${teeNode.gateway_endpoint}`);
 
   // ---------------------------------------------------------------------------
-  // Step 2: TEE暗号化公開鍵を取得
+  // Step 2: encryption_pubkey の取得（CLIオーバーライドまたはオンチェーン）
   // ---------------------------------------------------------------------------
-  log("STEP 2", "TEE encryption_pubkey を取得中...");
   let encryptionPubkey: string;
   if (args.encryptionPubkey) {
     encryptionPubkey = args.encryptionPubkey;
     log("STEP 2", `encryption_pubkey (CLI指定): ${encryptionPubkey.slice(0, 20)}...`);
   } else {
-    const teeDirectUrl = `http://${args.gatewayHost}:4000`;
-    try {
-      const teeInfoRes = await fetch(
-        `${teeDirectUrl}/.well-known/title-node-info`
-      );
-      if (teeInfoRes.ok) {
-        const teeInfo = (await teeInfoRes.json()) as any;
-        encryptionPubkey = teeInfo.encryption_pubkey;
-        log(
-          "STEP 2",
-          `encryption_pubkey: ${encryptionPubkey.slice(0, 20)}...`
-        );
-      } else {
-        throw new Error(`TEE直接アクセス失敗: HTTP ${teeInfoRes.status}`);
-      }
-    } catch (e: any) {
-      console.error(`TEEからencryption_pubkey取得に失敗: ${e.message}`);
-      console.error(
-        "  port 4000が閉じている場合: --encryption-pubkey <base64> を指定してください"
-      );
-      process.exit(1);
-    }
+    encryptionPubkey = teeNode.encryption_pubkey;
+    log("STEP 2", `encryption_pubkey (on-chain): ${encryptionPubkey.slice(0, 20)}...`);
   }
 
   // ---------------------------------------------------------------------------
   // TitleClient 構築
   // ---------------------------------------------------------------------------
-  const teeNode: TrustedTeeNode = {
-    signing_pubkey: nodeInfo.signing_pubkey,
-    encryption_pubkey: encryptionPubkey,
-    encryption_algorithm: "x25519-hkdf-sha256-aes256gcm",
-    gateway_pubkey: nodeInfo.signing_pubkey,
-    gateway_endpoint: gatewayUrl,
-    status: "active",
-    tee_type: "mock",
-    expected_measurements: {},
-  };
-
-  const globalConfig: GlobalConfig = {
-    authority: "",
-    core_collection_mint: "",
-    ext_collection_mint: "",
-    trusted_tee_nodes: [teeNode],
-    trusted_tsa_keys: [],
-    trusted_wasm_modules: [],
-  };
-
   const client = new TitleClient({
     teeNodes: [gatewayUrl],
     solanaRpcUrl: args.solanaRpc,

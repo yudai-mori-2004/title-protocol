@@ -356,17 +356,39 @@ async function main() {
 
   let teeSigningPubkey, teeEncryptionPubkey, gatewayPubkey;
 
-  // Gateway /.well-known/title-node-info からGateway公開鍵を取得
+  // GATEWAY_SIGNING_KEY 環境変数から Gateway 公開鍵を導出
+  const gatewaySigningKey = process.env.GATEWAY_SIGNING_KEY;
+  if (gatewaySigningKey) {
+    try {
+      const seed = Buffer.from(gatewaySigningKey, "hex");
+      const kp = Keypair.fromSeed(seed.subarray(0, 32));
+      gatewayPubkey = kp.publicKey.toBase58();
+      console.log(`  Gateway signing_pubkey (from env): ${gatewayPubkey}`);
+    } catch (e) {
+      console.log(`  WARNING: GATEWAY_SIGNING_KEY の導出に失敗: ${e.message}`);
+      gatewayPubkey = null;
+    }
+  } else {
+    console.log("  WARNING: GATEWAY_SIGNING_KEY 環境変数が未設定です");
+    console.log("  → TEEノード登録をスキップします。環境変数設定後に再実行してください。");
+    gatewayPubkey = null;
+  }
+
+  // Gateway 生存確認 (POST /upload-url)
   try {
-    const res = await fetch(`${GATEWAY_URL}/.well-known/title-node-info`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const nodeInfo = await res.json();
-    gatewayPubkey = nodeInfo.signing_pubkey; // Base58
-    console.log(`  Gateway signing_pubkey: ${gatewayPubkey}`);
+    const healthRes = await fetch(`${GATEWAY_URL}/upload-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content_size: 1, content_type: "image/jpeg" }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (healthRes.ok) {
+      console.log(`  Gateway 生存確認: OK`);
+    } else {
+      console.log(`  WARNING: Gateway応答 HTTP ${healthRes.status}`);
+    }
   } catch (e) {
     console.log(`  WARNING: Gateway に接続できません: ${e.message}`);
-    console.log("  → TEEノード登録をスキップします。Gatewayが稼働後に再実行してください。");
-    gatewayPubkey = null;
   }
 
   // TEE signing_pubkey と encryption_pubkey は /create-tree レスポンスから取得

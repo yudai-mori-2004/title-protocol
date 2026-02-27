@@ -6,7 +6,7 @@
  *
  * setup-local.sh から呼ばれ、以下を実行する:
  * 1. Global Config PDA を Anchor プログラム経由で初期化
- * 2. TEE mock の /.well-known/title-node-info からノード情報取得
+ * 2. GATEWAY_SIGNING_KEY 環境変数からGateway公開鍵を導出
  * 3. Global Config に TEE ノード情報を登録
  * 4. TEE /create-tree を呼び出し Merkle Tree を作成
  *
@@ -113,10 +113,10 @@ async function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function waitForService(url, name, maxRetries = 30) {
+async function waitForService(url, name, maxRetries = 30, fetchOpts = {}) {
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, fetchOpts);
       if (res.ok) return;
     } catch {
       // ignore
@@ -193,23 +193,41 @@ async function main() {
   }
 
   // -----------------------------------------------------------------------
-  // 2. Gateway のノード情報を取得
+  // 2. Gateway の生存確認 + 公開鍵導出
   // -----------------------------------------------------------------------
-  console.log("  Gateway ノード情報を取得中...");
+  console.log("  Gateway 生存確認中...");
   await waitForService(
-    `${GATEWAY_URL}/.well-known/title-node-info`,
-    "Gateway"
+    `${TEE_URL}/health`,
+    "TEE Mock"
   );
 
-  let nodeInfo;
+  // Gateway 生存確認 (POST /upload-url)
   try {
-    const res = await fetch(`${GATEWAY_URL}/.well-known/title-node-info`);
-    nodeInfo = await res.json();
-    console.log(`  TEE signing_pubkey: ${nodeInfo.signing_pubkey}`);
-  } catch (e) {
-    console.log(
-      `  WARNING: Gateway からノード情報を取得できません: ${e.message}`
-    );
+    await waitForService(`${GATEWAY_URL}/upload-url`, "Gateway", 30, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content_size: 1, content_type: "image/jpeg" }),
+    });
+  } catch {
+    // waitForService already logs
+  }
+
+  // GATEWAY_SIGNING_KEY 環境変数からGateway公開鍵を導出
+  const gatewaySigningKey = process.env.GATEWAY_SIGNING_KEY;
+  let nodeInfo;
+  if (gatewaySigningKey) {
+    try {
+      const seed = Buffer.from(gatewaySigningKey, "hex");
+      const kp = Keypair.fromSeed(seed.subarray(0, 32));
+      nodeInfo = { signing_pubkey: kp.publicKey.toBase58() };
+      console.log(`  Gateway signing_pubkey (from env): ${nodeInfo.signing_pubkey}`);
+    } catch (e) {
+      console.log(`  WARNING: GATEWAY_SIGNING_KEY の導出に失敗: ${e.message}`);
+      console.log("  TEEノード登録をスキップします");
+      return;
+    }
+  } else {
+    console.log("  WARNING: GATEWAY_SIGNING_KEY 環境変数が未設定です");
     console.log("  TEEノード登録をスキップします");
     return;
   }
@@ -220,8 +238,7 @@ async function main() {
   if (accountInfo || (await connection.getAccountInfo(globalConfigPda))) {
     console.log("  TEEノード情報を登録中...");
 
-    // NOTE: Gateway の node-info は signing_pubkey のみ返すため、
-    // encryption_pubkey は TEE の /create-tree レスポンスから取得する必要がある。
+    // NOTE: encryption_pubkey は TEE の /create-tree レスポンスから取得する必要がある。
     // ここではダミー値を設定し、/create-tree 後に update_tee_node で更新する。
     const signingPubkeyBytes = new PublicKey(nodeInfo.signing_pubkey).toBuffer();
     const dummyEncPubkey = Buffer.alloc(32);
@@ -264,7 +281,7 @@ async function main() {
   // 4. TEE signing_pubkeyにSOLを送金
   // -----------------------------------------------------------------------
   // TEEは内部walletでtree作成費用を支払う。
-  // Gateway node-info の signing_pubkey はGatewayの鍵。TEEの signing_pubkey は
+  // signing_pubkey はGatewayの鍵。TEEの signing_pubkey は
   // /create-tree レスポンスで初めて判明するため、先にTEE /health でTEEの稼働を確認し、
   // /create-tree を呼んでTEE pubkeyを取得→送金→再度 /create-tree の順が必要だが、
   // /create-tree は一度しか呼べない。

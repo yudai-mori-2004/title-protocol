@@ -28,14 +28,14 @@ if (!globalThis.crypto?.subtle) {
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Keypair } from "@solana/web3.js";
+import { Connection, Keypair } from "@solana/web3.js";
 import {
   TitleClient,
   type GlobalConfig,
   type TrustedTeeNode,
-  type NodeInfo,
   encryptPayload,
   decryptResponse,
+  fetchGlobalConfig,
 } from "@title-protocol/sdk";
 
 // ---------------------------------------------------------------------------
@@ -58,6 +58,7 @@ interface Args {
   port: number;
   walletPath: string;
   encryptionPubkey: string;
+  solanaRpc: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,13 +93,14 @@ function parseArgs(): Args {
   const args = process.argv.slice(2);
   if (args.length < 2) {
     console.error(
-      "Usage: npx tsx stress-test.ts <gateway-ip> <image-path> --wallet <keypair.json> --encryption-pubkey <base64>"
+      "Usage: npx tsx stress-test.ts <gateway-ip> <image-path> --wallet <keypair.json> --encryption-pubkey <base64> [--rpc <url>]"
     );
     process.exit(1);
   }
   let port = 3000;
   let walletPath = "";
   let encryptionPubkey = "";
+  let solanaRpc = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
   for (let i = 2; i < args.length; i++) {
     switch (args[i]) {
       case "--port":
@@ -109,6 +111,9 @@ function parseArgs(): Args {
         break;
       case "--encryption-pubkey":
         encryptionPubkey = args[++i];
+        break;
+      case "--rpc":
+        solanaRpc = args[++i];
         break;
     }
   }
@@ -122,6 +127,7 @@ function parseArgs(): Args {
     port,
     walletPath,
     encryptionPubkey,
+    solanaRpc,
   };
 }
 
@@ -207,20 +213,23 @@ async function fetchWithTimeout(
 async function testBaseline() {
   log("CAT 1", "=== ベースライン計測 ===");
 
-  // 1-1: node-info
+  // 1-1: gateway health (POST /upload-url)
   {
     const t0 = Date.now();
-    const res = await fetch(`${gatewayUrl}/.well-known/title-node-info`);
+    const res = await fetch(`${gatewayUrl}/upload-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content_size: 1, content_type: "image/jpeg" }),
+    });
     const d = Date.now() - t0;
-    const body = await res.json();
     record({
       category: "baseline",
-      name: "GET /.well-known/title-node-info",
+      name: "POST /upload-url (health check)",
       status: res.ok ? "PASS" : "FAIL",
       duration_ms: d,
       http_status: res.status,
-      details: `signing_pubkey=${(body as any).signing_pubkey?.slice(0, 10)}...`,
-      expected: "200 OK + JSON",
+      details: `HTTP ${res.status}`,
+      expected: "200 OK",
     });
   }
 
@@ -871,14 +880,14 @@ async function testEndpointAbuse() {
   // 5-7: CORS/Headers probing
   {
     const t0 = Date.now();
-    const res = await fetch(`${gatewayUrl}/.well-known/title-node-info`, {
+    const res = await fetch(`${gatewayUrl}/upload-url`, {
       method: "OPTIONS",
     });
     const d = Date.now() - t0;
     const headers = Object.fromEntries(res.headers.entries());
     record({
       category: "endpoint_abuse",
-      name: "OPTIONS (CORS preflight)",
+      name: "OPTIONS /upload-url (CORS preflight)",
       status: "PASS",
       duration_ms: d,
       http_status: res.status,
@@ -943,8 +952,12 @@ async function testSlowloris() {
       const t = Date.now();
       try {
         const res = await fetchWithTimeout(
-          `${gatewayUrl}/.well-known/title-node-info`,
-          {},
+          `${gatewayUrl}/upload-url`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content_size: 1, content_type: "image/jpeg" }),
+          },
           5000
         );
         results_rf.push({ status: res.status, ms: Date.now() - t });
@@ -1321,7 +1334,11 @@ async function testResourceExhaustion() {
   // 9-3: health check after all tests (resilience)
   {
     const t0 = Date.now();
-    const res = await fetch(`${gatewayUrl}/.well-known/title-node-info`);
+    const res = await fetch(`${gatewayUrl}/upload-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content_size: 1, content_type: "image/jpeg" }),
+    });
     const d = Date.now() - t0;
     record({
       category: "resource",
@@ -1458,7 +1475,7 @@ async function testSSRF() {
   log("CAT 11", "=== SSRF & URL操作攻撃 ===");
 
   const ssrfTargets = [
-    { name: "localhost metadata", url: "http://localhost:3000/.well-known/title-node-info" },
+    { name: "localhost upload-url", url: "http://localhost:3000/upload-url" },
     { name: "AWS metadata SSRF", url: "http://169.254.169.254/latest/meta-data/" },
     { name: "AWS metadata IMDSv2", url: "http://169.254.169.254/latest/api/token" },
     { name: "internal IP", url: "http://10.0.0.1:4000/create-tree" },
@@ -1521,8 +1538,15 @@ async function testHTTPSmuggling() {
   {
     const t0 = Date.now();
     try {
-      const res = await fetchWithTimeout(`${gatewayUrl}/.well-known/title-node-info`, {
-        headers: { "Host": "evil.com", "X-Forwarded-Host": "evil.com", "X-Forwarded-For": "127.0.0.1" },
+      const res = await fetchWithTimeout(`${gatewayUrl}/upload-url`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Host": "evil.com",
+          "X-Forwarded-Host": "evil.com",
+          "X-Forwarded-For": "127.0.0.1",
+        },
+        body: JSON.stringify({ content_size: 1, content_type: "image/jpeg" }),
       }, 5000);
       const body = await res.text();
       const leaked = body.includes("evil.com");
@@ -2283,33 +2307,36 @@ async function main() {
     Buffer.from(args.encryptionPubkey, "base64")
   );
 
-  // SDK client setup
-  const nodeInfoRes = await fetch(
-    `${gatewayUrl}/.well-known/title-node-info`
-  );
-  const nodeInfo = (await nodeInfoRes.json()) as NodeInfo;
-
-  const teeNode: TrustedTeeNode = {
-    signing_pubkey: nodeInfo.signing_pubkey,
-    encryption_pubkey: args.encryptionPubkey,
-    encryption_algorithm: "x25519-hkdf-sha256-aes256gcm",
-    gateway_pubkey: nodeInfo.signing_pubkey,
-    gateway_endpoint: gatewayUrl,
-    status: "active",
-    tee_type: "mock",
-    expected_measurements: {},
-  };
-  const globalConfig: GlobalConfig = {
-    authority: "",
-    core_collection_mint: "",
-    ext_collection_mint: "",
-    trusted_tee_nodes: [teeNode],
-    trusted_tsa_keys: [],
-    trusted_wasm_modules: [],
-  };
+  // SDK client setup (on-chain GlobalConfig)
+  const connection = new Connection(args.solanaRpc, "confirmed");
+  let globalConfig: GlobalConfig;
+  try {
+    globalConfig = await fetchGlobalConfig(connection);
+  } catch {
+    // Fallback: construct minimal config from CLI args
+    const teeNode: TrustedTeeNode = {
+      signing_pubkey: "",
+      encryption_pubkey: args.encryptionPubkey,
+      encryption_algorithm: "x25519-hkdf-sha256-aes256gcm",
+      gateway_pubkey: "",
+      gateway_endpoint: gatewayUrl,
+      status: "active",
+      tee_type: "mock",
+      expected_measurements: {},
+    };
+    globalConfig = {
+      authority: "",
+      core_collection_mint: "",
+      ext_collection_mint: "",
+      trusted_tee_nodes: [teeNode],
+      trusted_tsa_keys: [],
+      trusted_wasm_modules: [],
+    };
+    log("WARN", "GlobalConfig not found on-chain, using fallback config");
+  }
   client = new TitleClient({
     teeNodes: [gatewayUrl],
-    solanaRpcUrl: "https://api.devnet.solana.com",
+    solanaRpcUrl: args.solanaRpc,
     globalConfig,
   });
 

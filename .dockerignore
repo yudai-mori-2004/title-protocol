@@ -28,9 +28,10 @@ deploy/aws/terraform/tfplan
 .claude/
 CLAUDE.md
 
-# Environment (except .env.example)
-.env
+# Environment (except .env and .env.example)
+# NOTE: .env is needed by tee.Dockerfile (baked into Enclave image)
 .env.*
+!.env
 !.env.example
 
 # SSH keys

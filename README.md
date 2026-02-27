@@ -167,6 +167,8 @@ To create a vendor-neutral distribution, exclude: `deploy/`, `docker/`, and buil
 
 ## Quick Start
 
+**[QUICKSTART.md](QUICKSTART.md)** — Deploy your own GlobalConfig on devnet and experiment with the full protocol stack.
+
 ```bash
 # Build and test the Rust workspace
 cargo check --workspace
@@ -178,8 +180,8 @@ for dir in wasm/*/; do
 done
 
 # Build TypeScript SDK & Indexer
-cd sdk/ts && npm ci && npm run build && cd ../..
-cd indexer && npm ci && npm run build && cd ..
+cd sdk/ts && npm install && npm run build && cd ../..
+cd indexer && npm install && npm run build && cd ..
 ```
 
 ## Repository Structure

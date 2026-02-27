@@ -3,12 +3,13 @@
 /**
  * DAS API クライアント
  *
- * 仕様書 §6.6: Helius DAS APIを使用してcNFTを取得する。
+ * 仕様書 §6.6: DAS (Digital Asset Standard) APIを使用してcNFTを取得する。
  *
  * DASエンドポイントはAPIキー付きURLのフラット配列で管理し、
  * リクエストごとにランダムで選択する（SDK側のTEEノード管理と同じパターン）。
+ * 任意のDASプロバイダー（Helius, Triton, 独自実装等）で動作する。
  *
- * 例: ["https://mainnet.helius-rpc.com/?api-key=xxx", "https://devnet.helius-rpc.com/?api-key=yyy"]
+ * 例: ["https://das-provider.example.com/?api-key=xxx"]
  */
 
 /** DAS APIで返されるcNFTアセット */
@@ -58,7 +59,7 @@ export class DasClient {
 
   /**
    * @param endpoints - DAS APIエンドポイントの配列（APIキー付きURL）
-   *   例: ["https://mainnet.helius-rpc.com/?api-key=xxx"]
+   *   例: ["https://das-provider.example.com/?api-key=xxx"]
    */
   constructor(endpoints: string[]) {
     if (endpoints.length === 0) {

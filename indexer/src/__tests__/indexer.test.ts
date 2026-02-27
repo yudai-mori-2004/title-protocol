@@ -9,11 +9,14 @@
  * - ポーラー: 差分検出ロジック（DBモック使用）
  */
 
-import { describe, it, beforeEach } from "node:test";
+import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as http from "node:http";
 
 import { DasClient } from "../das";
+import { handleWebhookEvent, type WebhookEvent } from "../webhook";
+import { pollDasApi } from "../poller";
+import type { IndexerDb } from "../db/client";
 
 // ---------------------------------------------------------------------------
 // DasClient テスト
@@ -225,3 +228,227 @@ function makeDummyAsset(id: string) {
     burnt: false,
   };
 }
+
+// ---------------------------------------------------------------------------
+// MockDb — テスト用DBモック
+// ---------------------------------------------------------------------------
+
+class MockDb {
+  insertedCore: Array<Record<string, unknown>> = [];
+  insertedExtension: Array<Record<string, unknown>> = [];
+  burnedIds: string[] = [];
+  updatedOwners: Array<{ assetId: string; newOwner: string }> = [];
+  knownAssetIds = new Set<string>();
+
+  async insertCoreRecord(record: Record<string, unknown>) {
+    this.insertedCore.push(record);
+  }
+  async insertExtensionRecord(record: Record<string, unknown>) {
+    this.insertedExtension.push(record);
+  }
+  async markBurned(assetId: string) {
+    this.burnedIds.push(assetId);
+  }
+  async updateOwner(assetId: string, newOwner: string) {
+    this.updatedOwners.push({ assetId, newOwner });
+  }
+  async getAllAssetIds() {
+    return this.knownAssetIds;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handleWebhookEvent テスト
+// ---------------------------------------------------------------------------
+
+describe("handleWebhookEvent", () => {
+  it("MINTイベント: Core cNFTをDBに挿入する", async () => {
+    const coreMetadata = {
+      protocol: "Title-Core-v1",
+      payload: {
+        content_hash: "hash-abc",
+        content_type: "image/jpeg",
+        creator_wallet: "Creator1",
+      },
+    };
+
+    // DAS API + オフチェーンメタデータの両方を返すモックサーバー
+    let port = 0;
+    const server = http.createServer((req, res) => {
+      if (req.method === "GET") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(coreMetadata));
+      } else {
+        let body = "";
+        req.on("data", (chunk: string) => { body += chunk; });
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              id: "new-asset-1",
+              ownership: { owner: "Owner1", delegate: null },
+              grouping: [{ group_key: "collection", group_value: "ColMint" }],
+              content: {
+                json_uri: `http://127.0.0.1:${port}/metadata`,
+                metadata: { name: "Title #1", symbol: "TITLE" },
+              },
+              burnt: false,
+            },
+          }));
+        });
+      }
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    port = (server.address() as { port: number }).port;
+
+    try {
+      const db = new MockDb();
+      const dasClient = new DasClient([`http://127.0.0.1:${port}`]);
+
+      await handleWebhookEvent(db as unknown as IndexerDb, dasClient, {
+        type: "MINT",
+        assetId: "new-asset-1",
+        owner: "Owner1",
+        collection: "ColMint",
+        timestamp: 1000,
+      });
+
+      assert.equal(db.insertedCore.length, 1);
+      assert.equal(db.insertedCore[0].content_hash, "hash-abc");
+      assert.equal(db.insertedCore[0].content_type, "image/jpeg");
+      assert.equal(db.insertedCore[0].creator_wallet, "Creator1");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("BURNイベント: cNFTをBurn済みとしてマークする", async () => {
+    const db = new MockDb();
+    const dasClient = new DasClient(["http://127.0.0.1:1"]); // 未使用
+
+    await handleWebhookEvent(db as unknown as IndexerDb, dasClient, {
+      type: "BURN",
+      assetId: "burned-asset-123",
+      owner: "someone",
+      collection: "col",
+      timestamp: 12345,
+    });
+
+    assert.equal(db.burnedIds.length, 1);
+    assert.equal(db.burnedIds[0], "burned-asset-123");
+  });
+
+  it("TRANSFERイベント: 所有者を更新する", async () => {
+    const db = new MockDb();
+    const dasClient = new DasClient(["http://127.0.0.1:1"]); // 未使用
+
+    await handleWebhookEvent(db as unknown as IndexerDb, dasClient, {
+      type: "TRANSFER",
+      assetId: "transferred-asset-456",
+      owner: "new-owner",
+      collection: "col",
+      timestamp: 12345,
+    });
+
+    assert.equal(db.updatedOwners.length, 1);
+    assert.equal(db.updatedOwners[0].assetId, "transferred-asset-456");
+    assert.equal(db.updatedOwners[0].newOwner, "new-owner");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pollDasApi テスト
+// ---------------------------------------------------------------------------
+
+describe("pollDasApi", () => {
+  it("新規アセットの挿入とBurn検出を行う", async () => {
+    const coreMetadata = {
+      protocol: "Title-Core-v1",
+      payload: {
+        content_hash: "poll-hash",
+        content_type: "image/png",
+        creator_wallet: "PollCreator",
+      },
+    };
+
+    let port = 0;
+    const server = http.createServer((req, res) => {
+      if (req.method === "GET") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(coreMetadata));
+      } else {
+        let body = "";
+        req.on("data", (chunk: string) => { body += chunk; });
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              total: 3,
+              limit: 1000,
+              page: 1,
+              items: [
+                {
+                  id: "new-1",
+                  ownership: { owner: "Owner1", delegate: null },
+                  grouping: [{ group_key: "collection", group_value: "col" }],
+                  content: {
+                    json_uri: `http://127.0.0.1:${port}/metadata`,
+                    metadata: { name: "Title", symbol: "TITLE" },
+                  },
+                  burnt: false,
+                },
+                {
+                  id: "existing-1",
+                  ownership: { owner: "Owner1", delegate: null },
+                  grouping: [{ group_key: "collection", group_value: "col" }],
+                  content: {
+                    json_uri: `http://127.0.0.1:${port}/metadata`,
+                    metadata: { name: "Title", symbol: "TITLE" },
+                  },
+                  burnt: false,
+                },
+                {
+                  id: "burned-1",
+                  ownership: { owner: "Owner1", delegate: null },
+                  grouping: [{ group_key: "collection", group_value: "col" }],
+                  content: {
+                    json_uri: `http://127.0.0.1:${port}/metadata`,
+                    metadata: { name: "Title", symbol: "TITLE" },
+                  },
+                  burnt: true,
+                },
+              ],
+            },
+          }));
+        });
+      }
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    port = (server.address() as { port: number }).port;
+
+    try {
+      const db = new MockDb();
+      db.knownAssetIds.add("existing-1");
+      db.knownAssetIds.add("burned-1");
+
+      const dasClient = new DasClient([`http://127.0.0.1:${port}`]);
+      const result = await pollDasApi(db as unknown as IndexerDb, dasClient, "col");
+
+      assert.equal(result.inserted, 1, "新規1件が挿入されるべき");
+      assert.equal(result.burned, 1, "Burn1件が検出されるべき");
+      assert.equal(db.insertedCore.length, 1);
+      assert.equal(db.insertedCore[0].asset_id, "new-1");
+      assert.equal(db.insertedCore[0].content_hash, "poll-hash");
+      assert.equal(db.burnedIds.length, 1);
+      assert.equal(db.burnedIds[0], "burned-1");
+    } finally {
+      server.close();
+    }
+  });
+});

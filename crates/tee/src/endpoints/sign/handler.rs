@@ -18,11 +18,7 @@ use crate::config::{TeeAppState, TeeState};
 use crate::error::TeeError;
 use crate::infra::security::{self, SecurityError};
 use crate::blockchain::solana_tx;
-
-/// Base64エンジン（Standard）
-pub(crate) fn b64() -> base64::engine::GeneralPurpose {
-    base64::engine::general_purpose::STANDARD
-}
+use crate::endpoints::b64;
 
 /// /sign エンドポイントハンドラ。
 /// 仕様書 §1.1 Phase 2, §6.4

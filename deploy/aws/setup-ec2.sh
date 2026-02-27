@@ -61,6 +61,7 @@ REQUIRED_VARS=(
   SOLANA_RPC_URL
   GATEWAY_SIGNING_KEY
   S3_ENDPOINT
+  S3_BUCKET
   S3_ACCESS_KEY
   S3_SECRET_KEY
   DB_PASSWORD
@@ -191,7 +192,7 @@ fi
 echo "[Step 3/8] Enclave の起動..."
 
 ENCLAVE_CPU="${ENCLAVE_CPU_COUNT:-2}"
-ENCLAVE_MEM="${ENCLAVE_MEMORY_MIB:-512}"
+ENCLAVE_MEM="${ENCLAVE_MEMORY_MIB:-1024}"
 
 if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
   # 既存Enclaveの停止（存在する場合）

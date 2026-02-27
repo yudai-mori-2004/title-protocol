@@ -15,7 +15,8 @@ use crate::runtime::mock::MockRuntime;
 use crate::runtime::TeeRuntime;
 use crate::endpoints::test_helpers::{start_mock_storage, start_inline_proxy};
 
-use super::handler::{handle_sign, b64};
+use super::handler::handle_sign;
+use crate::endpoints::b64;
 
 /// テスト用のsigned_jsonを手動構築する
 fn build_test_signed_json(rt: &MockRuntime) -> SignedJson {

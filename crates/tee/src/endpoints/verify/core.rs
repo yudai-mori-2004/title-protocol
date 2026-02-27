@@ -11,7 +11,8 @@ use title_types::{Attribute, CorePayload, SignedJson, SignedJsonCore};
 
 use crate::config::TeeAppState;
 
-use super::{b64, format_content_hash};
+use super::format_content_hash;
+use crate::endpoints::b64;
 
 /// Core処理: C2PA検証 + 来歴グラフ構築 + signed_json生成。
 /// 仕様書 §2.1, §2.2, §5.1 Step 4
@@ -40,12 +41,12 @@ pub(crate) fn process_core(
         content_hash: content_hash_hex.clone(),
         content_type: c2pa_result.content_type.clone(),
         creator_wallet: owner_wallet.to_string(),
-        tsa_timestamp: c2pa_result.tsa_timestamp,
-        tsa_pubkey_hash: c2pa_result.tsa_pubkey_hash.clone(),
+        tsa_timestamp: c2pa_result.tsa_info.as_ref().map(|t| t.timestamp),
+        tsa_pubkey_hash: c2pa_result.tsa_info.as_ref().and_then(|t| t.cert_hash.clone()),
         tsa_token_data: c2pa_result
-            .tsa_token_data
+            .tsa_info
             .as_ref()
-            .map(|d| b64().encode(d)),
+            .map(|t| b64().encode(&t.raw_token)),
         nodes: graph.nodes,
         links: graph.links,
     };

@@ -11,11 +11,11 @@
 //! 4. 来歴グラフ（ノードとエッジ）を構築する
 
 mod jumbf;
+pub mod tsa;
 
 use std::io::Cursor;
 
 use c2pa::validation_results::ValidationState;
-use sha2::{Digest, Sha256};
 use title_types::{GraphLink, GraphNode};
 
 /// Coreモジュールのエラー型
@@ -58,12 +58,10 @@ pub struct C2paVerificationResult {
     pub active_manifest_signature: Vec<u8>,
     /// コンテンツのMIMEタイプ
     pub content_type: String,
-    /// TSAタイムスタンプ（存在する場合）
-    pub tsa_timestamp: Option<u64>,
-    /// TSA公開鍵のSHA-256ハッシュ（存在する場合）
-    pub tsa_pubkey_hash: Option<String>,
-    /// TSAトークンデータ（存在する場合）
-    pub tsa_token_data: Option<Vec<u8>>,
+    /// TSA証明済みタイムスタンプ情報（COSE sigTst/sigTst2ヘッダから抽出）。
+    /// `None` の場合、TSAタイムスタンプは存在しない。
+    /// 仕様書 §2.4
+    pub tsa_info: Option<tsa::TsaInfo>,
 }
 
 /// 来歴グラフ（有向非巡回グラフ）。
@@ -78,82 +76,7 @@ pub struct ProvenanceGraph {
 
 /// content_hashを「0x」プレフィックス付きhex文字列に変換する。
 fn format_content_hash(hash: &[u8; 32]) -> String {
-    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-    format!("0x{hex}")
-}
-
-/// C2PAマニフェストからTSAタイムスタンプ情報を抽出する。
-/// 仕様書 §2.4 重複の解決
-///
-/// マニフェストの `time()` メソッドでRFC 3339形式のタイムスタンプを取得し、
-/// Unix epoch秒に変換する。`signature_info().issuer()` のSHA-256ハッシュを
-/// TSA公開鍵ハッシュの代替として使用する。
-fn extract_tsa_info(manifest: &c2pa::Manifest) -> (Option<u64>, Option<String>) {
-    let time_str = match manifest.time() {
-        Some(t) => t,
-        None => return (None, None),
-    };
-
-    // RFC 3339 → Unix epoch秒
-    let timestamp = parse_rfc3339_to_epoch(&time_str);
-    if timestamp.is_none() {
-        return (None, None);
-    }
-
-    // issuerのSHA-256ハッシュ
-    let pubkey_hash = manifest
-        .signature_info()
-        .and_then(|si| si.issuer.as_ref())
-        .map(|issuer: &String| {
-            let hash = Sha256::digest(issuer.as_bytes());
-            hex::encode(hash)
-        });
-
-    (timestamp, pubkey_hash)
-}
-
-/// RFC 3339形式のタイムスタンプをUnix epoch秒に変換する。
-/// 仕様書 §2.4
-///
-/// 形式例: "2024-01-15T10:30:45Z", "2024-01-15T10:30:45.123456Z"
-fn parse_rfc3339_to_epoch(s: &str) -> Option<u64> {
-    // 基本的なRFC 3339パーサ: YYYY-MM-DDThh:mm:ss[.frac]Z
-    let s = s.trim();
-    let date_time = s.strip_suffix('Z').or_else(|| {
-        // +00:00 形式のオフセット（UTCのみサポート）
-        s.strip_suffix("+00:00")
-    })?;
-
-    let (date_part, time_part) = date_time.split_once('T')?;
-    let parts: Vec<&str> = date_part.split('-').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let year: i64 = parts[0].parse().ok()?;
-    let month: i64 = parts[1].parse().ok()?;
-    let day: i64 = parts[2].parse().ok()?;
-
-    let time_no_frac = time_part.split('.').next()?;
-    let tparts: Vec<&str> = time_no_frac.split(':').collect();
-    if tparts.len() != 3 {
-        return None;
-    }
-    let hour: i64 = tparts[0].parse().ok()?;
-    let min: i64 = tparts[1].parse().ok()?;
-    let sec: i64 = tparts[2].parse().ok()?;
-
-    // 簡易Unix epoch計算（うるう秒は無視）
-    // days_from_epoch using a simplified algorithm
-    let m = if month <= 2 { month + 9 } else { month - 3 };
-    let y = if month <= 2 { year - 1 } else { year };
-    let days = 365 * y + y / 4 - y / 100 + y / 400 + (m * 306 + 5) / 10 + day - 1 - 719468;
-    let epoch = days * 86400 + hour * 3600 + min * 60 + sec;
-
-    if epoch >= 0 {
-        Some(epoch as u64)
-    } else {
-        None
-    }
+    format!("0x{}", hex::encode(hash))
 }
 
 // ---------------------------------------------------------------------------
@@ -162,14 +85,18 @@ fn parse_rfc3339_to_epoch(s: &str) -> Option<u64> {
 
 /// 重複解決用のトークンレコード。
 /// 仕様書 §2.4
+///
+/// `tsa_timestamp` はCOSE署名のsigTst/sigTst2ヘッダから抽出されたRFC 3161
+/// TSA証明済み時刻であること。`manifest.time()` 等の自己申告時刻を設定してはならない。
 #[derive(Debug, Clone)]
 pub struct TokenRecord {
     /// トークンの一意識別子
     pub id: String,
-    /// TSAタイムスタンプ（存在する場合、Unix epoch秒）
+    /// TSA証明済みタイムスタンプ（Unix epoch秒）。
+    /// COSE sigTst/sigTst2ヘッダが存在する場合のみ設定される。
     pub tsa_timestamp: Option<u64>,
-    /// TSA公開鍵ハッシュ（hex文字列）
-    pub tsa_pubkey_hash: Option<String>,
+    /// TSA証明書のSHA-256ハッシュ（hex文字列）。信頼リストとの照合に使用。
+    pub tsa_cert_hash: Option<String>,
     /// Solana block time（登録時刻、Unix epoch秒）
     pub solana_block_time: u64,
     /// トークンがBurn済みかどうか
@@ -213,11 +140,11 @@ pub fn resolve_duplicate<'a>(
 /// 仕様書 §2.4
 fn effective_creation_time(token: &TokenRecord, trusted_tsa_keys: &[String]) -> u64 {
     if let Some(tsa_ts) = token.tsa_timestamp {
-        // TSA公開鍵が信頼リストに含まれるか確認
+        // TSA証明書ハッシュが信頼リストに含まれるか確認
         let is_trusted = if trusted_tsa_keys.is_empty() {
             // 信頼リストが空の場合は全てのTSAを信頼
             true
-        } else if let Some(ref hash) = token.tsa_pubkey_hash {
+        } else if let Some(ref hash) = token.tsa_cert_hash {
             trusted_tsa_keys.contains(hash)
         } else {
             false
@@ -287,17 +214,15 @@ pub fn verify_c2pa(
     let signature = extract_manifest_signature(content_bytes, mime_type, &active_label)?;
 
     // TSAタイムスタンプ抽出（仕様書 §2.4）
-    // C2PAマニフェストにTSAタイムスタンプが含まれる場合、RFC 3339形式の文字列を
-    // Unix epoch秒に変換する。issuerのSHA-256ハッシュをtsa_pubkey_hashとして使用する。
-    let (tsa_timestamp, tsa_pubkey_hash) = extract_tsa_info(manifest);
+    // COSE署名のunprotected headersからsigTst/sigTst2を検索し、
+    // RFC 3161トークンからTSA証明済み時刻を抽出する。
+    let tsa_info = tsa::extract_tsa_from_cose(&signature)?;
 
     Ok(C2paVerificationResult {
         is_valid,
         active_manifest_signature: signature,
         content_type,
-        tsa_timestamp,
-        tsa_pubkey_hash,
-        tsa_token_data: None,
+        tsa_info,
     })
 }
 
@@ -551,6 +476,8 @@ mod tests {
         // 自己署名証明書なのでTrustedではないが、構造的に有効
         assert!(!result.active_manifest_signature.is_empty());
         assert_eq!(result.content_type, "image/jpeg");
+        // テスト用証明書にはsigTst/sigTst2ヘッダがないため、TSA情報はNone
+        assert!(result.tsa_info.is_none());
     }
 
     #[test]
@@ -633,20 +560,7 @@ mod tests {
         }
     }
 
-    // ----- TSA / 重複解決テスト -----
-
-    #[test]
-    fn test_parse_rfc3339_to_epoch() {
-        // 2024-01-01T00:00:00Z = 1704067200
-        assert_eq!(parse_rfc3339_to_epoch("2024-01-01T00:00:00Z"), Some(1704067200));
-        // フラクション付き
-        assert_eq!(parse_rfc3339_to_epoch("2024-01-01T00:00:00.123Z"), Some(1704067200));
-        // +00:00オフセット
-        assert_eq!(parse_rfc3339_to_epoch("2024-01-01T00:00:00+00:00"), Some(1704067200));
-        // 不正な入力
-        assert_eq!(parse_rfc3339_to_epoch("not-a-date"), None);
-        assert_eq!(parse_rfc3339_to_epoch(""), None);
-    }
+    // ----- 重複解決テスト -----
 
     #[test]
     fn test_resolve_duplicate_tsa_wins() {
@@ -655,14 +569,14 @@ mod tests {
             TokenRecord {
                 id: "later_register_but_earlier_create".into(),
                 tsa_timestamp: Some(1000), // 作成時刻: 1000
-                tsa_pubkey_hash: Some("trusted_key".into()),
+                tsa_cert_hash: Some("trusted_key".into()),
                 solana_block_time: 2000,   // 登録時刻: 2000（後）
                 is_burned: false,
             },
             TokenRecord {
                 id: "earlier_register_but_later_create".into(),
                 tsa_timestamp: None,
-                tsa_pubkey_hash: None,
+                tsa_cert_hash: None,
                 solana_block_time: 1500,   // 登録時刻: 1500（先）、作成時刻もこれ
                 is_burned: false,
             },
@@ -680,14 +594,14 @@ mod tests {
             TokenRecord {
                 id: "untrusted_tsa".into(),
                 tsa_timestamp: Some(500),
-                tsa_pubkey_hash: Some("unknown_key".into()),
+                tsa_cert_hash: Some("unknown_key".into()),
                 solana_block_time: 2000,
                 is_burned: false,
             },
             TokenRecord {
                 id: "no_tsa_but_earlier".into(),
                 tsa_timestamp: None,
-                tsa_pubkey_hash: None,
+                tsa_cert_hash: None,
                 solana_block_time: 1000,
                 is_burned: false,
             },
@@ -705,14 +619,14 @@ mod tests {
             TokenRecord {
                 id: "burned".into(),
                 tsa_timestamp: Some(100), // 最古だがBurn済み
-                tsa_pubkey_hash: None,
+                tsa_cert_hash: None,
                 solana_block_time: 100,
                 is_burned: true,
             },
             TokenRecord {
                 id: "active".into(),
                 tsa_timestamp: None,
-                tsa_pubkey_hash: None,
+                tsa_cert_hash: None,
                 solana_block_time: 500,
                 is_burned: false,
             },
@@ -729,14 +643,14 @@ mod tests {
             TokenRecord {
                 id: "later_registered".into(),
                 tsa_timestamp: None,
-                tsa_pubkey_hash: None,
+                tsa_cert_hash: None,
                 solana_block_time: 2000,
                 is_burned: false,
             },
             TokenRecord {
                 id: "earlier_registered".into(),
                 tsa_timestamp: None,
-                tsa_pubkey_hash: None,
+                tsa_cert_hash: None,
                 solana_block_time: 1000,
                 is_burned: false,
             },
@@ -751,12 +665,68 @@ mod tests {
         let tokens = vec![TokenRecord {
             id: "burned".into(),
             tsa_timestamp: None,
-            tsa_pubkey_hash: None,
+            tsa_cert_hash: None,
             solana_block_time: 100,
             is_burned: true,
         }];
 
         assert!(resolve_duplicate(&tokens, &[]).is_none());
+    }
+
+    #[test]
+    fn test_resolve_duplicate_empty_input() {
+        assert!(resolve_duplicate(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn test_resolve_duplicate_empty_trusted_list_trusts_all() {
+        // 信頼リストが空 → 全TSAを信頼する
+        let tokens = vec![
+            TokenRecord {
+                id: "with_tsa".into(),
+                tsa_timestamp: Some(500),
+                tsa_cert_hash: Some("any_key".into()),
+                solana_block_time: 2000,
+                is_burned: false,
+            },
+            TokenRecord {
+                id: "earlier_register".into(),
+                tsa_timestamp: None,
+                tsa_cert_hash: None,
+                solana_block_time: 1000,
+                is_burned: false,
+            },
+        ];
+
+        // 空リスト: TSA timestamp 500 < solana_block_time 1000 → TSA持ちが勝つ
+        let winner = resolve_duplicate(&tokens, &[]).unwrap();
+        assert_eq!(winner.id, "with_tsa");
+    }
+
+    #[test]
+    fn test_resolve_duplicate_tsa_without_cert_hash_ignored_when_trusted_list_set() {
+        // TSAタイムスタンプはあるがcert_hashがNone + 非空信頼リスト → TSA無視
+        let tokens = vec![
+            TokenRecord {
+                id: "tsa_no_cert".into(),
+                tsa_timestamp: Some(100), // 最古だがcert_hashなし
+                tsa_cert_hash: None,
+                solana_block_time: 2000,
+                is_burned: false,
+            },
+            TokenRecord {
+                id: "no_tsa".into(),
+                tsa_timestamp: None,
+                tsa_cert_hash: None,
+                solana_block_time: 1000,
+                is_burned: false,
+            },
+        ];
+
+        let trusted = vec!["some_key".to_string()];
+        let winner = resolve_duplicate(&tokens, &trusted).unwrap();
+        // cert_hash=None → 信頼リストに含まれない → TSA無視 → block_time比較
+        assert_eq!(winner.id, "no_tsa");
     }
 
     #[test]

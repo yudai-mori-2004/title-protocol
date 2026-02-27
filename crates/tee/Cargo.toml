@@ -32,6 +32,7 @@ base58 = { workspace = true }
 rand = { workspace = true }
 solana-sdk = { workspace = true }
 bincode = { workspace = true }
+sha2 = { workspace = true }
 mpl-bubblegum = { workspace = true }
 
 serde_bytes = { workspace = true }

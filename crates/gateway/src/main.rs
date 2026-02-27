@@ -454,4 +454,118 @@ mod tests {
         let response = result.unwrap().0;
         assert_eq!(response.partial_txs.len(), 1);
     }
+
+    /// TEEがエラーを返した場合にGatewayがBAD_GATEWAYで伝播することを確認
+    #[tokio::test]
+    async fn test_verify_relay_tee_error() {
+        let mock_tee = axum::Router::new().route(
+            "/verify",
+            axum::routing::post(|| async {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "TEE内部エラー",
+                )
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_tee).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let state = test_state(&format!("http://127.0.0.1:{port}"));
+
+        let result = handle_verify(
+            State(state),
+            Json(VerifyRequest {
+                download_url: "http://example.com/payload".to_string(),
+                processor_ids: vec!["core-c2pa".to_string()],
+            }),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = axum::response::IntoResponse::into_response(err);
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    }
+
+    /// /sign-and-mint — SOLANA_RPC_URL未設定時にエラーが返ることを確認
+    #[tokio::test]
+    async fn test_sign_and_mint_no_rpc_url() {
+        let state = test_state("http://localhost:4000");
+        // test_state() は solana_rpc_url=None で構築される
+
+        let result = handle_sign_and_mint(
+            State(state),
+            Json(SignRequest {
+                recent_blockhash: "11111111111111111111111111111111".to_string(),
+                requests: vec![SignRequestItem {
+                    signed_json_uri: "ar://test".to_string(),
+                }],
+            }),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("SOLANA_RPC_URL"),
+            "エラーメッセージにSOLANA_RPC_URLが含まれるべき: {err_msg}"
+        );
+    }
+
+    /// /sign-and-mint — Solanaキーペア未設定時にエラーが返ることを確認
+    #[tokio::test]
+    async fn test_sign_and_mint_no_keypair() {
+        let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
+        let verifying_key = Ed25519VerifyingKey::from(&signing_key);
+
+        // solana_rpc_url は設定するが、solana_keypair は None
+        let state = Arc::new(GatewayState {
+            tee_endpoint: "http://localhost:4000".to_string(),
+            http_client: reqwest::Client::new(),
+            signing_key,
+            verifying_key,
+            temp_storage: Box::new(MockTempStorage),
+            solana_rpc_url: Some("http://localhost:8899".to_string()),
+            solana_keypair: None,
+            supported_extensions: vec![],
+            node_limits: NodeLimits {
+                max_single_content_bytes: 1024,
+                max_concurrent_bytes: 4096,
+            },
+            default_resource_limits: ResourceLimits {
+                max_single_content_bytes: Some(1024),
+                max_concurrent_bytes: None,
+                min_upload_speed_bytes: None,
+                base_processing_time_sec: None,
+                max_global_timeout_sec: None,
+                chunk_read_timeout_sec: None,
+                c2pa_max_graph_size: None,
+            },
+            max_upload_size: 1024,
+            presign_expiry_secs: 3600,
+        });
+
+        let result = handle_sign_and_mint(
+            State(state),
+            Json(SignRequest {
+                recent_blockhash: "11111111111111111111111111111111".to_string(),
+                requests: vec![SignRequestItem {
+                    signed_json_uri: "ar://test".to_string(),
+                }],
+            }),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("GATEWAY_SOLANA_KEYPAIR"),
+            "エラーメッセージにGATEWAY_SOLANA_KEYPAIRが含まれるべき: {err_msg}"
+        );
+    }
 }

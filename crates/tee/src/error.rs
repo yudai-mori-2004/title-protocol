@@ -67,3 +67,36 @@ impl axum::response::IntoResponse for TeeError {
         (status, self.to_string()).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    /// 全TeeErrorバリアントが正しいHTTPステータスコードにマッピングされることを確認
+    #[test]
+    fn test_error_status_codes() {
+        let cases: Vec<(TeeError, StatusCode)> = vec![
+            (TeeError::BadRequest("t".into()), StatusCode::BAD_REQUEST),
+            (TeeError::Internal("t".into()), StatusCode::INTERNAL_SERVER_ERROR),
+            (TeeError::InvalidState("t".into()), StatusCode::SERVICE_UNAVAILABLE),
+            (TeeError::Conflict("t".into()), StatusCode::CONFLICT),
+            (TeeError::PayloadTooLarge("t".into()), StatusCode::PAYLOAD_TOO_LARGE),
+            (TeeError::Timeout, StatusCode::REQUEST_TIMEOUT),
+            (TeeError::BadGateway("t".into()), StatusCode::BAD_GATEWAY),
+            (TeeError::ProcessingFailed("t".into()), StatusCode::UNPROCESSABLE_ENTITY),
+            (TeeError::Forbidden("t".into()), StatusCode::FORBIDDEN),
+            (TeeError::Unauthorized("t".into()), StatusCode::UNAUTHORIZED),
+            (TeeError::ServiceUnavailable("t".into()), StatusCode::SERVICE_UNAVAILABLE),
+        ];
+
+        for (error, expected_status) in cases {
+            let response = error.into_response();
+            assert_eq!(
+                response.status(),
+                expected_status,
+                "ステータスコードが一致しません"
+            );
+        }
+    }
+}

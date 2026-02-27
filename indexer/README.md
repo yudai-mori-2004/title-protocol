@@ -4,7 +4,7 @@ cNFT indexer for [Title Protocol](https://github.com/yudai-mori-2004/title-proto
 
 ## Overview
 
-The indexer monitors Solana cNFT collections via the [DAS (Digital Asset Standard) API](https://docs.helius.dev/compression-and-das-api/digital-asset-standard-das-api) and stores records in PostgreSQL. It supports two ingestion modes:
+The indexer monitors Solana cNFT collections via any [DAS (Digital Asset Standard)](https://solana.com/developers/guides/javascript/compressed-nfts#reading-compressed-nfts) API provider and stores records in PostgreSQL. It supports two ingestion modes:
 
 - **Webhook**: Receives real-time mint/burn/transfer events via HTTP POST
 - **Poller**: Periodically scans collections to catch missed events
@@ -20,7 +20,7 @@ npm install @title-protocol/indexer
 ```bash
 # Required environment variables
 export DATABASE_URL="postgres://user:pass@localhost:5432/title_indexer"
-export DAS_ENDPOINTS="https://devnet.helius-rpc.com/?api-key=YOUR_KEY"
+export DAS_ENDPOINTS="https://your-das-provider.example.com/?api-key=YOUR_KEY"
 export COLLECTION_MINTS="CoreCollectionMint,ExtCollectionMint"
 
 # Optional
@@ -57,7 +57,7 @@ const exts: ExtensionRecord[] = await db.findExtensionsByContentHash("sha256-hex
 const owned: CoreRecord[] = await db.findCoreByOwner("WalletAddress...");
 
 // DAS API client (random endpoint selection)
-const das = new DasClient(["https://devnet.helius-rpc.com/?api-key=KEY"]);
+const das = new DasClient(["https://your-das-provider.example.com/?api-key=KEY"]);
 const assets = await das.getAllAssetsInCollection("CollectionMint...");
 
 await db.close();

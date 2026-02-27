@@ -54,7 +54,7 @@ const TEE_URL = getArg("tee", "http://localhost:4000");
 // ---------------------------------------------------------------------------
 
 const PROGRAM_ID = new PublicKey(
-  process.env.TITLE_CONFIG_PROGRAM_ID || "C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN"
+  process.env.TITLE_CONFIG_PROGRAM_ID || "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP"
 );
 
 /** Anchor instruction discriminator = sha256("global:<method>")[..8] */
@@ -66,7 +66,7 @@ function anchorDisc(method) {
 }
 
 const DISC_INITIALIZE = anchorDisc("initialize");
-const DISC_UPDATE_TEE_NODES = anchorDisc("update_tee_nodes");
+const DISC_REGISTER_TEE_NODE = anchorDisc("register_tee_node");
 
 // ---------------------------------------------------------------------------
 // ヘルパー
@@ -87,6 +87,19 @@ function findGlobalConfigPDA() {
     [Buffer.from("global-config")],
     PROGRAM_ID
   );
+}
+
+function findTeeNodePDA(signingPubkeyBytes) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("tee-node"), signingPubkeyBytes],
+    PROGRAM_ID
+  );
+}
+
+/** Borsh String encode: 4-byte LE length + UTF-8 bytes */
+function borshString(str) {
+  const encoded = Buffer.from(str, "utf-8");
+  return Buffer.concat([u32le(encoded.length), encoded]);
 }
 
 /** u32 LE encode */
@@ -207,34 +220,32 @@ async function main() {
   if (accountInfo || (await connection.getAccountInfo(globalConfigPda))) {
     console.log("  TEEノード情報を登録中...");
 
-    // TrustedTeeNodeAccount: signing_pubkey(32) + encryption_pubkey(32) + gateway_pubkey(32) + status(1) + tee_type(1) = 98 bytes
-    // signing_pubkeyはBase58, encryption_pubkeyはBase64, gateway_pubkeyはBase58
-
     // NOTE: Gateway の node-info は signing_pubkey のみ返すため、
     // encryption_pubkey は TEE の /create-tree レスポンスから取得する必要がある。
-    // ここではダミー値を設定し、/create-tree 後に更新する。
-    const signingPubkeyBytes = bs58Decode(nodeInfo.signing_pubkey);
-    const dummyEncPubkey = Buffer.alloc(32); // TEE の /create-tree 後に更新
+    // ここではダミー値を設定し、/create-tree 後に update_tee_node で更新する。
+    const signingPubkeyBytes = new PublicKey(nodeInfo.signing_pubkey).toBuffer();
+    const dummyEncPubkey = Buffer.alloc(32);
     const dummyGatewayPubkey = Buffer.alloc(32);
+    const [teeNodePda] = findTeeNodePDA(signingPubkeyBytes);
 
-    const nodeData = Buffer.concat([
-      signingPubkeyBytes,
-      dummyEncPubkey,
-      dummyGatewayPubkey,
-      Buffer.from([1]), // status: Active
-      Buffer.from([0]), // tee_type: aws_nitro (mock)
-    ]);
-
+    // register_tee_node(signing_pubkey, encryption_pubkey, gateway_pubkey,
+    //                   gateway_endpoint, tee_type, measurements)
     const data = Buffer.concat([
-      DISC_UPDATE_TEE_NODES,
-      u32le(1), // 1 node
-      nodeData,
+      DISC_REGISTER_TEE_NODE,
+      signingPubkeyBytes,           // signing_pubkey: [u8; 32]
+      dummyEncPubkey,               // encryption_pubkey: [u8; 32]
+      dummyGatewayPubkey,           // gateway_pubkey: [u8; 32]
+      borshString(GATEWAY_URL),     // gateway_endpoint: String
+      Buffer.from([0]),             // tee_type: 0 = aws_nitro (mock)
+      u32le(0),                     // measurements: Vec<> (empty)
     ]);
 
     const ix = new TransactionInstruction({
       keys: [
         { pubkey: globalConfigPda, isSigner: false, isWritable: true },
-        { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
+        { pubkey: teeNodePda, isSigner: false, isWritable: true },
+        { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
       programId: PROGRAM_ID,
       data,
@@ -328,8 +339,7 @@ async function main() {
 
       // signed_tx をそのままブロードキャスト（TEEが完全署名済み）
       const txBytes = Buffer.from(result.signed_tx, "base64");
-      const { Transaction: SolTx } = await import("@solana/web3.js");
-      const signedTx = SolTx.from(txBytes);
+      const signedTx = Transaction.from(txBytes);
 
       try {
         const sig = await connection.sendRawTransaction(
@@ -349,35 +359,6 @@ async function main() {
   } catch (e) {
     console.log(`  /create-tree 呼び出し失敗: ${e.message}`);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Base58
-// ---------------------------------------------------------------------------
-
-const ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-function bs58Decode(str) {
-  const bytes = [];
-  for (const c of str) {
-    let carry = ALPHABET.indexOf(c);
-    if (carry < 0) throw new Error(`Invalid base58 character: ${c}`);
-    for (let j = 0; j < bytes.length; j++) {
-      carry += bytes[j] * 58;
-      bytes[j] = carry & 0xff;
-      carry >>= 8;
-    }
-    while (carry > 0) {
-      bytes.push(carry & 0xff);
-      carry >>= 8;
-    }
-  }
-  // Leading zeros
-  for (const c of str) {
-    if (c !== "1") break;
-    bytes.push(0);
-  }
-  return Buffer.from(bytes.reverse());
 }
 
 main().catch((e) => {

@@ -25,7 +25,7 @@ p384 = { workspace = true }
 ecdsa = { workspace = true }
 x509-cert = { workspace = true }
 der = { workspace = true }
-serde = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+hex = { workspace = true }

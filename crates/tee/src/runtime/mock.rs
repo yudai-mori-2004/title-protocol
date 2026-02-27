@@ -277,4 +277,30 @@ mod tests {
         let rt = MockRuntime::new();
         rt.encryption_pubkey();
     }
+
+    /// Tree用キーペアの生成→署名→検証
+    #[test]
+    fn test_tree_keypair_sign_verify() {
+        let rt = MockRuntime::new();
+        rt.generate_tree_keypair();
+
+        let message = b"Tree test message";
+        let sig_bytes = rt.tree_sign(message);
+        let pubkey_bytes = rt.tree_pubkey();
+
+        let verifying_key =
+            VerifyingKey::from_bytes(&pubkey_bytes.try_into().expect("公開鍵は32バイト"))
+                .expect("有効なEd25519公開鍵");
+        let signature =
+            Signature::from_bytes(&sig_bytes.try_into().expect("署名は64バイト"));
+
+        assert!(verifying_key.verify(message, &signature).is_ok());
+    }
+
+    /// TEE種別が "mock" であることを確認
+    #[test]
+    fn test_tee_type() {
+        let rt = MockRuntime::new();
+        assert_eq!(rt.tee_type(), "mock");
+    }
 }

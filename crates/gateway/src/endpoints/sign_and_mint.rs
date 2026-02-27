@@ -63,10 +63,13 @@ pub async fn handle_sign_and_mint(
         let gateway_pubkey = gateway_keypair.pubkey();
 
         // Gatewayの公開鍵に対応する署名スロットを特定
+        // 署名者はaccount_keysの先頭num_required_signatures個に限定される
+        let num_signers = tx.message.header.num_required_signatures as usize;
         let sig_index = tx
             .message
             .account_keys
             .iter()
+            .take(num_signers)
             .position(|k| *k == gateway_pubkey)
             .ok_or_else(|| {
                 GatewayError::Internal(

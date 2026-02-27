@@ -195,4 +195,24 @@ mod tests {
             .unwrap()
             .contains("Unsupported method"));
     }
+
+    /// 転送先が到達不能な場合に500が返ることを確認
+    #[tokio::test]
+    async fn test_forward_unreachable() {
+        let proxy_port = start_proxy().await;
+
+        let mut stream =
+            tokio::net::TcpStream::connect(format!("127.0.0.1:{}", proxy_port))
+                .await
+                .unwrap();
+
+        // 存在しないポートに転送を試みる
+        write_request(&mut stream, "GET", "http://127.0.0.1:1/unreachable", &[]).await;
+
+        let (status, body) = read_response(&mut stream).await;
+        assert_eq!(status, 500);
+        assert!(String::from_utf8(body)
+            .unwrap()
+            .contains("Proxy error"));
+    }
 }

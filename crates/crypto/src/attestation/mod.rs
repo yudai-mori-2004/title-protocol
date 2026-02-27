@@ -132,6 +132,80 @@ pub fn verify_public_key(result: &AttestationResult, expected_pubkey: &[u8]) -> 
         .map_or(false, |pk| pk == expected_pubkey)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_result() -> AttestationResult {
+        let mut measurements = BTreeMap::new();
+        measurements.insert("PCR0".into(), vec![0u8; 48]);
+        measurements.insert("PCR1".into(), vec![1u8; 48]);
+        AttestationResult {
+            tee_type: "test".into(),
+            measurements,
+            public_key: Some(vec![42u8; 32]),
+            user_data: None,
+            nonce: None,
+            timestamp: Some(1700000000),
+        }
+    }
+
+    #[test]
+    fn test_verify_measurements_match() {
+        let result = sample_result();
+        let mut expected = BTreeMap::new();
+        expected.insert("PCR0".into(), vec![0u8; 48]);
+        assert!(verify_measurements(&result, &expected));
+    }
+
+    #[test]
+    fn test_verify_measurements_mismatch() {
+        let result = sample_result();
+        let mut expected = BTreeMap::new();
+        expected.insert("PCR0".into(), vec![99u8; 48]);
+        assert!(!verify_measurements(&result, &expected));
+    }
+
+    #[test]
+    fn test_verify_measurements_missing_key() {
+        let result = sample_result();
+        let mut expected = BTreeMap::new();
+        expected.insert("PCR9".into(), vec![0u8; 48]);
+        assert!(!verify_measurements(&result, &expected));
+    }
+
+    #[test]
+    fn test_verify_measurements_empty_expected() {
+        let result = sample_result();
+        assert!(verify_measurements(&result, &BTreeMap::new()));
+    }
+
+    #[test]
+    fn test_verify_public_key_match() {
+        let result = sample_result();
+        assert!(verify_public_key(&result, &[42u8; 32]));
+    }
+
+    #[test]
+    fn test_verify_public_key_mismatch() {
+        let result = sample_result();
+        assert!(!verify_public_key(&result, &[0u8; 32]));
+    }
+
+    #[test]
+    fn test_verify_public_key_none() {
+        let mut result = sample_result();
+        result.public_key = None;
+        assert!(!verify_public_key(&result, &[42u8; 32]));
+    }
+
+    #[test]
+    fn test_verify_attestation_unsupported_tee_type() {
+        let err = verify_attestation("unknown_tee", &[]).unwrap_err();
+        assert!(matches!(err, AttestationError::UnsupportedTeeType(_)));
+    }
+}
+
 #[cfg(feature = "vendor-aws")]
 impl From<nitro::NitroAttestationResult> for AttestationResult {
     fn from(nitro: nitro::NitroAttestationResult) -> Self {

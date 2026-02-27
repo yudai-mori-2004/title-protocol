@@ -22,10 +22,7 @@ use crate::config::{TeeAppState, TeeState};
 use crate::error::TeeError;
 use crate::blockchain::solana_tx;
 
-/// Base64エンジン（Standard）
-fn b64() -> base64::engine::GeneralPurpose {
-    base64::engine::general_purpose::STANDARD
-}
+use super::b64;
 
 /// /create-tree エンドポイントハンドラ。
 /// 仕様書 §6.4 Step 2, §6.5 Merkle Tree

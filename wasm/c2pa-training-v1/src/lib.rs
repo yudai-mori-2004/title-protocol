@@ -75,7 +75,8 @@ fn write_result(json: &str) -> u32 {
 }
 
 /// コンテンツ内でバイトパターンを検索する。見つかった場合、周辺のコンテキストバイトも返す。
-fn find_pattern_with_context(pattern: &[u8], context_after: usize) -> Option<u32> {
+/// 戻り値: Some((ctx_buf_ptr, ctx_actual_len)) = パターン検出、None = 未検出
+fn find_pattern_with_context(pattern: &[u8], context_after: usize) -> Option<(u32, usize)> {
     let _ = (hash_content, get_extension_input);
 
     let content_len = unsafe { get_content_length() } as usize;
@@ -92,10 +93,13 @@ fn find_pattern_with_context(pattern: &[u8], context_after: usize) -> Option<u32
     let mut offset: usize = 0;
     while offset < content_len {
         let to_read = core::cmp::min(CHUNK_SIZE, content_len - offset);
-        let read = unsafe { read_content_chunk(offset as u32, to_read as u32, buf) } as usize;
-        if read == 0 {
+        let raw_read =
+            unsafe { read_content_chunk(offset as u32, to_read as u32, buf) } as usize;
+        if raw_read == 0 {
             break;
         }
+        // ホスト返値を要求サイズで上限クランプ（バッファ外読取防止）
+        let read = core::cmp::min(raw_read, to_read);
 
         let chunk = unsafe { core::slice::from_raw_parts(buf as *const u8, read) };
 
@@ -104,17 +108,22 @@ fn find_pattern_with_context(pattern: &[u8], context_after: usize) -> Option<u32
                 if &chunk[i..i + pattern.len()] == pattern {
                     // パターン後のコンテキストバイトを別バッファにコピー
                     let ctx_start = offset + i + pattern.len();
+                    if ctx_start >= content_len {
+                        return Some((0, 0));
+                    }
                     let ctx_len = core::cmp::min(context_after, content_len - ctx_start);
                     if ctx_len > 0 {
                         let ctx_buf = alloc(ctx_len as u32);
                         if ctx_buf != 0 {
-                            unsafe {
-                                read_content_chunk(ctx_start as u32, ctx_len as u32, ctx_buf);
-                            }
-                            return Some(ctx_buf);
+                            let ctx_read = unsafe {
+                                read_content_chunk(ctx_start as u32, ctx_len as u32, ctx_buf)
+                            } as usize;
+                            // 実際に読めたバイト数を返す
+                            let ctx_actual = core::cmp::min(ctx_read, ctx_len);
+                            return Some((ctx_buf, ctx_actual));
                         }
                     }
-                    return Some(0);
+                    return Some((0, 0));
                 }
             }
         }
@@ -150,10 +159,10 @@ pub extern "C" fn process() -> u32 {
     let marker = b"c2pa.training-mining";
 
     match find_pattern_with_context(marker, 256) {
-        Some(ctx_buf) => {
-            if ctx_buf != 0 {
-                // コンテキスト内で "notAllowed" を探す
-                let ctx = unsafe { core::slice::from_raw_parts(ctx_buf as *const u8, 256) };
+        Some((ctx_buf, ctx_len)) => {
+            if ctx_buf != 0 && ctx_len > 0 {
+                // 実際に読めたバイト数でスライスを作成（未初期化メモリ読取防止）
+                let ctx = unsafe { core::slice::from_raw_parts(ctx_buf as *const u8, ctx_len) };
                 let not_allowed = b"notAllowed";
                 let mut found_not_allowed = false;
 

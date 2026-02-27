@@ -13,7 +13,6 @@ vendor-aws = ["rust-s3"]
 
 [dependencies]
 title-types = { path = "../types" }
-title-crypto = { path = "../crypto" }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -33,3 +32,6 @@ bincode = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 async-trait = { workspace = true }
+
+[dev-dependencies]
+title-crypto = { path = "../crypto" }

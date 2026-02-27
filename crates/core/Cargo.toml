@@ -11,8 +11,14 @@ description = "Title Protocol Core: C2PA verification and provenance graph const
 title-types = { path = "../types" }
 title-crypto = { path = "../crypto" }
 c2pa = { workspace = true }
-sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
+coset = { workspace = true }
+ciborium = { workspace = true }
 serde = { workspace = true }
+serde_bytes = { workspace = true }
+der = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
 serde_json = { workspace = true }

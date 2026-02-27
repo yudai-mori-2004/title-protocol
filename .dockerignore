@@ -1,0 +1,47 @@
+# Rust build artifacts
+target/
+
+# Node.js
+node_modules/
+dist/
+
+# Git
+.git/
+.gitignore
+
+# TEE image artifacts
+*.eif
+
+# Terraform
+deploy/aws/terraform/.terraform/
+deploy/aws/terraform/*.tfstate*
+deploy/aws/terraform/tfplan
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# AI assistant
+.claude/
+CLAUDE.md
+
+# Environment (except .env.example)
+.env
+.env.*
+!.env.example
+
+# SSH keys
+deploy/aws/keys/
+*.pem
+
+# Documentation (not needed in images)
+docs/
+*.md
+!docker/README.md
+
+# Integration tests
+integration-tests/
+tests/

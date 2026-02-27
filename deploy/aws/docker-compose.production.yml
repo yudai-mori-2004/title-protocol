@@ -44,9 +44,6 @@ services:
       TEE_ENDPOINT: "http://host.docker.internal:4000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # インデクサ
   indexer:

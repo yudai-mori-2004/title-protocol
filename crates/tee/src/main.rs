@@ -144,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
     let app = axum::Router::new()
         .route("/health", axum::routing::get(|| async { "ok" }))
         .route("/create-tree", axum::routing::post(endpoints::handle_create_tree))
+        .route("/register-node", axum::routing::post(endpoints::handle_register_node))
         .route("/verify", axum::routing::post(endpoints::handle_verify))
         .route("/sign", axum::routing::post(endpoints::handle_sign))
         .with_state(shared_state);

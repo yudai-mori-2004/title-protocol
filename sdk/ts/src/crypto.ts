@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * E2EEクライアント側の暗号処理
+ * E2EE client-side cryptographic operations.
  *
- * 仕様書 §6.4 ハイブリッド暗号化
+ * Spec §6.4 — Hybrid encryption
  *
- * Rust crates/crypto と同一アルゴリズム・パラメータで相互運用可能:
- * - X25519 ECDH 鍵交換
- * - HKDF-SHA256 鍵導出（info: "title-protocol-e2ee", salt: なし）
- * - AES-256-GCM 暗号化/復号
+ * Interoperable with the Rust crates/crypto implementation:
+ * - X25519 ECDH key exchange
+ * - HKDF-SHA256 key derivation (info: "title-protocol-e2ee", salt: none)
+ * - AES-256-GCM encryption/decryption
  */
 
 import { x25519 } from "@noble/curves/ed25519";
@@ -18,18 +18,18 @@ import { randomBytes } from "@noble/hashes/utils";
 
 import type { EncryptedPayload } from "./types";
 
-/** HKDF infoバイト列（Rust側: b"title-protocol-e2ee"） */
+/** HKDF info bytes (Rust: b"title-protocol-e2ee"). */
 const HKDF_INFO = new TextEncoder().encode("title-protocol-e2ee");
 
-/** エフェメラルキーペア（X25519） */
+/** Ephemeral X25519 key pair. */
 export interface EphemeralKeyPair {
   publicKey: Uint8Array;
   secretKey: Uint8Array;
 }
 
 /**
- * エフェメラルX25519キーペアを生成する。
- * 仕様書 §6.4 Step 2
+ * Generate an ephemeral X25519 key pair.
+ * Spec §6.4 Step 2
  */
 export function generateEphemeralKeyPair(): EphemeralKeyPair {
   const secretKey = x25519.utils.randomPrivateKey();
@@ -38,11 +38,11 @@ export function generateEphemeralKeyPair(): EphemeralKeyPair {
 }
 
 /**
- * ECDH鍵交換で共有秘密を導出する。
- * 仕様書 §6.4 Step 3
+ * Derive a shared secret via ECDH key exchange.
+ * Spec §6.4 Step 3
  *
- * クライアント側: ECDH(eph_sk, tee_pk)
- * TEE側: ECDH(tee_sk, eph_pk)
+ * Client side: ECDH(ephemeral_sk, tee_pk)
+ * TEE side:    ECDH(tee_sk, ephemeral_pk)
  */
 export function deriveSharedSecret(
   ephemeralSecretKey: Uint8Array,
@@ -52,25 +52,24 @@ export function deriveSharedSecret(
 }
 
 /**
- * HKDF-SHA256で対称鍵を導出する。
- * 仕様書 §6.4 Step 4
+ * Derive a symmetric key from a shared secret via HKDF-SHA256.
+ * Spec §6.4 Step 4
  *
- * Rust側と同一パラメータ:
+ * Parameters (matching Rust):
  * - hash: SHA-256
- * - salt: なし
+ * - salt: none
  * - info: "title-protocol-e2ee"
- * - 出力長: 32バイト（AES-256鍵）
+ * - output: 32 bytes (AES-256 key)
  */
 export function deriveSymmetricKey(sharedSecret: Uint8Array): Uint8Array {
   return hkdf(sha256, sharedSecret, undefined, HKDF_INFO, 32);
 }
 
 /**
- * AES-256-GCMでペイロードを暗号化する。
- * 仕様書 §6.4 Step 4
+ * Encrypt a payload with AES-256-GCM.
+ * Spec §6.4 Step 4
  *
- * nonceは12バイトのランダム値を自動生成する。
- * 返却値のEncryptedPayloadにはBase64エンコード済みのnonce/ciphertextが含まれる。
+ * A 12-byte random nonce is generated automatically.
  */
 export async function encrypt(
   symmetricKey: Uint8Array,
@@ -93,8 +92,8 @@ export async function encrypt(
 }
 
 /**
- * AES-256-GCMで暗号文を復号する。
- * 仕様書 §6.4 Step 9
+ * Decrypt ciphertext with AES-256-GCM.
+ * Spec §6.4 Step 9
  */
 export async function decrypt(
   symmetricKey: Uint8Array,
@@ -117,12 +116,12 @@ export async function decrypt(
 }
 
 /**
- * クライアントペイロードを暗号化し、EncryptedPayload（Base64エンコード済み）を返す。
- * 仕様書 §6.4
+ * Encrypt a client payload and return Base64-encoded `EncryptedPayload`.
+ * Spec §6.4
  *
- * @param teeEncryptionPubkey - TEEのX25519公開鍵（32バイト）
- * @param plaintext - 暗号化対象のバイト列
- * @returns ephemeralPublicKey（ECDHに使用）とEncryptedPayload
+ * @param teeEncryptionPubkey - TEE X25519 public key (32 bytes)
+ * @param plaintext - Bytes to encrypt
+ * @returns The ephemeral key pair, derived symmetric key, and encrypted payload
  */
 export async function encryptPayload(
   teeEncryptionPubkey: Uint8Array,
@@ -155,12 +154,12 @@ export async function encryptPayload(
 }
 
 /**
- * TEEからの暗号化レスポンスを復号する。
- * 仕様書 §6.4 Step 9
+ * Decrypt an encrypted response from the TEE.
+ * Spec §6.4 Step 9
  *
- * @param symmetricKey - encryptPayload時に導出した対称鍵
- * @param nonceB64 - Base64エンコードされたnonce
- * @param ciphertextB64 - Base64エンコードされた暗号文
+ * @param symmetricKey - Symmetric key derived during `encryptPayload()`
+ * @param nonceB64 - Base64-encoded nonce
+ * @param ciphertextB64 - Base64-encoded ciphertext
  */
 export async function decryptResponse(
   symmetricKey: Uint8Array,

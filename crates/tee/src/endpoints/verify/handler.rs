@@ -28,7 +28,8 @@ use crate::config::{TeeAppState, TeeState};
 use crate::error::TeeError;
 use crate::infra::security::{self, SecurityError};
 
-use super::{b64, detect_mime_type, CORE_PROCESSOR_ID};
+use super::{detect_mime_type, CORE_PROCESSOR_ID};
+use crate::endpoints::b64;
 
 /// /verify エンドポイントハンドラ。
 /// 仕様書 §1.1 Phase 1, §6.4

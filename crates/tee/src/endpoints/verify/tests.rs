@@ -17,7 +17,8 @@ use crate::runtime::mock::MockRuntime;
 use crate::runtime::TeeRuntime;
 use crate::endpoints::test_helpers::{start_mock_storage, start_inline_proxy};
 
-use super::{b64, handle_verify};
+use super::handle_verify;
+use crate::endpoints::b64;
 
 use std::io::Cursor;
 use tokio::sync::{RwLock, Semaphore};
@@ -478,4 +479,49 @@ async fn test_verify_rejects_untrusted_extension() {
     );
 
     let _ = std::fs::remove_dir_all(&wasm_dir);
+}
+
+// ---------------------------------------------------------------------------
+// ユーティリティ関数テスト
+// ---------------------------------------------------------------------------
+
+/// JPEGマジックバイト検出
+#[test]
+fn test_detect_mime_type_jpeg() {
+    let data = [0xFF, 0xD8, 0xFF, 0xE0, 0x00];
+    assert_eq!(super::detect_mime_type(&data), "image/jpeg");
+}
+
+/// PNGマジックバイト検出
+#[test]
+fn test_detect_mime_type_png() {
+    let data = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A];
+    assert_eq!(super::detect_mime_type(&data), "image/png");
+}
+
+/// WEBPマジックバイト検出
+#[test]
+fn test_detect_mime_type_webp() {
+    let mut data = [0u8; 16];
+    data[8..12].copy_from_slice(b"WEBP");
+    assert_eq!(super::detect_mime_type(&data), "image/webp");
+}
+
+/// 未知のフォーマットはapplication/octet-streamにフォールバック
+#[test]
+fn test_detect_mime_type_unknown() {
+    assert_eq!(super::detect_mime_type(b"unknown"), "application/octet-stream");
+    assert_eq!(super::detect_mime_type(&[]), "application/octet-stream");
+}
+
+/// content_hashフォーマット: 0xプレフィックス + 64文字hex
+#[test]
+fn test_format_content_hash() {
+    let hash = [0u8; 32];
+    let result = super::format_content_hash(&hash);
+    assert_eq!(result, "0x0000000000000000000000000000000000000000000000000000000000000000");
+
+    let hash2 = [0xFF; 32];
+    let result2 = super::format_content_hash(&hash2);
+    assert_eq!(result2, "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 }

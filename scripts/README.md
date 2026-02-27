@@ -30,6 +30,6 @@ SOLANA_RPC_URL=https://api.devnet.solana.com \
 
 ## Requirements
 
-- Node.js 24+
+- Node.js 20+
 - Solana CLI (for keypair management)
 - Running Gateway and TEE server

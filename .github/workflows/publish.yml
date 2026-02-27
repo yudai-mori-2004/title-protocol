@@ -20,13 +20,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Install & Build
         working-directory: sdk/ts
         run: |
-          npm ci
+          npm install
           npm run build
 
       - name: Publish
@@ -48,13 +48,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Install & Build
         working-directory: indexer
         run: |
-          npm ci
+          npm install
           npm run build
 
       - name: Publish

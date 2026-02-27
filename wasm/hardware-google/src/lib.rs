@@ -96,10 +96,13 @@ fn find_pattern(pattern: &[u8]) -> bool {
     let mut offset: usize = 0;
     while offset < content_len {
         let to_read = core::cmp::min(CHUNK_SIZE, content_len - offset);
-        let read = unsafe { read_content_chunk(offset as u32, to_read as u32, buf) } as usize;
-        if read == 0 {
+        let raw_read =
+            unsafe { read_content_chunk(offset as u32, to_read as u32, buf) } as usize;
+        if raw_read == 0 {
             break;
         }
+        // ホスト返値を要求サイズで上限クランプ（バッファ外読取防止）
+        let read = core::cmp::min(raw_read, to_read);
 
         let chunk = unsafe { core::slice::from_raw_parts(buf as *const u8, read) };
 

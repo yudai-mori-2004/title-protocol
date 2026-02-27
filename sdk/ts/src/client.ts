@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * TitleClient — SDK のメインクラス
+ * TitleClient — Main SDK class.
  *
- * 仕様書 §6.7
+ * Spec §6.7
  *
- * TEEノードはフラットなURL配列で管理される。
- * 各URLは `https://<gateway-host>?apikey=<key>` のようなフラット形式。
- * SDKは配列からランダムにノードを選択するが、
- * 暗号化アップロード後はそのノードにセッションが紐付く（アフィニティ）。
+ * TEE nodes are managed as a flat URL array.
+ * Each URL follows the format `https://<gateway-host>?apikey=<key>`.
+ * The SDK randomly selects a node from the array, but once an encrypted
+ * upload is performed, the session is pinned to that node (affinity).
  */
 
 import type {
@@ -16,7 +16,6 @@ import type {
   TrustedTeeNode,
   TrustedWasmModule,
   VerifyRequest,
-  VerifyResponse,
   SignRequest,
   SignResponse,
   EncryptedPayload,
@@ -24,43 +23,45 @@ import type {
 } from "./types";
 
 // ---------------------------------------------------------------------------
-// 設定
+// Configuration
 // ---------------------------------------------------------------------------
 
-/** TitleClient 初期化オプション */
+/** TitleClient initialization options. */
 export interface TitleClientConfig {
   /**
-   * TEEノードのURL一覧（フラット配列）。
-   * 各URLは `https://gateway.example.com?apikey=xxx` のような形式。
-   * SDKはこの中からランダムにノードを選択する。
+   * Flat array of TEE node Gateway URLs.
+   * Each URL may include an API key: `https://gateway.example.com?apikey=xxx`.
+   * The SDK randomly selects one node from this array.
    */
   teeNodes: string[];
 
-  /** Solana RPC URL */
+  /** Solana RPC URL. */
   solanaRpcUrl: string;
 
   /**
-   * モックGlobalConfig。
-   * 本番ではSolana RPCから取得するが、現時点ではGlobalConfigのPDAが
-   * まだデプロイされていないため、外部から注入する。
+   * GlobalConfig data (injected).
+   * In production, this should be fetched from the on-chain GlobalConfig PDA
+   * via Solana RPC. The SDK currently accepts it as a constructor parameter
+   * for flexibility.
    */
   globalConfig: GlobalConfig;
 }
 
 // ---------------------------------------------------------------------------
-// ノードセッション（アフィニティ管理）
+// Node Session (affinity management)
 // ---------------------------------------------------------------------------
 
 /**
- * 特定のTEEノードとのセッション。
- * 暗号化アップロード後、同一ノードに対してverify/signを行う。
+ * Session with a specific TEE node.
+ * After encrypted upload, use the same session for verify/sign calls
+ * to maintain node affinity.
  */
 export interface TeeSession {
-  /** このセッションで使用するGateway URL */
+  /** Gateway URL for this session. */
   gatewayUrl: string;
-  /** TEEのX25519暗号化公開鍵（Base64） */
+  /** TEE X25519 encryption public key (Base64). */
   encryptionPubkey: string;
-  /** TEEのEd25519署名公開鍵（Base58） */
+  /** TEE Ed25519 signing public key (Base58). */
   signingPubkey: string;
 }
 
@@ -73,26 +74,23 @@ export class TitleClient {
 
   constructor(config: TitleClientConfig) {
     if (config.teeNodes.length === 0) {
-      throw new Error("teeNodesは1つ以上のURLを含む必要があります");
+      throw new Error("teeNodes must contain at least one URL");
     }
     this.config = config;
   }
 
   /**
-   * TEEノードをランダムに1つ選択し、セッションを開始する。
-   * 暗号化アップロードを行う前にこれを呼ぶ。
-   * 返却されたTeeSessionを後続のverify/signに渡すことで、
-   * 同一TEEノードへのアフィニティが保証される。
+   * Select a random TEE node and start a session.
+   * Call this before performing an encrypted upload.
+   * Pass the returned TeeSession to subsequent verify/sign calls
+   * to ensure node affinity.
    *
-   * 仕様書 §6.7
+   * Spec §6.7
    */
   async selectNode(): Promise<TeeSession> {
     const gatewayUrl = this.pickRandomNode();
 
-    // ノード情報を取得してencryption_pubkeyを得る
     const nodeInfo = await this.getNodeInfo(gatewayUrl);
-
-    // GlobalConfigからこのノードの情報を取得
     const teeNode = this.findTeeNodeBySigningPubkey(nodeInfo.signing_pubkey);
 
     return {
@@ -103,12 +101,11 @@ export class TitleClient {
   }
 
   /**
-   * Gateway の /.well-known/title-node-info を取得する。
-   * 仕様書 §6.2
+   * Fetch `/.well-known/title-node-info` from a Gateway.
+   * Spec §6.2
    */
   async getNodeInfo(gatewayUrl: string): Promise<NodeInfo> {
     const url = new URL("/.well-known/title-node-info", stripQuery(gatewayUrl));
-    // APIキーが元URLにある場合は付与
     const apiKey = extractApiKey(gatewayUrl);
     if (apiKey) {
       url.searchParams.set("apikey", apiKey);
@@ -117,15 +114,15 @@ export class TitleClient {
     const res = await fetch(url.toString());
     if (!res.ok) {
       throw new Error(
-        `ノード情報の取得に失敗: HTTP ${res.status} ${await res.text()}`
+        `Failed to fetch node info: HTTP ${res.status} ${await res.text()}`
       );
     }
     return (await res.json()) as NodeInfo;
   }
 
   /**
-   * Temporary Storageに暗号化ペイロードをアップロードするための署名付きURLを取得する。
-   * 仕様書 §6.2 POST /upload-url
+   * Get a signed upload URL for temporary storage.
+   * Spec §6.2 POST /upload-url
    */
   async getUploadUrl(
     gatewayUrl: string,
@@ -144,10 +141,10 @@ export class TitleClient {
   }
 
   /**
-   * 暗号化ペイロードをTemporary Storageにアップロードする。
-   * 仕様書 §6.7
+   * Upload an encrypted payload to temporary storage.
+   * Spec §6.7
    *
-   * @returns downloadUrl（TEEがフェッチするURL）
+   * @returns Download URL for the TEE to fetch the payload.
    */
   async upload(
     gatewayUrl: string,
@@ -163,7 +160,6 @@ export class TitleClient {
       "application/json"
     );
 
-    // 署名付きURLにPUT
     const putRes = await fetch(uploadUrl, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -171,7 +167,7 @@ export class TitleClient {
     });
     if (!putRes.ok) {
       throw new Error(
-        `Temporary Storageへのアップロードに失敗: HTTP ${putRes.status}`
+        `Failed to upload to temporary storage: HTTP ${putRes.status}`
       );
     }
 
@@ -179,9 +175,11 @@ export class TitleClient {
   }
 
   /**
-   * /verify エンドポイントを呼び出す。
-   * 仕様書 §6.2
-   * レスポンスはAES-GCM暗号化されている（EncryptedResponse）。
+   * Call the `/verify` endpoint.
+   * Spec §6.2
+   *
+   * The response body is AES-GCM encrypted. Use `decryptResponse()` from
+   * the crypto module with the symmetric key from the encryption step.
    */
   async verify(
     gatewayUrl: string,
@@ -192,8 +190,8 @@ export class TitleClient {
   }
 
   /**
-   * /sign エンドポイントを呼び出す。
-   * 仕様書 §6.2
+   * Call the `/sign` endpoint.
+   * Spec §6.2
    */
   async sign(
     gatewayUrl: string,
@@ -203,8 +201,8 @@ export class TitleClient {
   }
 
   /**
-   * /sign-and-mint エンドポイントを呼び出す（Gateway代行ミント）。
-   * 仕様書 §6.2
+   * Call the `/sign-and-mint` endpoint (Gateway-assisted minting).
+   * Spec §6.2
    */
   async signAndMint(
     gatewayUrl: string,
@@ -214,63 +212,62 @@ export class TitleClient {
     return { txSignatures: res.tx_signatures };
   }
 
-  // --- GlobalConfig アクセス ---
+  // --- GlobalConfig accessors ---
 
   /**
-   * GlobalConfigからtrusted_wasm_modulesを取得する。
-   * 本番ではSolana RPCから直接読み取るが、現時点ではconfigから返す。
-   * 仕様書 §5.2 Step 1
+   * Get trusted WASM modules from GlobalConfig.
+   * Spec §5.2 Step 1
    */
   getTrustedWasmModules(): TrustedWasmModule[] {
     return this.config.globalConfig.trusted_wasm_modules;
   }
 
   /**
-   * GlobalConfigからcore_collection_mintを取得する。
-   * 仕様書 §5.2 Step 1
+   * Get Core collection mint address from GlobalConfig.
+   * Spec §5.2 Step 1
    */
   getCoreCollectionMint(): string {
     return this.config.globalConfig.core_collection_mint;
   }
 
   /**
-   * GlobalConfigからext_collection_mintを取得する。
-   * 仕様書 §5.2 Step 1
+   * Get Extension collection mint address from GlobalConfig.
+   * Spec §5.2 Step 1
    */
   getExtCollectionMint(): string {
     return this.config.globalConfig.ext_collection_mint;
   }
 
   /**
-   * GlobalConfigからtrusted_tee_nodesを取得する。
-   * 仕様書 §5.2 Step 1
+   * Get trusted TEE nodes from GlobalConfig.
+   * Spec §5.2 Step 1
    */
   getTrustedTeeNodes(): TrustedTeeNode[] {
     return this.config.globalConfig.trusted_tee_nodes;
   }
 
-  // --- 内部ヘルパー ---
+  // --- Internal helpers ---
 
-  /** ランダムにTEEノードURLを選択する */
+  /** Randomly select a TEE node URL. */
   private pickRandomNode(): string {
     const idx = Math.floor(Math.random() * this.config.teeNodes.length);
     return this.config.teeNodes[idx];
   }
 
-  /** signing_pubkeyでGlobalConfig内のTeeNodeを検索する */
+  /** Look up a TeeNode in GlobalConfig by signing_pubkey. */
   private findTeeNodeBySigningPubkey(signingPubkey: string): TrustedTeeNode {
     const node = this.config.globalConfig.trusted_tee_nodes.find(
       (n) => n.signing_pubkey === signingPubkey
     );
     if (!node) {
       throw new Error(
-        `GlobalConfigに signing_pubkey=${signingPubkey} のTEEノードが見つかりません`
+        `TEE node with signing_pubkey=${signingPubkey} not found in GlobalConfig`
       );
     }
     return node;
   }
 
-  /** GatewayにPOSTリクエストを送信する */
+  /** Send a POST request to a Gateway endpoint. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async gatewayPost(gatewayUrl: string, path: string, body: unknown): Promise<any> {
     const base = stripQuery(gatewayUrl);
@@ -296,17 +293,17 @@ export class TitleClient {
 }
 
 // ---------------------------------------------------------------------------
-// ユーティリティ
+// Utilities
 // ---------------------------------------------------------------------------
 
-/** URLからクエリパラメータを除去してベースURLを返す */
+/** Strip query parameters from a URL and return the base URL. */
 function stripQuery(url: string): string {
   const u = new URL(url);
   u.search = "";
   return u.toString().replace(/\/$/, "");
 }
 
-/** URLからapikeyクエリパラメータを抽出する */
+/** Extract the `apikey` query parameter from a URL. */
 function extractApiKey(url: string): string | null {
   try {
     const u = new URL(url);

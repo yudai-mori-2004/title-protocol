@@ -11,11 +11,15 @@ npm install @title-protocol/sdk
 ## Quick Start
 
 ```typescript
-import { TitleClient, generateEphemeralKeyPair, deriveSharedSecret } from "@title-protocol/sdk";
+import {
+  TitleClient,
+  encryptPayload,
+  decryptResponse,
+} from "@title-protocol/sdk";
 
 // 1. Initialize client
 const client = new TitleClient({
-  teeNodes: ["http://gateway.example.com:3000"],
+  teeNodes: ["https://gateway.example.com"],
   solanaRpcUrl: "https://api.devnet.solana.com",
   globalConfig: { /* fetched from on-chain GlobalConfig PDA */ },
 });
@@ -24,23 +28,43 @@ const client = new TitleClient({
 const session = await client.selectNode();
 
 // 3. Encrypt content with TEE's public key (E2EE)
-const { publicKey, secretKey } = generateEphemeralKeyPair();
-const sharedSecret = deriveSharedSecret(secretKey, session.encryptionPubkey);
-// ... encrypt payload with AES-256-GCM using sharedSecret
+const teePubkeyBytes = Buffer.from(session.encryptionPubkey, "base64");
+const payload = JSON.stringify({
+  owner_wallet: "YourSolanaWallet...",
+  content: contentBase64,
+});
+const { symmetricKey, encryptedPayload } = await encryptPayload(
+  teePubkeyBytes,
+  new TextEncoder().encode(payload),
+);
 
 // 4. Upload encrypted payload
-const { downloadUrl } = await client.upload(session.gatewayUrl, encryptedPayload);
+const { downloadUrl } = await client.upload(
+  session.gatewayUrl,
+  encryptedPayload,
+);
 
 // 5. Verify (C2PA verification + provenance graph)
-const encryptedResponse = await client.verify(session.gatewayUrl, {
-  encrypted_payload_url: downloadUrl,
-  client_pubkey: publicKey,
+const encrypted = await client.verify(session.gatewayUrl, {
+  download_url: downloadUrl,
+  processor_ids: ["core-c2pa", "phash-v1"],
 });
 
-// 6. Sign (generate cNFT minting transaction)
+// 6. Decrypt and inspect the verify response
+const resultBytes = await decryptResponse(
+  symmetricKey,
+  encrypted.nonce,
+  encrypted.ciphertext,
+);
+const verifyResult = JSON.parse(new TextDecoder().decode(resultBytes));
+
+// 7. Upload signed_json to off-chain storage, then call /sign
 const signResponse = await client.sign(session.gatewayUrl, {
-  requests: [{ signed_json: decryptedVerifyResult, wallet: "YOUR_WALLET" }],
+  recent_blockhash: blockhash,
+  requests: [{ signed_json_uri: arweaveUri }],
 });
+// signResponse.partial_txs contains partially-signed transactions
+// to be co-signed by the user's wallet and broadcast.
 ```
 
 ## API
@@ -66,7 +90,12 @@ const signResponse = await client.sign(session.gatewayUrl, {
 | Function | Description |
 |----------|-------------|
 | `generateEphemeralKeyPair()` | Generate X25519 keypair for E2EE |
-| `deriveSharedSecret(secret, pubkey)` | X25519 ECDH + HKDF-SHA256 key derivation |
+| `deriveSharedSecret(sk, pk)` | X25519 ECDH key exchange |
+| `deriveSymmetricKey(shared)` | HKDF-SHA256 key derivation (32-byte AES key) |
+| `encrypt(key, plaintext)` | AES-256-GCM encryption |
+| `decrypt(key, nonce, ct)` | AES-256-GCM decryption |
+| `encryptPayload(teePk, data)` | Full E2EE flow (ECDH + HKDF + AES-GCM) |
+| `decryptResponse(key, nonce, ct)` | Decrypt Base64-encoded TEE response |
 
 ## Encryption Protocol
 
@@ -76,6 +105,9 @@ The SDK uses end-to-end encryption (E2EE) so that node operators cannot see cont
 2. Derives a shared secret with the TEE's X25519 public key (ECDH)
 3. Derives a symmetric key via HKDF-SHA256
 4. Encrypts the payload with AES-256-GCM
+
+The same symmetric key is used by the TEE to encrypt the response, which
+the client decrypts with `decryptResponse()`.
 
 ## License
 

@@ -15,11 +15,6 @@ mod extension;
 
 pub use handler::handle_verify;
 
-/// Base64エンジン（Standard）
-pub(crate) fn b64() -> base64::engine::GeneralPurpose {
-    base64::engine::general_purpose::STANDARD
-}
-
 /// コンテンツのMIMEタイプをマジックバイトから検出する。
 /// 仕様書 §2.1
 pub(crate) fn detect_mime_type(data: &[u8]) -> &str {

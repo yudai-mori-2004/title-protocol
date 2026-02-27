@@ -13,7 +13,10 @@ Dockerfiles for Title Protocol components.
 
 ## Usage
 
-These Dockerfiles are used by `docker-compose` configurations:
+These Dockerfiles are used by the production Docker Compose configuration:
 
-- **Local development**: `docker compose up` (project root)
-- **Production (AWS)**: See `deploy/aws/docker-compose.production.yml` and `deploy/aws/README.md`
+```bash
+docker compose -f deploy/aws/docker-compose.production.yml up -d
+```
+
+See `deploy/aws/README.md` for details.

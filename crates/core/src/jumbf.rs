@@ -94,6 +94,7 @@ fn read_desc_info(reader: &mut Cursor<&[u8]>, content_size: u64) -> Result<DescI
     let mut label = String::new();
     if toggles[0] & 0x02 != 0 {
         // ラベル文字列がある（null終端）
+        // C2PAラベルはASCII文字列のみ使用するため、バイト単位での処理で十分。
         // content_sizeを超えないようにガード（不正データによる無限ループ防止）
         let max_label_len = (content_size - 17) as usize;
         let mut byte = [0u8; 1];

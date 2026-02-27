@@ -4,7 +4,7 @@
  * Webhook ハンドラ
  *
  * 仕様書 §6.6: Mint/Burn/Transferイベントをリアルタイムに検知してDBに反映する。
- * Helius Webhooks等のサービスからイベントを受信する。
+ * DASプロバイダーのWebhook機能からイベントを受信する。
  */
 
 import type { IndexerDb } from "./db/client";

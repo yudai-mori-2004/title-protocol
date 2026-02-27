@@ -40,3 +40,42 @@ impl axum::response::IntoResponse for GatewayError {
         (status, self.to_string()).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    /// 全GatewayErrorバリアントが正しいHTTPステータスコードにマッピングされることを確認
+    #[test]
+    fn test_error_status_codes() {
+        let cases: Vec<(GatewayError, StatusCode)> = vec![
+            (GatewayError::TeeRelay("t".into()), StatusCode::BAD_GATEWAY),
+            (
+                GatewayError::Storage("t".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                GatewayError::Solana("t".into()),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (
+                GatewayError::Internal("t".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                GatewayError::BadRequest("t".into()),
+                StatusCode::BAD_REQUEST,
+            ),
+        ];
+
+        for (error, expected_status) in cases {
+            let response = error.into_response();
+            assert_eq!(
+                response.status(),
+                expected_status,
+                "ステータスコードが一致しません"
+            );
+        }
+    }
+}

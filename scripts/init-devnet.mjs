@@ -77,7 +77,7 @@ const SKIP_DELEGATE = hasFlag("skip-delegate");
 // ---------------------------------------------------------------------------
 
 const PROGRAM_ID = new PublicKey(
-  process.env.TITLE_CONFIG_PROGRAM_ID || "C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN"
+  process.env.TITLE_CONFIG_PROGRAM_ID || "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP"
 );
 
 const AUTHORITY_KEY_PATH = join(PROJECT_ROOT, "deploy", "aws", "keys", "devnet-authority.json");
@@ -100,8 +100,8 @@ function anchorDisc(method) {
 
 const DISC_INITIALIZE = anchorDisc("initialize");
 const DISC_UPDATE_COLLECTIONS = anchorDisc("update_collections");
-const DISC_UPDATE_TEE_NODES = anchorDisc("update_tee_nodes");
-const DISC_UPDATE_WASM_MODULES = anchorDisc("update_wasm_modules");
+const DISC_REGISTER_TEE_NODE = anchorDisc("register_tee_node");
+const DISC_ADD_WASM_MODULE = anchorDisc("add_wasm_module");
 const DISC_DELEGATE_COLLECTION_AUTHORITY = anchorDisc("delegate_collection_authority");
 
 // ---------------------------------------------------------------------------
@@ -113,6 +113,19 @@ function findGlobalConfigPDA() {
     [Buffer.from("global-config")],
     PROGRAM_ID
   );
+}
+
+function findTeeNodePDA(signingPubkeyBytes) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("tee-node"), signingPubkeyBytes],
+    PROGRAM_ID
+  );
+}
+
+/** Borsh String encode: 4-byte LE length + UTF-8 bytes */
+function borshString(str) {
+  const encoded = Buffer.from(str, "utf-8");
+  return Buffer.concat([u32le(encoded.length), encoded]);
 }
 
 function u32le(n) {
@@ -145,30 +158,6 @@ async function airdropIfNeeded(connection, pubkey, minSol = 2) {
   } else {
     console.log(`    残高: ${balanceSol.toFixed(4)} SOL (十分)`);
   }
-}
-
-/** Base58デコード */
-const ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-function bs58Decode(str) {
-  const bytes = [];
-  for (const c of str) {
-    let carry = ALPHABET.indexOf(c);
-    if (carry < 0) throw new Error(`Invalid base58 character: ${c}`);
-    for (let j = 0; j < bytes.length; j++) {
-      carry += bytes[j] * 58;
-      bytes[j] = carry & 0xff;
-      carry >>= 8;
-    }
-    while (carry > 0) {
-      bytes.push(carry & 0xff);
-      carry >>= 8;
-    }
-  }
-  for (const c of str) {
-    if (c !== "1") break;
-    bytes.push(0);
-  }
-  return Buffer.from(bytes.reverse());
 }
 
 /** WASM extension_idを32バイトに右パディング */
@@ -392,53 +381,100 @@ async function main() {
   }
 
   // =====================================================================
-  // Step 6: TEE ノード登録 (update_tee_nodes)
+  // Step 6: TEE ノード登録 (TEE /register-node)
+  //   TEE内部で命令を構築・署名 → authority共同署名 → ブロードキャスト
   // =====================================================================
-  if (teeSigningPubkey && gatewayPubkey) {
+  if (gatewayPubkey) {
     console.log("\n[Step 6] TEE ノード登録");
 
-    const signingBytes = bs58Decode(teeSigningPubkey);
-    const encryptionBytes = teeEncryptionPubkey
-      ? Buffer.from(teeEncryptionPubkey, "base64")
-      : Buffer.alloc(32);
-    const gatewayBytes = bs58Decode(gatewayPubkey);
+    const teeUrl = GATEWAY_URL.replace(/:3000$/, ":4000");
+    const { blockhash: regBlockhash } = await connection.getLatestBlockhash();
 
-    // TrustedTeeNodeAccount: signing_pubkey(32) + encryption_pubkey(32) + gateway_pubkey(32) + status(1) + tee_type(1)
-    const nodeData = Buffer.concat([
-      signingBytes,
-      encryptionBytes,
-      gatewayBytes,
-      Buffer.from([1]),  // status: Active
-      Buffer.from([0]),  // tee_type: aws_nitro
-    ]);
+    const registerRequest = {
+      gateway_endpoint: GATEWAY_URL,
+      gateway_pubkey: gatewayPubkey,
+      recent_blockhash: regBlockhash,
+      authority: authority.publicKey.toBase58(),
+      program_id: PROGRAM_ID.toBase58(),
+    };
 
-    const data = Buffer.concat([
-      DISC_UPDATE_TEE_NODES,
-      u32le(1),  // 1 node
-      nodeData,
-    ]);
+    let registerResult = null;
+    for (const url of [`${GATEWAY_URL}/register-node`, `${teeUrl}/register-node`]) {
+      try {
+        console.log(`  /register-node を呼び出し中: ${url}`);
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(registerRequest),
+          signal: AbortSignal.timeout(15000),
+        });
 
-    const ix = new TransactionInstruction({
-      keys: [
-        { pubkey: globalConfigPda, isSigner: false, isWritable: true },
-        { pubkey: authority.publicKey, isSigner: true, isWritable: false },
-      ],
-      programId: PROGRAM_ID,
-      data,
-    });
+        if (res.ok) {
+          registerResult = await res.json();
+          break;
+        } else {
+          const body = await res.text();
+          console.log(`  ${url}: HTTP ${res.status} - ${body.substring(0, 100)}`);
+        }
+      } catch (e) {
+        console.log(`  ${url}: 接続失敗 (${e.message?.substring(0, 60)})`);
+      }
+    }
 
-    const tx = new Transaction().add(ix);
-    try {
-      const sig = await sendAndConfirmTransaction(connection, tx, [authority]);
-      console.log(`  TEEノード登録完了: ${sig}`);
-    } catch (e) {
-      console.log(`  TEEノード登録失敗: ${e.message?.substring(0, 100)}`);
+    if (registerResult) {
+      teeSigningPubkey = registerResult.signing_pubkey;
+      teeEncryptionPubkey = registerResult.encryption_pubkey;
+      console.log(`  TEE Signing Pubkey: ${teeSigningPubkey}`);
+      console.log(`  TEE Encryption Pubkey: ${teeEncryptionPubkey}`);
+      console.log(`  TEE Node PDA: ${registerResult.tee_node_pda}`);
+
+      // TEE wallet に SOL 送金（TEEがpayer）
+      const teePk = new PublicKey(teeSigningPubkey);
+      const teeBalance = await connection.getBalance(teePk);
+      const REQUIRED = 0.1 * LAMPORTS_PER_SOL;
+      if (teeBalance < REQUIRED) {
+        console.log(`  TEE wallet にSOL送金中... (0.1 SOL)`);
+        const transferIx = SystemProgram.transfer({
+          fromPubkey: authority.publicKey,
+          toPubkey: teePk,
+          lamports: REQUIRED,
+        });
+        const transferTx = new Transaction().add(transferIx);
+        const transferSig = await sendAndConfirmTransaction(connection, transferTx, [authority]);
+        console.log(`  SOL送金完了: ${transferSig}`);
+      } else {
+        console.log(`  TEE wallet 残高: ${(teeBalance / LAMPORTS_PER_SOL).toFixed(4)} SOL (十分)`);
+      }
+
+      // Authority共同署名 + ブロードキャスト
+      const txBytes = Buffer.from(registerResult.partial_tx, "base64");
+      const regTx = Transaction.from(txBytes);
+      regTx.partialSign(authority);
+
+      try {
+        const sig = await connection.sendRawTransaction(regTx.serialize());
+        await connection.confirmTransaction(sig, "confirmed");
+        console.log(`  TEEノード登録完了: ${sig}`);
+      } catch (e) {
+        console.log(`  TEEノード登録失敗（既に登録済みの可能性）: ${e.message?.substring(0, 100)}`);
+      }
+
+      // tee-info.json を保存/更新
+      const teeInfoDir = join(PROJECT_ROOT, "tests", "e2e", "fixtures");
+      mkdirSync(teeInfoDir, { recursive: true });
+      const info = existsSync(teeInfoPath)
+        ? JSON.parse(readFileSync(teeInfoPath, "utf-8"))
+        : {};
+      info.signing_pubkey = teeSigningPubkey;
+      info.encryption_pubkey = teeEncryptionPubkey;
+      info.tee_node_pda = registerResult.tee_node_pda;
+      writeFileSync(teeInfoPath, JSON.stringify(info, null, 2));
+      console.log(`  TEE情報を保存: ${teeInfoPath}`);
+    } else {
+      console.log("  WARNING: TEEに接続できません。TEE起動後に再実行してください。");
     }
   } else {
-    console.log("\n[Step 6] TEE ノード登録 → スキップ（TEE情報が不足）");
-    if (!teeSigningPubkey) {
-      console.log("  → TEE signing_pubkey が未取得。/create-tree 後に再実行してください。");
-    }
+    console.log("\n[Step 6] TEE ノード登録 → スキップ（Gateway公開鍵が不明）");
   }
 
   // =====================================================================
@@ -471,32 +507,32 @@ async function main() {
   }
 
   if (wasmModules.length > 0) {
-    // TrustedWasmModuleAccount: extension_id(32) + wasm_hash(32)
-    const moduleData = wasmModules.map((m) =>
-      Buffer.concat([extensionIdBytes(m.id), m.hash])
-    );
+    for (const m of wasmModules) {
+      // add_wasm_module(extension_id, wasm_hash, wasm_source)
+      // wasm_source は未設定（ローカルビルドのため）
+      const data = Buffer.concat([
+        DISC_ADD_WASM_MODULE,
+        extensionIdBytes(m.id),       // extension_id: [u8; 32]
+        m.hash,                       // wasm_hash: [u8; 32]
+        borshString(""),              // wasm_source: String (empty for now)
+      ]);
 
-    const data = Buffer.concat([
-      DISC_UPDATE_WASM_MODULES,
-      u32le(wasmModules.length),
-      ...moduleData,
-    ]);
+      const ix = new TransactionInstruction({
+        keys: [
+          { pubkey: globalConfigPda, isSigner: false, isWritable: true },
+          { pubkey: authority.publicKey, isSigner: true, isWritable: false },
+        ],
+        programId: PROGRAM_ID,
+        data,
+      });
 
-    const ix = new TransactionInstruction({
-      keys: [
-        { pubkey: globalConfigPda, isSigner: false, isWritable: true },
-        { pubkey: authority.publicKey, isSigner: true, isWritable: false },
-      ],
-      programId: PROGRAM_ID,
-      data,
-    });
-
-    const tx = new Transaction().add(ix);
-    try {
-      const sig = await sendAndConfirmTransaction(connection, tx, [authority]);
-      console.log(`  WASMモジュール登録完了: ${sig}`);
-    } catch (e) {
-      console.log(`  WASMモジュール登録失敗: ${e.message?.substring(0, 100)}`);
+      const tx = new Transaction().add(ix);
+      try {
+        const sig = await sendAndConfirmTransaction(connection, tx, [authority]);
+        console.log(`  ${m.id} 登録完了: ${sig}`);
+      } catch (e) {
+        console.log(`  ${m.id} 登録失敗（既に登録済みの可能性）: ${e.message?.substring(0, 80)}`);
+      }
     }
   }
 
@@ -522,15 +558,17 @@ async function main() {
       console.log(`  ${label} Collection: ${mintStr}`);
 
       // 1. Anchor命令: delegate_collection_authority（オンチェーン記録）
+      const [teeNodePdaForDelegate] = findTeeNodePDA(teePubkey.toBuffer());
+
       const anchorData = Buffer.concat([
         DISC_DELEGATE_COLLECTION_AUTHORITY,
-        teePubkey.toBuffer(),            // tee_signing_pubkey: Pubkey
         Buffer.from([collectionType]),   // collection_type: u8
       ]);
 
       const anchorIx = new TransactionInstruction({
         keys: [
           { pubkey: globalConfigPda, isSigner: false, isWritable: false },
+          { pubkey: teeNodePdaForDelegate, isSigner: false, isWritable: false },
           { pubkey: authority.publicKey, isSigner: true, isWritable: false },
           { pubkey: new PublicKey(mintStr), isSigner: false, isWritable: false },
         ],
@@ -694,32 +732,62 @@ async function main() {
       teeEncryptionPubkey = treeResult.encryption_pubkey;
 
       if (gatewayPubkey) {
-        console.log("\n  [追加] TEEノード情報を登録...");
-        const signingBytes = bs58Decode(teeSigningPubkey);
-        const encryptionBytes = Buffer.from(teeEncryptionPubkey, "base64");
-        const gatewayBytes = bs58Decode(gatewayPubkey);
+        console.log("\n  [追加] TEEノード登録（/register-node）...");
+        const teeUrlLate = GATEWAY_URL.replace(/:3000$/, ":4000");
+        const { blockhash: lateBlockhash } = await connection.getLatestBlockhash();
 
-        const nodeData = Buffer.concat([
-          signingBytes, encryptionBytes, gatewayBytes,
-          Buffer.from([1]), Buffer.from([0]),
-        ]);
-        const data = Buffer.concat([DISC_UPDATE_TEE_NODES, u32le(1), nodeData]);
+        const lateRegisterRequest = {
+          gateway_endpoint: GATEWAY_URL,
+          gateway_pubkey: gatewayPubkey,
+          recent_blockhash: lateBlockhash,
+          authority: authority.publicKey.toBase58(),
+          program_id: PROGRAM_ID.toBase58(),
+        };
 
-        const ix = new TransactionInstruction({
-          keys: [
-            { pubkey: globalConfigPda, isSigner: false, isWritable: true },
-            { pubkey: authority.publicKey, isSigner: true, isWritable: false },
-          ],
-          programId: PROGRAM_ID,
-          data,
-        });
+        let lateRegisterResult = null;
+        for (const url of [`${teeUrlLate}/register-node`, `${GATEWAY_URL}/register-node`]) {
+          try {
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(lateRegisterRequest),
+              signal: AbortSignal.timeout(15000),
+            });
+            if (res.ok) {
+              lateRegisterResult = await res.json();
+              break;
+            }
+          } catch (_) {}
+        }
 
-        const tx = new Transaction().add(ix);
-        try {
-          const sig = await sendAndConfirmTransaction(connection, tx, [authority]);
-          console.log(`  TEEノード登録完了: ${sig}`);
-        } catch (e) {
-          console.log(`  TEEノード登録失敗: ${e.message?.substring(0, 100)}`);
+        if (lateRegisterResult) {
+          // TEE wallet 送金（Step 9で既にcreate-tree用に送金済みの場合あり）
+          const lateTeePk = new PublicKey(lateRegisterResult.signing_pubkey);
+          const lateBalance = await connection.getBalance(lateTeePk);
+          if (lateBalance < 0.05 * LAMPORTS_PER_SOL) {
+            const transferIx = SystemProgram.transfer({
+              fromPubkey: authority.publicKey,
+              toPubkey: lateTeePk,
+              lamports: 0.1 * LAMPORTS_PER_SOL,
+            });
+            const transferTx = new Transaction().add(transferIx);
+            await sendAndConfirmTransaction(connection, transferTx, [authority]);
+          }
+
+          // Authority共同署名 + ブロードキャスト
+          const lateTxBytes = Buffer.from(lateRegisterResult.partial_tx, "base64");
+          const lateTx = Transaction.from(lateTxBytes);
+          lateTx.partialSign(authority);
+
+          try {
+            const sig = await connection.sendRawTransaction(lateTx.serialize());
+            await connection.confirmTransaction(sig, "confirmed");
+            console.log(`  TEEノード登録完了: ${sig}`);
+          } catch (e) {
+            console.log(`  TEEノード登録失敗: ${e.message?.substring(0, 100)}`);
+          }
+        } else {
+          console.log("  TEEに接続できず、ノード登録をスキップしました。");
         }
       }
     }

@@ -9,7 +9,7 @@
  * ## 環境変数
  * - DATABASE_URL: PostgreSQL接続文字列
  * - DAS_ENDPOINTS: カンマ区切りのDAS APIエンドポイント（APIキー付きURL）
- *   例: "https://mainnet.helius-rpc.com/?api-key=xxx,https://devnet.helius-rpc.com/?api-key=yyy"
+ *   例: "https://das-provider.example.com/?api-key=xxx"
  * - COLLECTION_MINTS: カンマ区切りの監視対象コレクションMintアドレス
  * - POLL_INTERVAL_MS: ポーリング間隔（ミリ秒、デフォルト: 300000 = 5分）
  * - WEBHOOK_PORT: Webhookサーバーのポート（デフォルト: 5000）

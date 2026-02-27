@@ -154,12 +154,50 @@ pub enum SecurityError {
     ProxyError(u32),
 }
 
+/// セマフォパーミットのRAIIガード。
+/// Drop時に予約済みパーミットを自動解放する。
+/// エラーパスでのセマフォリークを防止する。
+struct SemaphoreGuard {
+    semaphore: Arc<Semaphore>,
+    reserved: u32,
+}
+
+impl SemaphoreGuard {
+    fn new(semaphore: &Arc<Semaphore>) -> Self {
+        Self {
+            semaphore: Arc::clone(semaphore),
+            reserved: 0,
+        }
+    }
+
+    /// パーミットを予約する。失敗時はMemoryLimitExceeded。
+    fn acquire(&mut self, permits: u32) -> Result<(), SecurityError> {
+        let permit = self
+            .semaphore
+            .try_acquire_many(permits)
+            .map_err(|_| SecurityError::MemoryLimitExceeded)?;
+        permit.forget();
+        self.reserved += permits;
+        Ok(())
+    }
+}
+
+impl Drop for SemaphoreGuard {
+    fn drop(&mut self) {
+        if self.reserved > 0 {
+            self.semaphore.add_permits(self.reserved as usize);
+        }
+    }
+}
+
 /// セキュア化されたプロキシGETリクエスト。
 /// 仕様書 §6.4 — 三層防御（Zip Bomb、Reservation DoS、Slowloris）を適用。
 ///
 /// 1. レスポンスの宣言サイズをmax_size_bytesでチェック（Zip Bomb対策）
 /// 2. 64KBチャンク単位でセマフォを漸進的に予約（Reservation DoS対策）
 /// 3. 各チャンク読み取りにタイムアウトを設定（Slowloris対策）
+///
+/// セマフォは `SemaphoreGuard` で管理され、エラーパスでも確実に解放される。
 pub async fn proxy_get_secured(
     proxy_addr: &str,
     url: &str,
@@ -232,9 +270,10 @@ pub async fn proxy_get_secured(
 
     // 漸進的重み付きセマフォ予約 + Slowloris対策
     // 仕様書 §6.4
+    // SemaphoreGuardにより、タイムアウトやIOエラー時もDrop時に確実に解放される。
     let total_to_read = declared_size as usize;
     let mut buffer = Vec::with_capacity(total_to_read);
-    let mut total_reserved: u32 = 0;
+    let mut guard = SemaphoreGuard::new(semaphore);
     let mut remaining = total_to_read;
 
     while remaining > 0 {
@@ -250,20 +289,14 @@ pub async fn proxy_get_secured(
         read_result?;
 
         // 漸進的セマフォ予約（Reservation DoS対策）
-        let permits_needed = to_read as u32;
-        let permit = semaphore
-            .try_acquire_many(permits_needed)
-            .map_err(|_| SecurityError::MemoryLimitExceeded)?;
-        // 処理完了までセマフォを保持（forgetで解放を遅延）
-        permit.forget();
-        total_reserved += permits_needed;
+        guard.acquire(to_read as u32)?;
 
         buffer.extend_from_slice(&chunk_buf);
         remaining -= to_read;
     }
 
-    // 処理完了後にセマフォを解放
-    semaphore.add_permits(total_reserved as usize);
+    // guardのDropで自動解放されるが、成功パスでは明示的にここで消費される
+    drop(guard);
 
     Ok(ProxyResponse {
         status,
@@ -319,13 +352,12 @@ async fn proxy_get_secured_direct(
         });
     }
 
-    // セマフォ予約
-    let permits_needed = body.len() as u32;
-    if permits_needed > 0 {
-        let permit = semaphore
-            .try_acquire_many(permits_needed)
-            .map_err(|_| SecurityError::MemoryLimitExceeded)?;
-        permit.forget();
+    // セマフォ容量チェック（SemaphoreGuard経由）
+    // direct版ではダウンロード済みのため、acquire → Dropで即解放。
+    if !body.is_empty() {
+        let mut guard = SemaphoreGuard::new(semaphore);
+        guard.acquire(body.len() as u32)?;
+        // guardのDrop → 即解放
     }
 
     Ok(ProxyResponse { status, body })

@@ -5,10 +5,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-title_config = "C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN"
+title_config = "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP"
 
 [programs.devnet]
-title_config = "C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN"
+title_config = "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP"
 
 [registry]
 url = "https://api.apr.dev"

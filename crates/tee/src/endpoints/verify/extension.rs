@@ -11,7 +11,8 @@ use title_types::{Attribute, ExtensionPayload};
 
 use crate::config::TeeAppState;
 
-use super::{b64, format_content_hash};
+use super::format_content_hash;
+use crate::endpoints::b64;
 
 /// Extension処理: WASM実行 + Extension signed_json生成。
 /// 仕様書 §3.1, §5.1 Step 5, §7.1
@@ -36,7 +37,7 @@ pub(crate) async fn process_extension(
     let wasm_binary = loader.load(extension_id).await?;
 
     // WASMバイナリのSHA-256ハッシュを計算
-    let wasm_hash = title_crypto::content_hash_from_manifest_signature(&wasm_binary.bytes);
+    let wasm_hash = title_crypto::sha256(&wasm_binary.bytes);
     let wasm_hash_hex = format_content_hash(&wasm_hash);
 
     // Extension補助入力をシリアライズ
@@ -47,7 +48,7 @@ pub(crate) async fn process_extension(
 
     // extension_inputのハッシュ（存在する場合）
     let ext_input_hash = ext_input_bytes.as_ref().map(|bytes| {
-        let hash = title_crypto::content_hash_from_manifest_signature(bytes);
+        let hash = title_crypto::sha256(bytes);
         format_content_hash(&hash)
     });
 

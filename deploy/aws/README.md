@@ -245,7 +245,7 @@ DATABASE_URL=postgres://title:<password>@localhost:5432/title_indexer
 DAS_ENDPOINTS=https://devnet.helius-rpc.com/?api-key=YOUR_KEY
 
 # Title Config Program ID (update after anchor deploy)
-TITLE_CONFIG_PROGRAM_ID=C2HryYkBKeoc4KE2RJ6au1oXc1jtKeKw3zrknQ455JQN
+TITLE_CONFIG_PROGRAM_ID=GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP
 ```
 
 ## ファイル構成

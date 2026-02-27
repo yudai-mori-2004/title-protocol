@@ -56,15 +56,6 @@ pub struct ExtensionResult {
     pub output: serde_json::Value,
 }
 
-/// ホスト関数がアクセスするWASM実行時の状態。
-/// 仕様書 §7.1
-pub struct HostState {
-    /// コンテンツの生データ（TEEホストメモリ上に保持）
-    pub content: Vec<u8>,
-    /// Extension補助入力（extension_inputs[extension_id]のJSON）
-    pub extension_input: Option<Vec<u8>>,
-}
-
 /// wasmtime Store内部の状態。
 /// コンテンツデータとStoreLimitsを保持する。
 struct InnerHostState {
@@ -400,20 +391,23 @@ impl WasmRunner {
                     // HMAC計算（仕様書 §7.1）
                     let mac_bytes: Vec<u8> = match algorithm {
                         0 => {
-                            let mut mac = Hmac::<Sha256>::new_from_slice(key)
-                                .unwrap_or_else(|_| Hmac::<Sha256>::new_from_slice(&[0]).unwrap());
+                            let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(key) else {
+                                return 0;
+                            };
                             mac.update(data_slice);
                             mac.finalize().into_bytes().to_vec()
                         }
                         1 => {
-                            let mut mac = Hmac::<Sha384>::new_from_slice(key)
-                                .unwrap_or_else(|_| Hmac::<Sha384>::new_from_slice(&[0]).unwrap());
+                            let Ok(mut mac) = Hmac::<Sha384>::new_from_slice(key) else {
+                                return 0;
+                            };
                             mac.update(data_slice);
                             mac.finalize().into_bytes().to_vec()
                         }
                         2 => {
-                            let mut mac = Hmac::<Sha512>::new_from_slice(key)
-                                .unwrap_or_else(|_| Hmac::<Sha512>::new_from_slice(&[0]).unwrap());
+                            let Ok(mut mac) = Hmac::<Sha512>::new_from_slice(key) else {
+                                return 0;
+                            };
                             mac.update(data_slice);
                             mac.finalize().into_bytes().to_vec()
                         }
@@ -727,5 +721,85 @@ mod tests {
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["hmac_size"], 32);
+    }
+
+    /// テスト: 不正WASMバイナリでCompileError
+    #[test]
+    fn test_invalid_wasm_binary() {
+        let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
+        let result = runner.execute(b"not wasm", b"content", None, "process");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), WasmError::CompileError(_)));
+    }
+
+    /// テスト: 存在しないエクスポート関数名でExecutionError
+    #[test]
+    fn test_missing_export_function() {
+        let wasm = wat::parse_str(
+            r#"(module
+            (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
+            (import "env" "get_content_length" (func $len (result i32)))
+            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
+            (memory (export "memory") 1)
+        )"#,
+        )
+        .unwrap();
+
+        let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
+        let result = runner.execute(&wasm, b"content", None, "nonexistent_func");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), WasmError::ExecutionError(_)));
+    }
+
+    /// テスト: WASM関数がptr=0を返した場合のエラー
+    #[test]
+    fn test_result_ptr_zero() {
+        let wasm = wat::parse_str(
+            r#"(module
+            (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
+            (import "env" "get_content_length" (func $len (result i32)))
+            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            (func (export "process") (result i32)
+                (i32.const 0)
+            )
+        )"#,
+        )
+        .unwrap();
+
+        let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
+        let result = runner.execute(&wasm, b"content", None, "process");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), WasmError::ExecutionError(_)));
+    }
+
+    /// テスト: 結果バッファのjson_len=0でエラー
+    #[test]
+    fn test_result_buffer_zero_length() {
+        let wasm = wat::parse_str(
+            r#"(module
+            (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
+            (import "env" "get_content_length" (func $len (result i32)))
+            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            ;; json_len = 0 at offset 1024
+            (data (i32.const 1024) "\00\00\00\00")
+            (func (export "process") (result i32)
+                (i32.const 1024)
+            )
+        )"#,
+        )
+        .unwrap();
+
+        let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
+        let result = runner.execute(&wasm, b"content", None, "process");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), WasmError::ExecutionError(_)));
     }
 }

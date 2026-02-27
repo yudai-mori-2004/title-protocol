@@ -88,7 +88,6 @@ async fn main() -> anyhow::Result<()> {
         tee_endpoint,
         http_client: reqwest::Client::new(),
         signing_key,
-        verifying_key,
         temp_storage,
         solana_rpc_url,
         solana_keypair,
@@ -154,13 +153,11 @@ mod tests {
     /// テスト用GatewayStateを構築するヘルパー
     fn test_state(tee_endpoint: &str) -> Arc<GatewayState> {
         let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
-        let verifying_key = Ed25519VerifyingKey::from(&signing_key);
 
         Arc::new(GatewayState {
             tee_endpoint: tee_endpoint.to_string(),
             http_client: reqwest::Client::new(),
             signing_key,
-            verifying_key,
             temp_storage: Box::new(MockTempStorage),
             solana_rpc_url: None,
             solana_keypair: None,
@@ -455,14 +452,12 @@ mod tests {
     #[tokio::test]
     async fn test_sign_and_mint_no_keypair() {
         let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
-        let verifying_key = Ed25519VerifyingKey::from(&signing_key);
 
         // solana_rpc_url は設定するが、solana_keypair は None
         let state = Arc::new(GatewayState {
             tee_endpoint: "http://localhost:4000".to_string(),
             http_client: reqwest::Client::new(),
             signing_key,
-            verifying_key,
             temp_storage: Box::new(MockTempStorage),
             solana_rpc_url: Some("http://localhost:8899".to_string()),
             solana_keypair: None,

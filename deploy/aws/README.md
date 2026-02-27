@@ -1,171 +1,122 @@
 # AWS Nitro Enclave Node Deployment Guide
 
-Title Protocol ノードを空の AWS アカウントからゼロベースで構築する手順書。
+Title Protocol ノードを AWS 上で起動する手順書。
+1インスタンス = 1 TEE = 1エンドポイント。冪等に何度でも実行可能。
+
+## 前提
+
+- `network.json` が存在する（`scripts/init-global.mjs` で事前に作成済み）
+- AWS アカウント（AdministratorAccess 権限推奨）
+- AWS CLI 設定済み（`aws configure`）
+- Terraform 1.5+
 
 ## アーキテクチャ
 
 ```
-                    ┌── EC2 Instance (c5.xlarge) ─────────────────────┐
-                    │                                                  │
-Internet ─:3000──►  │  Docker Compose                                  │
-                    │  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
-                    │  │ Gateway  │  │ Indexer   │  │ Postgres │      │
-                    │  └────┬─────┘  └──────────┘  └──────────┘      │
-                    │       │ :4000                                    │
-                    │       ▼                                          │
-                    │  socat (TCP:4000 ←► vsock)                      │
-                    │       │                                          │
-                    │  ┌────▼──────────────────────────┐              │
-                    │  │  Nitro Enclave (EIF)           │              │
-                    │  │  ┌─────────┐  ┌────────────┐  │              │
-                    │  │  │ TEE     │  │ WASM       │  │              │
-                    │  │  │ Server  │  │ Modules x4 │  │              │
-                    │  │  └────┬────┘  └────────────┘  │              │
-                    │  │       │ :8000                  │              │
-                    │  │  socat (vsock ←► TCP:8000)     │              │
-                    │  └───────┼────────────────────────┘              │
-                    │          ▼                                        │
-                    │  title-proxy (HTTP ←► 外部API)                   │
-                    │                                                  │
-                    │  S3 (Temp Storage) ◄── IAM User credentials     │
-                    └──────────────────────────────────────────────────┘
+                    +-- EC2 Instance (c5.xlarge) ----------------------+
+                    |                                                   |
+Internet --:3000->  |  Docker Compose                                   |
+                    |  +----------+  +----------+  +----------+        |
+                    |  | Gateway  |  | Indexer   |  | Postgres |        |
+                    |  +----+-----+  +----------+  +----------+        |
+                    |       | :4000                                     |
+                    |       v                                           |
+                    |  socat (TCP:4000 <-> vsock)                       |
+                    |       |                                           |
+                    |  +----v----------------------------+              |
+                    |  |  Nitro Enclave (EIF)            |              |
+                    |  |  +---------+  +------------+   |              |
+                    |  |  | TEE     |  | WASM       |   |              |
+                    |  |  | Server  |  | Modules x4 |   |              |
+                    |  |  +----+----+  +------------+   |              |
+                    |  |       | :8000                   |              |
+                    |  |  socat (vsock <-> TCP:8000)     |              |
+                    |  +-------+------------------------+              |
+                    |           v                                       |
+                    |  title-proxy (HTTP <-> Solana RPC / Arweave)     |
+                    |                                                   |
+                    |  S3 (Temp Storage)                                |
+                    +---------------------------------------------------+
 ```
 
-- **Gateway**: HTTP API サーバー。クライアントからのリクエストを受け、TEE に中継
-- **TEE**: Nitro Enclave 内で動作。C2PA 検証、WASM 実行、cNFT 署名を行う
-- **Proxy**: vsock 経由で TEE の外部 HTTP 通信を中継（Solana RPC、Arweave 等）
-- **Indexer**: cNFT の発行を監視し、PostgreSQL に記録
-- **S3**: 暗号化されたコンテンツの一時保管（1 日で自動削除）
-
-## 前提条件
-
-- AWS アカウント（AdministratorAccess 権限のある IAM ユーザー推奨）
-- AWS CLI 設定済み（`aws configure`）
-- Terraform 1.5+
-- Git
-
-## Step 1: SSH キーペアの準備
+## Step 1: Terraform でインフラ作成
 
 ```bash
+# SSH キーペアの準備
 mkdir -p deploy/aws/keys
-
-# AWS にキーペアを作成
 aws ec2 create-key-pair \
   --key-name title-protocol-devnet \
   --query 'KeyMaterial' \
   --output text > deploy/aws/keys/title-protocol-devnet.pem
-
 chmod 400 deploy/aws/keys/title-protocol-devnet.pem
-```
 
-既存のキーペアを使う場合は `deploy/aws/keys/` に `.pem` ファイルを配置し、
-`variables.tf` の `key_name` を合わせる。
-
-## Step 2: Terraform で AWS リソースを作成
-
-```bash
+# Terraform
 cd deploy/aws/terraform
-
 terraform init
-terraform plan     # 作成されるリソースを確認
-terraform apply    # 実行（yes で確定）
+terraform plan
+terraform apply
 ```
 
 ### 作成されるリソース
 
 | リソース | 用途 |
 |---------|------|
-| EC2 (c5.xlarge) | Nitro Enclave 対応インスタンス。Amazon Linux 2023 |
-| S3 バケット | 暗号化コンテンツの一時保管。1 日ライフサイクルで自動削除 |
-| IAM ユーザー + アクセスキー | Gateway の S3 認証用（永続キー） |
-| Security Group | SSH:22, Gateway:3000, Indexer:5000 を開放 |
+| EC2 (c5.xlarge) | Nitro Enclave 対応。Amazon Linux 2023 |
+| S3 バケット | 暗号化コンテンツの一時保管（1日で自動削除） |
+| IAM ユーザー + アクセスキー | Gateway の S3 認証用 |
+| Security Group | SSH:22, Gateway:3000, Indexer:5000 |
 
-### Terraform 変数
-
-| 変数 | デフォルト | 説明 |
-|------|----------|------|
-| `aws_region` | `ap-northeast-1` | AWS リージョン |
-| `instance_type` | `c5.xlarge` | Nitro 対応必須。4 vCPU, 8 GB RAM |
-| `key_name` | `title-protocol-devnet` | EC2 キーペア名 |
-| `key_file` | `../keys/title-protocol-devnet.pem` | SSH 秘密鍵ファイルのパス |
-| `allowed_ssh_cidrs` | `["0.0.0.0/0"]` | SSH 許可 CIDR ブロック |
-| `project_name` | `title-protocol` | リソース命名用プロジェクト名 |
-| `s3_bucket_name` | `title-uploads-devnet` | S3 バケット名（グローバルで一意） |
-| `volume_size` | `50` | EBS ボリューム (GB) |
-| `enclave_cpu_count` | `2` | Enclave 割当 vCPU（ホストから取得） |
-| `enclave_memory_mib` | `1024` | Enclave 割当メモリ (MiB) |
-
-## Step 3: .env の設定
-
-Terraform の出力値を取得:
+## Step 2: .env の設定
 
 ```bash
+# Terraform output から値を取得
 terraform output instance_public_ip
 terraform output s3_access_key_id
 terraform output -raw s3_secret_access_key
 terraform output s3_bucket_name
-terraform output s3_bucket_endpoint
 ```
 
-## Step 4: EC2 に SSH してデプロイ
+## Step 3: ノード起動
 
 ```bash
-# SSH 接続
+# SSH
 ssh -i deploy/aws/keys/title-protocol-devnet.pem \
   ec2-user@$(terraform output -raw instance_public_ip)
-```
 
-EC2 上で:
-
-```bash
-# リポジトリをクローン
+# EC2 上で
 git clone <REPO_URL> ~/title-protocol
 cd ~/title-protocol
-
-# .env を作成
 cp .env.example .env
-# vim .env で Terraform output の値を設定:
-#   SOLANA_RPC_URL=https://api.devnet.solana.com
-#   S3_BUCKET=<terraform output s3_bucket_name>
-#   S3_ENDPOINT=<terraform output s3_bucket_endpoint>
-#   S3_REGION=ap-northeast-1
-#   S3_ACCESS_KEY=<terraform output s3_access_key_id>
-#   S3_SECRET_KEY=<terraform output -raw s3_secret_access_key>
-#   DB_PASSWORD=<任意のパスワード>
+vim .env  # Terraform output の値を設定
 
-# デプロイ実行（全自動）
+# ノード起動（全自動）
 ./deploy/aws/setup-ec2.sh
 ```
 
-### setup-ec2.sh が行うこと
+### setup-ec2.sh のステップ
 
 | Step | 内容 |
 |------|------|
-| 0 | .env の読み込みと検証 |
+| 0 | .env + network.json の読み込みと検証 |
 | 1 | WASM モジュール 4 個のビルド |
-| 1B | ホスト側バイナリのビルド（title-proxy） |
-| 2 | TEE Docker イメージ → EIF (Enclave Image File) のビルド |
-| 3 | Nitro Enclave の起動 + vsock ブリッジ設定 |
-| 4 | Proxy の起動 |
-| 5 | Docker Compose（Gateway + Indexer + PostgreSQL）の起動 |
-| 6 | S3 アクセスの検証 |
-| 7 | GlobalConfig 初期化 (`init-devnet.mjs`) |
-| 8 | ヘルスチェック（Solana RPC, Gateway, TEE, Indexer） |
+| 2 | ホスト側バイナリのビルド |
+| 3 | Enclave イメージ (EIF) のビルド |
+| 4 | TEE の起動（Enclave or MockRuntime） |
+| 5 | Proxy の起動（Enclaveモードのみ） |
+| 6 | Docker Compose（Gateway + Indexer + PostgreSQL） |
+| 7 | S3 アクセスの検証 |
+| 8 | TEEノード登録（/register-node → DAO署名） |
+| 9 | Merkle Tree 作成（/create-tree） |
+| 10 | ヘルスチェック |
 
-所要時間: 初回は Rust ビルドを含むため 15-30 分程度。
+### Devnet vs Mainnet の違い
 
-## Step 5: 動作確認
+`programs/title-config/keys/authority.json` が存在するかどうかのみ。
 
-```bash
-# Gateway のヘルスチェック（upload-url エンドポイントが応答するか確認）
-curl -s -o /dev/null -w "%{http_code}" http://<IP>:3000/upload-url
-
-# ノード情報はオンチェーン (GlobalConfig + TeeNodeAccount PDA) で確認
-solana account <TeeNodeAccount_PDA> --url devnet
-
-# Indexer の死活確認
-curl http://<IP>:5000/health
-```
+| | Devnet（自前GlobalConfig） | Mainnet（公式GlobalConfig） |
+|---|---|---|
+| `programs/title-config/keys/authority.json` | 存在する | 存在しない |
+| Step 8 | 自動で共同署名 → 即ブロードキャスト | 部分署名TXを表示 → DAOに審査依頼 |
 
 ## ノードの停止
 
@@ -174,7 +125,6 @@ curl http://<IP>:5000/health
 sudo nitro-cli terminate-enclave --all
 
 # 全サービスの停止
-cd ~/title-protocol
 docker compose -f deploy/aws/docker-compose.production.yml down
 
 # Proxy の停止
@@ -183,89 +133,32 @@ pkill title-proxy || true
 
 ## ノードの再起動
 
-TEE はステートレスなので、再起動すると鍵が再生成される。
+TEE はステートレス。再起動すると鍵が再生成される。
 
 ```bash
-# 再デプロイ
 ./deploy/aws/setup-ec2.sh
 ```
 
-再起動後は GlobalConfig の更新が必要。`setup-ec2.sh` の Step 7 で
-`init-devnet.mjs` が自動実行されるが、手動でも可能:
-
-```bash
-cd scripts
-node init-devnet.mjs --rpc $SOLANA_RPC_URL --gateway http://localhost:3000
-```
-
-GlobalConfig の運用手順の詳細は `docs/v1/GLOBALCONFIG-GUIDE.md` を参照。
-
 ## トラブルシューティング
 
-| 症状 | 原因 | 対処 |
-|------|------|------|
-| `docker: permission denied` | Docker グループ未反映 | `exit` → 再 SSH、または `sg docker bash` |
-| `cargo build` で C コンパイラ不在 | user-data.sh 未完了 | `sudo dnf install -y gcc gcc-c++` |
-| Enclave 起動失敗 | メモリ不足 | `enclave_memory_mib` を調整。`/etc/nitro_enclaves/allocator.yaml` も確認 |
-| S3 presigned URL が 403 | IAM キー未設定 | `terraform output` で S3 キーを取得して .env に設定 |
-| Gateway が起動しない | ポート競合 | `ss -tlnp \| grep 3000` で確認。既存プロセスを停止 |
-| `solana airdrop` 失敗 | devnet レート制限 | https://faucet.solana.com/ で手動取得 |
-| `cargo-build-sbf` edition2024 エラー | Platform Tools が古い | `--tools-version v1.52` を指定 |
-
-## 環境変数（本番用）
-
-`.env.example` をコピーし、以下を追加設定:
-
-```bash
-# --- Enclave ---
-ENCLAVE_CPU_COUNT=2             # vCPUs allocated to the enclave
-ENCLAVE_MEMORY_MIB=1024         # Memory allocated (MiB). Minimum ~704MB depending on EIF size
-
-# --- Production Settings ---
-SOLANA_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_KEY
-GATEWAY_SIGNING_KEY=<64-char hex — generate with: openssl rand -hex 32>
-TEE_ENDPOINT=http://localhost:4000
-TEE_RUNTIME=nitro
-PROXY_ADDR=127.0.0.1:8000     # socat inside TEE VM bridges this TCP port to vsock
-
-# S3-compatible storage (values from terraform output)
-S3_ENDPOINT=https://s3.ap-northeast-1.amazonaws.com
-S3_PUBLIC_ENDPOINT=https://s3.ap-northeast-1.amazonaws.com
-S3_ACCESS_KEY=<terraform output s3_access_key_id>
-S3_SECRET_KEY=<terraform output -raw s3_secret_access_key>
-S3_BUCKET=title-uploads-devnet
-S3_REGION=ap-northeast-1
-
-# Global Config
-CORE_COLLECTION_MINT=<Core Collection Mint address>
-EXT_COLLECTION_MINT=<Extension Collection Mint address>
-GATEWAY_PUBKEY=<Gateway public key, Base58>
-
-# PostgreSQL
-DB_PASSWORD=<strong password — generate with: openssl rand -base64 24>
-DATABASE_URL=postgres://title:<password>@localhost:5432/title_indexer
-
-# DAS (Helius recommended)
-DAS_ENDPOINTS=https://devnet.helius-rpc.com/?api-key=YOUR_KEY
-
-# Title Config Program ID (update after anchor deploy)
-TITLE_CONFIG_PROGRAM_ID=GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP
-```
+| 症状 | 対処 |
+|------|------|
+| `docker: permission denied` | `exit` → 再 SSH、または `sg docker bash` |
+| `cargo build` で C コンパイラ不在 | `sudo dnf install -y gcc gcc-c++` |
+| Enclave 起動失敗 | `enclave_memory_mib` を調整 |
+| S3 presigned URL が 403 | Terraform output で S3 キーを再確認 |
+| `network.json が見つかりません` | `scripts/init-global.mjs` を先に実行 |
 
 ## ファイル構成
 
 ```
 deploy/aws/
-  terraform/
-    main.tf             — EC2, S3, IAM, SecurityGroup 定義
-    variables.tf        — 設定変数
-    outputs.tf          — IP, S3キー等の出力値
-    user-data.sh        — EC2 初期化スクリプト（Terraform から注入）
-  docker/
-    tee.Dockerfile      — TEE Enclave 用マルチステージ Docker イメージ
-    entrypoint.sh       — Enclave 内起動スクリプト（socat + TEE サーバー）
-  docker-compose.production.yml  — 本番用 Compose（Gateway + Indexer + PostgreSQL）
-  setup-ec2.sh          — メインデプロイスクリプト（全 8 ステップ）
-  build-enclave.sh      — EIF 単体ビルドスクリプト
-  keys/                 — SSH 鍵、Authority keypair（.gitignore 済み）
+  terraform/           — EC2, S3, IAM, SecurityGroup (Terraform)
+  docker/              — tee.Dockerfile, entrypoint.sh
+  docker-compose.production.yml  — Gateway + Indexer + PostgreSQL
+  setup-ec2.sh         — ノード起動スクリプト（冪等、EIFビルド含む）
+  keys/                — SSH 鍵（.gitignore 済み）
+
+keys/                  — Authority keypair（.gitignore 済み）
+network.json           — GlobalConfig 情報（リポジトリにコミット）
 ```

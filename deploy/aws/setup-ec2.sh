@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
-# Title Protocol EC2 デプロイスクリプト
+# Title Protocol ノード起動スクリプト
 #
-# EC2インスタンス上で実行し、以下を行う:
-#   1. .env の読み込み・検証
-#   2. WASMモジュールのビルド（またはコピー）
-#   3. Enclave イメージのビルド + 起動
-#   4. Proxy の起動
-#   5. Docker Compose (Gateway + PostgreSQL + Indexer) の起動
-#   6. S3バケットの確認
-#   7. Global Config 初期化 + Merkle Tree 作成
-#   8. ヘルスチェック
+# EC2インスタンス上で実行し、1つのTEEノードを起動する。
+# 冪等: 何度実行しても同じ結果になる。各インスタンスに1つのTEE。
 #
 # 前提:
-#   - user-data.sh による初期セットアップ完了
+#   - network.json が存在する（title-cli init-global で事前に作成済み）
 #   - .env が設定済み
-#   - リポジトリがクローン済み
+#   - user-data.sh による初期セットアップ完了
+#
+# やること:
+#   1. .env + network.json の読み込み・検証
+#   2. WASMモジュールのビルド
+#   3. ホスト側バイナリのビルド
+#   4. Enclave イメージのビルド + 起動（またはMockRuntime直接起動）
+#   5. Proxy の起動（Enclaveモードのみ）
+#   6. Docker Compose (Gateway + PostgreSQL + Indexer) の起動
+#   7. S3バケットの確認
+#   8. TEEノード登録 (/register-node → DAO署名)
+#   9. Merkle Tree 作成 (/create-tree)
+#  10. ヘルスチェック
+#
+# Authority keypair が programs/title-config/keys/authority.json に存在する場合:
+#   → register-node TX を自動で共同署名しブロードキャストする（devnet向け）
+# 存在しない場合:
+#   → 部分署名済みTXをファイルに保存し、DAO承認待ちとする（mainnet向け）
 #
 # 使い方:
 #   cd ~/title-protocol
@@ -29,23 +39,21 @@ cd "$PROJECT_ROOT"
 # ---------------------------------------------------------------------------
 # Docker グループチェック
 # ---------------------------------------------------------------------------
-# user-data.sh で usermod -aG docker ec2-user するが、初回SSH時には
-# グループが反映されていない。sg docker で再実行して自動解決する。
 if ! groups | grep -q docker; then
   echo "docker グループ未反映。sg docker で再実行します..."
   exec sg docker "$0"
 fi
 
-# user-data.sh でインストールされたツールの PATH を確保
 export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
 
-echo "=== Title Protocol Devnet デプロイ ==="
+echo "=== Title Protocol ノード起動 ==="
 
 # ---------------------------------------------------------------------------
-# Step 0: .env 読み込み・検証
+# Step 0: .env + network.json 読み込み・検証
 # ---------------------------------------------------------------------------
-echo "[Step 0/8] .env の読み込み..."
+echo "[Step 0/10] 設定ファイルの読み込み..."
 
+# .env
 if [ ! -f .env ]; then
   echo "ERROR: .env が見つかりません。.env.example をコピーして設定してください。"
   echo "  cp .env.example .env && vim .env"
@@ -55,6 +63,38 @@ fi
 set -a
 source .env
 set +a
+
+# network.json
+NETWORK_JSON="$PROJECT_ROOT/network.json"
+if [ ! -f "$NETWORK_JSON" ]; then
+  echo "ERROR: network.json が見つかりません。"
+  echo "  先に title-cli init-global でGlobalConfigを作成してください:"
+  echo "    cargo run --release --bin title-cli -- init-global"
+  exit 1
+fi
+
+# network.json から値を読み取り
+read_network() {
+  python3 -c "import json,sys; d=json.load(open('$NETWORK_JSON')); print(d.get('$1',''))"
+}
+
+PROGRAM_ID=$(read_network "program_id")
+GLOBAL_CONFIG_PDA=$(read_network "global_config_pda")
+AUTHORITY_PUBKEY=$(read_network "authority")
+CORE_COLLECTION_MINT_NET=$(read_network "core_collection_mint")
+EXT_COLLECTION_MINT_NET=$(read_network "ext_collection_mint")
+CLUSTER=$(read_network "cluster")
+
+echo "  Cluster:            $CLUSTER"
+echo "  Program ID:         $PROGRAM_ID"
+echo "  GlobalConfig PDA:   $GLOBAL_CONFIG_PDA"
+echo "  Authority:          $AUTHORITY_PUBKEY"
+echo "  Core Collection:    $CORE_COLLECTION_MINT_NET"
+echo "  Ext Collection:     $EXT_COLLECTION_MINT_NET"
+
+# .env から CORE_COLLECTION_MINT/EXT_COLLECTION_MINT が未設定なら network.json の値を使う
+CORE_COLLECTION_MINT="${CORE_COLLECTION_MINT:-$CORE_COLLECTION_MINT_NET}"
+EXT_COLLECTION_MINT="${EXT_COLLECTION_MINT:-$EXT_COLLECTION_MINT_NET}"
 
 # 必須変数の検証
 REQUIRED_VARS=(
@@ -66,7 +106,6 @@ REQUIRED_VARS=(
   S3_SECRET_KEY
   DB_PASSWORD
 )
-# CORE_COLLECTION_MINT, EXT_COLLECTION_MINT, GATEWAY_PUBKEY は init-config.mjs 実行後に設定するため、初回は不要
 
 MISSING=()
 for var in "${REQUIRED_VARS[@]}"; do
@@ -83,30 +122,32 @@ if [ ${#MISSING[@]} -gt 0 ]; then
   exit 1
 fi
 
-echo "  OK（必須変数チェック通過）"
+echo "  .env: OK"
 
-# Solana ウォレットの自動作成
+# Authority keypair の存在チェック
+AUTHORITY_KEY_PATH="$PROJECT_ROOT/programs/title-config/keys/authority.json"
+if [ -f "$AUTHORITY_KEY_PATH" ]; then
+  echo "  Authority keypair: 検出 → 自動署名モード (devnet)"
+  AUTO_SIGN=true
+else
+  echo "  Authority keypair: なし → DAO承認モード (mainnet)"
+  AUTO_SIGN=false
+fi
+
+# Solana ウォレットの確認
 SOLANA_WALLET="$HOME/.config/solana/id.json"
 if [ ! -f "$SOLANA_WALLET" ]; then
   echo "  Solana ウォレットが見つかりません。自動作成します..."
   solana-keygen new --no-bip39-passphrase -o "$SOLANA_WALLET"
-  WALLET_PUBKEY=$(solana-keygen pubkey "$SOLANA_WALLET")
-  echo ""
-  echo "  ⚠ 新規ウォレット作成: $WALLET_PUBKEY"
-  echo "  ⚠ このウォレットに SOL を送金してください（Devnet: solana airdrop 2）"
-  echo ""
-else
-  WALLET_PUBKEY=$(solana-keygen pubkey "$SOLANA_WALLET")
-  echo "  Solana ウォレット: $WALLET_PUBKEY"
 fi
-
-# Devnet に設定
+WALLET_PUBKEY=$(solana-keygen pubkey "$SOLANA_WALLET")
+echo "  Solana ウォレット: $WALLET_PUBKEY"
 solana config set --url "$SOLANA_RPC_URL" > /dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # Step 1: WASMモジュールのビルド
 # ---------------------------------------------------------------------------
-echo "[Step 1/8] WASMモジュールのビルド..."
+echo "\n[Step 1/10] WASMモジュールのビルド..."
 
 WASM_OUTPUT="$PROJECT_ROOT/wasm-modules"
 mkdir -p "$WASM_OUTPUT"
@@ -124,8 +165,6 @@ if command -v cargo &>/dev/null && rustup target list --installed | grep -q wasm
   echo "  WASMモジュール → $WASM_OUTPUT/"
 else
   echo "  SKIP: Rust/wasm32ターゲットが未インストール。"
-  echo "  事前にビルド済みの .wasm を $WASM_OUTPUT/ に配置してください。"
-  # 確認
   for module in "${WASM_TARGETS[@]}"; do
     if [ ! -f "$WASM_OUTPUT/$module.wasm" ]; then
       echo "  WARNING: $WASM_OUTPUT/$module.wasm が見つかりません"
@@ -134,68 +173,64 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 1B: ホスト側バイナリのビルド
+# Step 2: ホスト側バイナリのビルド
 # ---------------------------------------------------------------------------
-echo "[Step 1B/8] ホスト側バイナリのビルド..."
+echo "[Step 2/10] ホスト側バイナリのビルド..."
 
 if command -v cargo &>/dev/null; then
   if command -v nitro-cli &>/dev/null; then
-    # Nitro モード: Proxy のみホスト側で必要（TEE は Docker 内でビルド）
     echo "  title-proxy をビルド中..."
     cargo build --release --bin title-proxy
   else
-    # Mock モード: TEE をホスト側で直接実行
     echo "  title-tee をビルド中..."
     cargo build --release --bin title-tee
   fi
-  echo "  ホスト側バイナリ ビルド完了"
+  echo "  title-cli をビルド中..."
+  cargo build --release --bin title-cli
+  echo "  ビルド完了"
 else
   echo "  SKIP: cargo が未インストール"
 fi
 
 # ---------------------------------------------------------------------------
-# Step 2: Enclave イメージのビルド
+# Step 3: Enclave イメージのビルド
 # ---------------------------------------------------------------------------
-echo "[Step 2/8] Enclave イメージのビルド..."
+echo "[Step 3/10] Enclave イメージのビルド..."
 
 EIF_PATH="$PROJECT_ROOT/title-tee.eif"
+TEE_MEASUREMENTS="{}"
 
 if command -v nitro-cli &>/dev/null; then
-  # TEE Docker イメージのビルド
   docker build -t title-tee-enclave -f deploy/aws/docker/tee.Dockerfile .
 
-  # EIF生成
   nitro-cli build-enclave \
     --docker-uri title-tee-enclave:latest \
     --output-file "$EIF_PATH" 2>&1 | tee /tmp/enclave-build.log
 
   echo "  EIF: $EIF_PATH"
 
-  # PCR値の表示
-  echo "  PCR測定値:"
-  nitro-cli describe-eif --eif-path "$EIF_PATH" | \
+  TEE_MEASUREMENTS=$(nitro-cli describe-eif --eif-path "$EIF_PATH" | \
     python3 -c "
 import sys, json
-data = json.load(sys.stdin)
-measurements = data.get('Measurements', {})
-for key in ['PCR0', 'PCR1', 'PCR2']:
-    val = measurements.get(key, 'N/A')
-    print(f'    {key}: {val}')
-" 2>/dev/null || echo "    (PCR表示にはpython3が必要)"
+m = json.load(sys.stdin).get('Measurements', {})
+out = {k: m[k] for k in ['PCR0', 'PCR1', 'PCR2'] if k in m}
+print(json.dumps(out))
+" 2>/dev/null || echo "{}")
+  echo "  測定値: $TEE_MEASUREMENTS"
 else
-  echo "  SKIP: nitro-cli が未インストール。Enclaveなしで続行（MockRuntimeを使用）。"
+  echo "  SKIP: nitro-cli 未インストール。MockRuntimeモード。"
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3: Enclave の起動
+# Step 4: Enclave / TEE の起動
 # ---------------------------------------------------------------------------
-echo "[Step 3/8] Enclave の起動..."
+echo "[Step 4/10] TEE の起動..."
 
 ENCLAVE_CPU="${ENCLAVE_CPU_COUNT:-2}"
 ENCLAVE_MEM="${ENCLAVE_MEMORY_MIB:-1024}"
 
 if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
-  # 既存Enclaveの停止（存在する場合）
+  # 既存Enclaveの停止
   EXISTING=$(nitro-cli describe-enclaves | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -210,35 +245,27 @@ for e in data:
     sleep 2
   fi
 
-  # Enclave起動
   ENCLAVE_OUTPUT=$(nitro-cli run-enclave \
     --eif-path "$EIF_PATH" \
     --cpu-count "$ENCLAVE_CPU" \
     --memory "$ENCLAVE_MEM")
 
-  echo "$ENCLAVE_OUTPUT"
-
-  # Enclave CIDを取得
   ENCLAVE_CID=$(echo "$ENCLAVE_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['EnclaveCID'])")
-  echo "  Enclave起動完了 (CPU=$ENCLAVE_CPU, Memory=${ENCLAVE_MEM}MiB, CID=$ENCLAVE_CID)"
+  echo "  Enclave起動完了 (CID=$ENCLAVE_CID)"
 
-  # インバウンドブリッジ: Gateway (TCP:4000) → Enclave (vsock:CID:4000)
-  # Enclave内のsocatがvsock:4000→TCP:localhost:4000に中継し、title-teeに到達する
   pkill -f "socat TCP-LISTEN:4000" 2>/dev/null || true
   sleep 1
   socat TCP-LISTEN:4000,fork,reuseaddr VSOCK-CONNECT:"$ENCLAVE_CID":4000 &
   echo "  インバウンドブリッジ起動 (TCP:4000 → vsock:$ENCLAVE_CID:4000)"
 else
-  # MockRuntime: TEEバイナリを直接起動
-  echo "  Enclaveなし。TEEをMockRuntimeで直接起動します。"
-  # pgrep でバイナリ名を正確に検索（nitro-cli の引数に含まれる "title-tee.eif" を除外）
+  echo "  MockRuntimeモード: TEEを直接起動"
   TEE_PID=$(pgrep -x title-tee 2>/dev/null || true)
   if [ -z "$TEE_PID" ]; then
     if [ -f "target/release/title-tee" ]; then
       TEE_RUNTIME=mock PROXY_ADDR=direct \
         SOLANA_RPC_URL="$SOLANA_RPC_URL" \
-        CORE_COLLECTION_MINT="${CORE_COLLECTION_MINT:-}" \
-        EXT_COLLECTION_MINT="${EXT_COLLECTION_MINT:-}" \
+        CORE_COLLECTION_MINT="$CORE_COLLECTION_MINT" \
+        EXT_COLLECTION_MINT="$EXT_COLLECTION_MINT" \
         GATEWAY_PUBKEY="${GATEWAY_PUBKEY:-}" \
         TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-phash-v1,hardware-google,c2pa-training-v1,c2pa-license-v1}" \
         WASM_DIR="$WASM_OUTPUT" \
@@ -251,46 +278,43 @@ else
       exit 1
     fi
   else
-    echo "  TEE は既に稼働中"
+    echo "  TEE は既に稼働中 (PID=$TEE_PID)"
   fi
 fi
 
 # ---------------------------------------------------------------------------
-# Step 4: Proxy の起動
+# Step 5: Proxy の起動
 # ---------------------------------------------------------------------------
-echo "[Step 4/8] Proxy の起動..."
+echo "[Step 5/10] Proxy の起動..."
 
 if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
-  # 本番: vsock経由のProxy
   if ! pgrep -f title-proxy &>/dev/null; then
     if [ -f "target/release/title-proxy" ]; then
       nohup ./target/release/title-proxy > ~/title-proxy.log 2>&1 &
-      echo "  Proxy起動 (vsock mode, PID=$!)"
+      echo "  Proxy起動 (PID=$!)"
     else
-      echo "  Proxyバイナリが見つかりません。ビルドしてください:"
-      echo "    cargo build --release --bin title-proxy"
+      echo "  ERROR: Proxyバイナリが見つかりません"
     fi
   else
     echo "  Proxy は既に稼働中"
   fi
 else
-  echo "  SKIP: MockRuntimeモードではProxyは不要"
+  echo "  SKIP: MockRuntimeモードではProxy不要"
 fi
 
 # ---------------------------------------------------------------------------
-# Step 5: Docker Compose (Gateway + PostgreSQL + Indexer)
+# Step 6: Docker Compose (Gateway + PostgreSQL + Indexer)
 # ---------------------------------------------------------------------------
-echo "[Step 5/8] Docker Compose 起動..."
+echo "[Step 6/10] Docker Compose 起動..."
 
-# 本番compose: PostgreSQL + Gateway + Indexer（TEEは別プロセスで起動済み）
 docker compose -f deploy/aws/docker-compose.production.yml up -d --build
-
 echo "  Docker Compose 起動完了"
 
-# サービスの起動待ち
 echo "  サービスの起動を待機中..."
 for i in $(seq 1 30); do
-  if curl -sf -X POST -H "Content-Type: application/json" -d '{"content_size":1,"content_type":"image/jpeg"}' http://localhost:3000/upload-url > /dev/null 2>&1; then
+  if curl -sf -X POST -H "Content-Type: application/json" \
+    -d '{"content_size":1,"content_type":"image/jpeg"}' \
+    http://localhost:3000/upload-url > /dev/null 2>&1; then
     echo "  Gateway 応答確認"
     break
   fi
@@ -298,63 +322,62 @@ for i in $(seq 1 30); do
 done
 
 # ---------------------------------------------------------------------------
-# Step 6: S3バケットの確認
+# Step 7: S3バケットの確認
 # ---------------------------------------------------------------------------
-echo "[Step 6/8] S3ストレージの確認..."
+echo "[Step 7/10] S3ストレージの確認..."
 
 BUCKET_NAME="${S3_BUCKET:-title-uploads}"
 if echo "$S3_ENDPOINT" | grep -q "s3.amazonaws.com\|s3\..*\.amazonaws\.com"; then
-  # AWS S3: バケット存在確認
-  echo "  S3バケット: $BUCKET_NAME (endpoint: $S3_ENDPOINT)"
+  echo "  S3バケット: $BUCKET_NAME"
   if aws s3 ls "s3://$BUCKET_NAME" > /dev/null 2>&1; then
-    echo "  S3バケット確認OK"
+    echo "  OK"
   else
     echo "  WARNING: S3バケットにアクセスできません"
-    echo "    確認事項:"
-    echo "      - S3_BUCKET=$BUCKET_NAME がTerraformで作成したバケット名と一致しているか"
-    echo "      - EC2のIAMロールにS3アクセス権限があるか"
-    echo "      - aws s3 ls s3://$BUCKET_NAME を手動で試してみてください"
   fi
 else
-  # MinIO/ローカル: docker composeのMinIOを使用
   echo "  S3互換エンドポイント: $S3_ENDPOINT"
   docker compose exec -T minio sh -c '
     mc alias set local http://localhost:9000 '"$S3_ACCESS_KEY"' '"$S3_SECRET_KEY"' 2>/dev/null
     mc mb local/title-uploads --ignore-existing 2>/dev/null
-  ' 2>/dev/null && echo "  バケット確認OK" || echo "  WARNING: バケット作成失敗"
+  ' 2>/dev/null && echo "  OK" || echo "  WARNING: バケット作成失敗"
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7: Global Config 初期化 + Merkle Tree 作成
+# Step 8: TEEノード登録 (/register-node → DAO署名)
+#
+# データの流れ:
+#   network.json → program_id, authority（ローカル設定、GlobalConfigからではない）
+#   TEE/Gateway  → signing_pubkey, encryption_pubkey, measurements（自分自身の情報）
+#   f(自分の情報) = 登録TX → GlobalConfigに追加を申請
+#
+# Authority keypair が存在する場合: 即署名+ブロードキャスト（devnet）
+# 存在しない場合: DAOのガバナンスシステムに審査TXを送信（mainnet）
 # ---------------------------------------------------------------------------
-echo "[Step 7/8] Global Config 初期化..."
+echo "[Step 8/10] TEEノード登録..."
 
-# init-devnet.mjs の依存インストール
-if [ ! -d "$PROJECT_ROOT/scripts/node_modules" ]; then
-  echo "  npm install (scripts/)..."
-  (cd "$PROJECT_ROOT/scripts" && npm install --silent)
-fi
+PUBLIC_ENDPOINT="${PUBLIC_ENDPOINT:-http://localhost:3000}"
 
-node scripts/init-devnet.mjs \
-  --rpc "$SOLANA_RPC_URL" \
-  --gateway "http://localhost:3000"
-
-echo "  OK"
+./target/release/title-cli register-node \
+  --tee-url http://localhost:4000 \
+  --gateway-endpoint "$PUBLIC_ENDPOINT" \
+  ${TEE_MEASUREMENTS:+--measurements "$TEE_MEASUREMENTS"} \
+  2>&1 || true
 
 # ---------------------------------------------------------------------------
-# Step 8: ヘルスチェック
+# Step 9: Merkle Tree 作成
 # ---------------------------------------------------------------------------
-echo "[Step 8/8] ヘルスチェック..."
+echo "[Step 9/10] Merkle Tree 作成..."
 
-check_service() {
-  local name="$1"
-  local url="$2"
-  if curl -sf "$url" > /dev/null 2>&1; then
-    echo "  OK  $name"
-  else
-    echo "  NG  $name ($url)"
-  fi
-}
+./target/release/title-cli create-tree \
+  --tee-url http://localhost:4000 \
+  --max-depth 14 \
+  --max-buffer-size 64 \
+  2>&1 || true
+
+# ---------------------------------------------------------------------------
+# Step 10: ヘルスチェック
+# ---------------------------------------------------------------------------
+echo "[Step 10/10] ヘルスチェック..."
 
 # Solana RPC
 if curl -sf -X POST -H "Content-Type: application/json" \
@@ -365,21 +388,31 @@ else
   echo "  NG  Solana RPC ($SOLANA_RPC_URL)"
 fi
 
-# Gateway にはシンプルな /health がないため、upload-url で確認
+# Gateway
 if curl -sf -X POST -H "Content-Type: application/json" \
   -d '{"content_size":1,"content_type":"image/jpeg"}' \
   http://localhost:3000/upload-url > /dev/null 2>&1; then
   echo "  OK  Gateway"
 else
-  echo "  NG  Gateway (http://localhost:3000/upload-url)"
+  echo "  NG  Gateway"
 fi
-check_service "TEE" "${TEE_ENDPOINT:-http://localhost:4000}/health"
-check_service "Indexer" "http://localhost:5000/health"
+
+# TEE
+if curl -sf http://localhost:4000/health > /dev/null 2>&1; then
+  echo "  OK  TEE"
+else
+  echo "  NG  TEE"
+fi
+
+# Indexer
+if curl -sf http://localhost:5000/health > /dev/null 2>&1; then
+  echo "  OK  Indexer"
+else
+  echo "  NG  Indexer"
+fi
 
 echo ""
-echo "=== デプロイ完了 ==="
+echo "=== ノード起動完了 ==="
 echo ""
-echo "Gateway API: http://$(curl -sf http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo 'localhost'):3000"
+echo "Gateway: http://$(curl -sf http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo 'localhost'):3000"
 echo ""
-echo "E2Eテスト:"
-echo "  GATEWAY_URL=http://<public-ip>:3000 npm test --prefix tests/e2e"

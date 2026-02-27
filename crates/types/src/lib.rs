@@ -471,7 +471,7 @@ pub struct CreateTreeResponse {
 /// authorityの共同署名が必要な部分署名済みトランザクションを返す。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterNodeRequest {
-    /// GatewayエンドポイントURL（オンチェーンに記録される）
+    /// GatewayエンドポイントURL（オンチェーンに記録される外部公開URL）
     pub gateway_endpoint: String,
     /// Base58エンコードされたGateway署名用Ed25519公開鍵
     pub gateway_pubkey: String,
@@ -481,6 +481,11 @@ pub struct RegisterNodeRequest {
     pub authority: String,
     /// Base58エンコードされたtitle-configプログラムID
     pub program_id: String,
+    /// TEE測定値。キー名→Hex値のマップ。
+    /// 仕様書 §5.2 Step 4 — オンチェーンに記録され第三者がTEEの正当性を独立検証する。
+    /// キー名と値の解釈は `tee_type` に依存する。省略時は空。
+    #[serde(default)]
+    pub measurements: std::collections::HashMap<String, String>,
 }
 
 /// /register-node レスポンス。
@@ -496,9 +501,6 @@ pub struct RegisterNodeResponse {
     /// Base58エンコードされたTeeNodeAccount PDAアドレス
     pub tee_node_pda: String,
 }
-
-// NOTE: NodeInfo / NodeLimits 削除 — ノード情報はオンチェーン
-// (GlobalConfigAccount + TeeNodeAccount PDA) で一元管理。仕様書 §6.2
 
 #[cfg(test)]
 mod tests {

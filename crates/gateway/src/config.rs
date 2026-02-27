@@ -6,7 +6,7 @@
 //!
 //! 環境変数からの設定読み込みとGatewayの共有状態の定義。
 
-use ed25519_dalek::{SigningKey as Ed25519SigningKey, VerifyingKey as Ed25519VerifyingKey};
+use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use title_types::*;
 
 use crate::storage::TempStorage;
@@ -21,8 +21,6 @@ pub struct GatewayState {
     /// Gateway認証用Ed25519秘密鍵
     /// 仕様書 §6.2: Gateway秘密鍵で署名
     pub signing_key: Ed25519SigningKey,
-    /// Gateway認証用Ed25519公開鍵
-    pub verifying_key: Ed25519VerifyingKey,
     /// Temporary Storage（トレイトで抽象化）
     /// 仕様書 §6.3
     pub temp_storage: Box<dyn TempStorage>,

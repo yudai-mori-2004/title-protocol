@@ -123,6 +123,28 @@ pub async fn handle_register_node(
     let (global_config_pda, _) = find_global_config_pda(&program_id);
     let (tee_node_pda, _) = find_tee_node_pda(&signing_pubkey_bytes, &program_id);
 
+    // MeasurementEntry構築: key=[u8;16] (null-padded), value=[u8;48]
+    // 仕様書 §5.2 Step 4 — キー名と値の解釈は tee_type に依存する
+    let measurement_entries: Vec<([u8; 16], [u8; 48])> = {
+        let mut entries = Vec::new();
+        for (key, hex_val) in &request.measurements {
+            let mut key_buf = [0u8; 16];
+            let key_bytes = key.as_bytes();
+            let copy_len = key_bytes.len().min(16);
+            key_buf[..copy_len].copy_from_slice(&key_bytes[..copy_len]);
+
+            let val_bytes = hex::decode(hex_val).map_err(|e| {
+                TeeError::BadRequest(format!("measurement値のhexデコードに失敗 ({key}): {e}"))
+            })?;
+            let mut val_buf = [0u8; 48];
+            let val_len = val_bytes.len().min(48);
+            val_buf[..val_len].copy_from_slice(&val_bytes[..val_len]);
+
+            entries.push((key_buf, val_buf));
+        }
+        entries
+    };
+
     // Anchor命令データ構築
     // register_tee_node(signing_pubkey, encryption_pubkey, gateway_pubkey,
     //                   gateway_endpoint, tee_type, measurements)
@@ -133,7 +155,12 @@ pub async fn handle_register_node(
     ix_data.extend_from_slice(&gateway_pubkey_bytes); // gateway_pubkey: [u8; 32]
     ix_data.extend_from_slice(&borsh_string(&request.gateway_endpoint)); // gateway_endpoint: String
     ix_data.push(tee_type); // tee_type: u8
-    ix_data.extend_from_slice(&0u32.to_le_bytes()); // measurements: Vec<> (empty)
+    // measurements: Vec<MeasurementEntry>
+    ix_data.extend_from_slice(&(measurement_entries.len() as u32).to_le_bytes());
+    for (key, value) in &measurement_entries {
+        ix_data.extend_from_slice(key);   // [u8; 16]
+        ix_data.extend_from_slice(value);  // [u8; 48]
+    }
 
     // Anchor accounts (RegisterTeeNode構造体の順序に合わせる)
     let ix = Instruction {
@@ -223,6 +250,7 @@ mod tests {
             recent_blockhash: "11111111111111111111111111111111".to_string(),
             authority: Pubkey::new_unique().to_string(),
             program_id: "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP".to_string(),
+            measurements: Default::default(),
         };
 
         let result = handle_register_node(State(state.clone()), Json(request)).await;
@@ -264,6 +292,7 @@ mod tests {
             recent_blockhash: "11111111111111111111111111111111".to_string(),
             authority: Pubkey::new_unique().to_string(),
             program_id: "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP".to_string(),
+            measurements: Default::default(),
         };
 
         let result = handle_register_node(State(state.clone()), Json(request)).await.unwrap();

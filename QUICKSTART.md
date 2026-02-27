@@ -7,30 +7,30 @@ This guide walks you through the on-chain architecture of Title Protocol and how
 Every Title Protocol network has exactly **one GlobalConfig** — a single on-chain account (PDA) that anchors the entire trust chain. Think of it like a DNS root zone or a CA root certificate: everything in the protocol traces its authority back to this account.
 
 ```
-                    ┌──────────────────────────┐
-                    │      GlobalConfig PDA     │
-                    │  seeds = ["global-config"] │
-                    │                          │
-                    │  authority (DAO wallet)   │
-                    │  core_collection_mint     │
-                    │  ext_collection_mint      │
-                    │  trusted_node_keys[]      │──┐
-                    │  trusted_tsa_keys[]       │  │
-                    │  trusted_wasm_modules[]   │  │
-                    └──────────────────────────┘  │
-                                                  │  references
-                    ┌──────────────────────────┐  │
-                    │   TeeNodeAccount PDA     │◄─┘
-                    │  seeds = ["tee-node",     │
-                    │           signing_pubkey] │
-                    │                          │
-                    │  signing_pubkey           │
-                    │  encryption_pubkey        │
-                    │  gateway_pubkey           │
-                    │  gateway_endpoint         │
-                    │  tee_type                 │
-                    │  measurements[]           │
-                    └──────────────────────────┘
+                    +----------------------------+
+                    |      GlobalConfig PDA      |
+                    |  seeds = ["global-config"]  |
+                    |                            |
+                    |  authority (DAO wallet)    |
+                    |  core_collection_mint      |
+                    |  ext_collection_mint       |
+                    |  trusted_node_keys[]       |--+
+                    |  trusted_tsa_keys[]        |  |
+                    |  trusted_wasm_modules[]    |  |
+                    +----------------------------+  |
+                                                    |  references
+                    +----------------------------+  |
+                    |   TeeNodeAccount PDA       |<-+
+                    |  seeds = ["tee-node",       |
+                    |           signing_pubkey]   |
+                    |                            |
+                    |  signing_pubkey            |
+                    |  encryption_pubkey         |
+                    |  gateway_pubkey            |
+                    |  gateway_endpoint          |
+                    |  tee_type                  |
+                    |  measurements[]            |
+                    +----------------------------+
 ```
 
 **GlobalConfig** stores:
@@ -71,66 +71,63 @@ The project maintains a reference GlobalConfig on devnet for integration testing
 | Core Collection | `CGoxGQtbgNGJaegRzV6yGr8BFkHaphvsLjBYbFKPhWPm` |
 | Extension Collection | `A8FFxPMh8vXM94pnqJ3fUuv9BPcmj9AMbMLVe8pWHvz1` |
 
-You can inspect these accounts with the Solana CLI:
-
 ```bash
 solana account JCY1KfHLVR1YNAUcDS3S2qSY7ofhTGz9WrqcHLiubs5S --url devnet
 ```
 
-## Quick Start: Deploy Your Own GlobalConfig on Devnet
+## Two-Phase Setup
+
+Title Protocol deployment is split into two independent phases:
+
+```
+Phase 1: Network Setup (once, from your local machine)
+  title-cli init-global
+    +-- Deploy Anchor program
+    +-- Create MPL Core collections
+    +-- Initialize GlobalConfig PDA
+    +-- Register WASM modules
+    +-- Output network.json
+
+Phase 2: Node Deployment (per node, on EC2)
+  deploy/aws/setup-ec2.sh
+    +-- Build WASM + binaries + Enclave
+    +-- Start TEE + Gateway + Indexer
+    +-- title-cli register-node  (TEE signs -> authority co-signs)
+    +-- title-cli create-tree    (Merkle trees for cNFT minting)
+```
+
+`network.json` is the bridge between the two phases. Phase 1 creates it; Phase 2 reads it.
+
+---
+
+## Phase 1: Network Setup (Local)
 
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) with `wasm32-unknown-unknown` target
 - [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) (v2.0+)
 - `cargo-build-sbf` (installed with Solana CLI)
-- [Node.js](https://nodejs.org/) 22+
 - ~5 SOL on devnet (program deploy costs ~2 SOL; use `solana airdrop` or [faucet.solana.com](https://faucet.solana.com))
 
-### Step 1: Build the Anchor Program
+### Step 1: Build and Deploy the Anchor Program
 
 ```bash
+# Build
 cd programs/title-config
 rm -f Cargo.lock && cargo generate-lockfile
 cargo-build-sbf --manifest-path Cargo.toml --tools-version v1.52
 ```
 
-This produces `target/deploy/title_config.so`.
-
-### Step 2: Deploy to Devnet
+> **Custom Program ID:** The binary contains a hardcoded program ID (`declare_id!` in `lib.rs`). To deploy under a different ID, generate a new keypair with `solana-keygen new -o program-keypair.json`, update `declare_id!` to match, and rebuild.
 
 ```bash
-# Generate a keypair for your authority (or use an existing one)
-solana-keygen new -o my-authority.json
-
-# Fund it
-solana airdrop 2 $(solana-keygen pubkey my-authority.json) --url devnet
-# If airdrop fails due to rate limits, use https://faucet.solana.com
-
-# Generate a program keypair (determines the on-chain address)
-solana-keygen new -o program-keypair.json
-solana-keygen pubkey program-keypair.json   # Note this Program ID
-```
-
-> **Important:** The binary contains a hardcoded program ID (`declare_id!` in `lib.rs`). Before deploying, update it to match your program keypair, then **rebuild Step 1**:
->
-> ```bash
-> # Edit programs/title-config/src/lib.rs — replace the declare_id! value
-> # with the pubkey from program-keypair.json, then rebuild:
-> cd programs/title-config
-> rm -f Cargo.lock && cargo generate-lockfile
-> cargo-build-sbf --manifest-path Cargo.toml --tools-version v1.52
-> ```
-
-```bash
-# Deploy with the matching program keypair
+# Deploy (uses the default program ID)
 solana program deploy target/deploy/title_config.so \
   --url devnet \
-  --keypair my-authority.json \
-  --program-id program-keypair.json
+  --keypair ~/.config/solana/id.json
 ```
 
-### Step 3: Build WASM Modules
+### Step 2: Build WASM Modules
 
 ```bash
 # From the project root
@@ -139,73 +136,57 @@ for dir in wasm/*/; do
 done
 ```
 
+### Step 3: Build the CLI
+
+```bash
+cargo build --release -p title-cli
+```
+
 ### Step 4: Initialize GlobalConfig
 
 ```bash
-cd scripts && npm install
-
-# Set your program ID (from Step 2)
-export TITLE_CONFIG_PROGRAM_ID=<YOUR_PROGRAM_ID>
-
-# Run the initialization script
-node init-devnet.mjs \
-  --rpc https://api.devnet.solana.com \
-  --skip-tree \
-  --skip-delegate
+./target/release/title-cli init-global --cluster devnet
 ```
 
-This will:
-1. Load your authority keypair from `deploy/aws/keys/devnet-authority.json` (or generate one)
-2. Create two MPL Core Collections (Core + Extension)
-3. Call `initialize` to create the GlobalConfig PDA with your authority and collections
-4. Register the 4 built-in WASM modules (phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1)
+This is **idempotent** — safe to run multiple times. It will:
 
-> **Tip:** To use a custom authority path, place your keypair JSON at `deploy/aws/keys/devnet-authority.json` before running the script.
+1. Load or create an authority keypair at `programs/title-config/keys/authority.json`
+2. Create two MPL Core Collections (Core + Extension) if not already present
+3. Call `initialize` to create the GlobalConfig PDA (skipped if it already exists)
+4. Register the 4 built-in WASM modules via `add_wasm_module` (upsert — updates hash if already registered)
+5. Write `network.json` to the project root
 
 ### What You Get
 
-After initialization, you have:
-
-- **A GlobalConfig PDA** — deterministically derived from `seeds = ["global-config"]` + your program ID
-- **Two MPL Core Collections** — ready to receive cNFTs minted by your TEE nodes
-- **Registered WASM modules** — the protocol knows which extension binaries are trusted
-
-You can verify the on-chain state:
-
-```bash
-# Show your GlobalConfig PDA address
-node -e "
-const { PublicKey } = require('@solana/web3.js');
-const programId = new PublicKey('<YOUR_PROGRAM_ID>');
-const [pda] = PublicKey.findProgramAddressSync(
-  [Buffer.from('global-config')],
-  programId
-);
-console.log('GlobalConfig PDA:', pda.toBase58());
-"
-
-# Inspect the account
-solana account <PDA_ADDRESS> --url devnet
+```
+network.json
+{
+  "cluster": "devnet",
+  "program_id": "GXo7dQ4kW8oeSSSK2Lhaw1jakNps1fSeUHEfeb7dRsYP",
+  "global_config_pda": "JCY1KfHLVR1YNAUcDS3S2qSY7ofhTGz9WrqcHLiubs5S",
+  "authority": "wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna",
+  "core_collection_mint": "CGox...",
+  "ext_collection_mint": "A8FF...",
+  "wasm_modules": { "phash-v1": { "hash": "ab12..." }, ... }
+}
 ```
 
-## Running a Node
+Commit `network.json` to the repository. Every node reads it at startup.
 
-Title Protocol nodes require real infrastructure — TEE hardware, S3-compatible storage, and network access to Solana RPC and Arweave. The protocol core is **vendor-neutral**; all vendor-specific code is isolated behind traits (`TeeRuntime`, `TempStorage`) and Cargo feature flags.
+```bash
+solana account <global_config_pda> --url devnet
+```
 
-The repository provides example deployments in `deploy/`. You can use an existing example or create your own vendor implementation.
+---
 
-| Example | Path | TEE Platform | Status |
-|---------|------|-------------|--------|
-| AWS Nitro | `deploy/aws/` | AWS Nitro Enclaves | Available |
-
-> To add a new vendor implementation, implement the `TeeRuntime` and `TempStorage` traits, create a `deploy/<vendor>/` directory, and add a corresponding Cargo feature flag. See `deploy/aws/` for reference.
+## Phase 2: Node Deployment (EC2)
 
 ### Node Architecture
 
 ```
-Client ──► Gateway (:3000) ──► TEE ──► Solana
-               │                 │
-               ▼                 ▼
+Client --> Gateway (:3000) --> TEE --> Solana
+               |                 |
+               v                 v
           Temp Storage      WASM Modules
           (S3-compatible)   (phash, etc.)
 ```
@@ -215,9 +196,17 @@ Client ──► Gateway (:3000) ──► TEE ──► Solana
 - **Temp Storage** — S3-compatible object storage for encrypted payloads (auto-deleted after processing).
 - **Proxy** — Mediates TEE network access when the enclave has no direct network (e.g., vsock on Nitro).
 
-### Deploying with the AWS Example
+### Vendor-Neutral Design
 
-The AWS example uses Terraform for infrastructure and a single setup script for deployment:
+The protocol core is **vendor-neutral**; all vendor-specific code is isolated behind traits (`TeeRuntime`, `TempStorage`) and Cargo feature flags.
+
+| Example | Path | TEE Platform | Status |
+|---------|------|-------------|--------|
+| AWS Nitro | `deploy/aws/` | AWS Nitro Enclaves | Available |
+
+> To add a new vendor implementation, implement the `TeeRuntime` and `TempStorage` traits, create a `deploy/<vendor>/` directory, and add a corresponding Cargo feature flag. See `deploy/aws/` for reference.
+
+### Deploying with the AWS Example
 
 ```bash
 # 1. Provision AWS resources (EC2, S3, IAM, Security Group)
@@ -233,52 +222,55 @@ cd ~/title-protocol
 cp .env.example .env
 # Edit .env with Terraform output values (S3 keys, RPC URL, etc.)
 
-# 4. Deploy everything (builds, enclave, services)
+# 4. Deploy everything (builds, enclave, services, registration)
 ./deploy/aws/setup-ec2.sh
 ```
 
-`setup-ec2.sh` handles:
-1. Building WASM modules and host binaries
-2. Building the TEE Docker image and converting to an Enclave Image File (EIF)
-3. Starting the Nitro Enclave with vsock bridge
-4. Starting the HTTP Proxy (TEE <-> external network)
-5. Starting Gateway, Indexer, and PostgreSQL via Docker Compose
-6. Running `init-devnet.mjs` to register the node on-chain
-7. Health checks on all services
+### What setup-ec2.sh Does
+
+| Step | What | Tool |
+|------|------|------|
+| 0 | Load `.env` + `network.json`, validate | Shell |
+| 1 | Build 4 WASM modules | `cargo build --target wasm32-unknown-unknown` |
+| 2 | Build host binaries (`title-cli`, `title-proxy`) | `cargo build --release` |
+| 3 | Build Enclave Image File (EIF) | `nitro-cli build-enclave` |
+| 4 | Start TEE (Nitro Enclave or MockRuntime) | `nitro-cli run-enclave` |
+| 5 | Start Proxy (Enclave mode only) | `title-proxy` |
+| 6 | Start Gateway + Indexer + PostgreSQL | `docker compose` |
+| 7 | Verify S3 access | `aws s3` |
+| 8 | Register TEE node on-chain | `title-cli register-node` |
+| 9 | Create Merkle Trees | `title-cli create-tree` |
+| 10 | Health checks (TEE, Gateway, Indexer, RPC) | `curl` |
 
 Total setup time: ~15-30 minutes (first build). See [`deploy/aws/README.md`](deploy/aws/README.md) for full details.
 
-### TEE Node Registration + Merkle Tree Creation
+### TEE Node Registration (Step 8)
 
-Once a node is running, it must be registered on-chain and a Merkle Tree must be created for cNFT minting. The setup script handles this automatically via `init-devnet.mjs`, but the process can also be run manually:
+The node registration uses a **partial-signature pattern**:
 
-```bash
-cd scripts
+1. `title-cli register-node` calls TEE `/register-node`
+2. TEE generates ephemeral signing/encryption keypairs
+3. TEE builds a `register_tee_node` transaction, signs it as payer (proves key ownership)
+4. TEE returns the partially-signed transaction
 
-export TITLE_CONFIG_PROGRAM_ID=<YOUR_PROGRAM_ID>
+Then, depending on the environment:
 
-node init-devnet.mjs \
-  --rpc https://api.devnet.solana.com \
-  --gateway http://<YOUR_NODE_IP>:3000
-```
+| Environment | `programs/title-config/keys/authority.json` | Behavior |
+|---|---|---|
+| **Devnet** | Exists | CLI loads authority, co-signs, broadcasts immediately |
+| **Mainnet** | Does not exist | CLI outputs partial TX for DAO multi-sig approval |
 
-This performs:
-
-1. **Funds the TEE wallet** — transfers SOL from the authority to the TEE's signing key for rent and transaction fees
-2. **Calls TEE `/register-node`** — the TEE builds a `register_tee_node` transaction, signs it with its internal key (proving key ownership), and returns a partially-signed transaction
-3. **Authority co-signs** — the script adds the authority signature and broadcasts
-4. **Delegates Collection Authority** — grants the TEE permission to mint into your collections
-5. **Calls TEE `/create-tree`** — the TEE builds a Merkle Tree creation transaction (depth=14, buffer=64, ~131KB), signs it, and the script broadcasts it
-
-After this, the node is fully operational and can verify content and mint cNFTs.
+After registration, `GlobalConfig.trusted_node_keys` gains the new node's pubkey, and a `TeeNodeAccount` PDA is created with the node's full specification.
 
 ### Node Lifecycle
 
-**Registration:** When the node starts, `init-devnet.mjs` calls TEE `/register-node`. The TEE signs the transaction with its internal key, proving ownership of the signing/encryption keys. The authority co-signs to approve.
+**Registration:** `title-cli register-node` + `title-cli create-tree`. The TEE signs transactions with its internal key, proving ownership. The authority co-signs to approve.
 
-**Restart:** TEE nodes are stateless. On restart, all keys are regenerated. The node must re-register and create a new Merkle Tree. The deployment script handles this automatically.
+**Restart:** TEE nodes are stateless. On restart, all keys are regenerated. The node must re-register and create a new Merkle Tree. `setup-ec2.sh` handles this automatically.
 
 **Decommission:** Remove the node's signing pubkey from GlobalConfig using the authority key. Existing cNFTs minted by the node remain valid.
+
+---
 
 ## Register Content
 
@@ -288,27 +280,26 @@ With a running node, you can register C2PA-signed content on-chain. The flow use
 
 ```
 1. Client                    2. Client                  3. Client
-   │                            │                          │
-   │  Read GlobalConfig         │  POST /upload-url        │  PUT <upload_url>
-   │  (on-chain PDA)            │  ─────────────►          │  ─────────────►
-   │  ──► Solana RPC            │  ◄─────────────          │  ◄─────────────
-   │  encryption_pubkey         │  upload_url              │  200 OK
-   │                            │  download_url            │
-   │                            │                          │
-   ▼                            ▼                          ▼
+   |                            |                          |
+   |  Read GlobalConfig         |  POST /upload-url        |  PUT <upload_url>
+   |  (on-chain PDA)            |  -------------->         |  -------------->
+   |  --> Solana RPC             |  <--------------         |  <--------------
+   |  encryption_pubkey         |  upload_url              |  200 OK
+   |                            |  download_url            |
+   v                            v                          v
 
 4. Client                    5. Client                  6. Client
-   │                            │                          │
-   │  POST /verify              │  Upload signed_json      │  POST /sign
-   │  ─────────────►            │  to Arweave (via Irys)   │  ─────────────►
-   │  Gateway → TEE             │  ─────────────►          │  Gateway → TEE
-   │  ◄─────────────            │  ◄─────────────          │  ◄─────────────
-   │  encrypted results         │  ar://<tx_id>            │  partial_txs[]
-   │                            │                          │
-   ▼                            ▼                          ▼  broadcast
+   |                            |                          |
+   |  POST /verify              |  Upload signed_json      |  POST /sign
+   |  -------------->           |  to Arweave (via Irys)   |  -------------->
+   |  Gateway -> TEE            |  -------------->         |  Gateway -> TEE
+   |  <--------------           |  <--------------         |  <--------------
+   |  encrypted results         |  ar://<tx_id>            |  partial_txs[]
+   |                            |                          |
+   v                            v                          v  broadcast
 ```
 
-1. **Get node info** — Look up the TEE's X25519 encryption pubkey from on-chain GlobalConfig + TeeNodeAccount PDA
+1. **Get node info** — Fetch the TEE's X25519 encryption pubkey from on-chain GlobalConfig + TeeNodeAccount PDA
 2. **Get upload URL** — Request a presigned S3 upload URL from the Gateway
 3. **Upload encrypted payload** — Encrypt the content + owner wallet with ECDH (X25519 + HKDF-SHA256 + AES-256-GCM), upload to temp storage
 4. **Verify** — The Gateway relays to the TEE, which decrypts, verifies C2PA signatures, builds the provenance graph, and runs WASM extensions. Results are returned encrypted
@@ -322,35 +313,59 @@ cd sdk/ts && npm install && npm run build
 ```
 
 ```typescript
-import { TitleClient } from "@title-protocol/sdk";
+import {
+  TitleClient,
+  fetchGlobalConfig,
+  encryptPayload,
+  decryptResponse,
+} from "@title-protocol/sdk";
+import { Connection } from "@solana/web3.js";
 
-// Point to your running node's Gateway
+// 1. Fetch GlobalConfig from on-chain (reads GlobalConfig + all TeeNodeAccount PDAs)
+const connection = new Connection("https://api.devnet.solana.com");
+const globalConfig = await fetchGlobalConfig(connection);
+
+// 2. Initialize client
 const client = new TitleClient({
-  teeNodes: ["http://<YOUR_NODE_IP>:3000"],
+  teeNodes: globalConfig.trusted_tee_nodes.map(n => n.gateway_endpoint),
   solanaRpcUrl: "https://api.devnet.solana.com",
-  globalConfig: { /* fetched from on-chain GlobalConfig PDA */ },
+  globalConfig,
 });
 
-// Step 1: Select a node (sync — from on-chain GlobalConfig)
+// 3. Select a node (sync — resolved from on-chain GlobalConfig)
 const session = client.selectNode();
 
-// Step 2-3: Encrypt and upload content
-const { symmetricKey, downloadUrl } = await client.uploadEncrypted(
-  contentBytes,     // Uint8Array — C2PA-signed image/video
-  ownerWallet,      // string — Solana wallet to attribute
-  session,
+// 4. Encrypt content with TEE's X25519 public key (E2EE)
+const teePubkey = Buffer.from(session.encryptionPubkey, "base64");
+const payload = JSON.stringify({
+  owner_wallet: ownerWallet,
+  content: contentBase64,
+});
+const { symmetricKey, encryptedPayload } = await encryptPayload(
+  teePubkey,
+  new TextEncoder().encode(payload),
 );
 
-// Step 4: Verify (TEE processes the content)
-const verifyResult = await client.verify(downloadUrl, symmetricKey);
-// verifyResult contains: provenance graph, content hash, extension results
+// 5. Upload encrypted payload to temporary storage
+const { downloadUrl } = await client.upload(session.gatewayUrl, encryptedPayload);
 
-// Step 5: Upload signed_json to Arweave
-const arweaveUri = await uploadToArweave(verifyResult.signedJson);
+// 6. Verify (TEE decrypts, verifies C2PA, builds provenance graph)
+const encrypted = await client.verify(session.gatewayUrl, {
+  download_url: downloadUrl,
+  processor_ids: ["core-c2pa"],
+});
+const resultBytes = await decryptResponse(
+  symmetricKey, encrypted.nonce, encrypted.ciphertext,
+);
+const verifyResult = JSON.parse(new TextDecoder().decode(resultBytes));
 
-// Step 6: Sign and mint cNFT
-const { partialTxs } = await client.sign(arweaveUri);
-// Broadcast the transactions to Solana
+// 7. Upload signed_json to Arweave, then sign + mint cNFT
+const arweaveUri = await uploadToArweave(verifyResult);
+const { partial_txs } = await client.sign(session.gatewayUrl, {
+  recent_blockhash: blockhash,
+  requests: [{ signed_json_uri: arweaveUri }],
+});
+// Co-sign partial_txs with user wallet and broadcast to Solana
 ```
 
 ### Using the Integration Tests as Reference
@@ -367,26 +382,28 @@ npm install
 npx tsx register-photo.ts
 ```
 
-## Environment Variable Reference
+---
+
+## Environment Variables
 
 | Variable | Service | Description |
 |----------|---------|-------------|
-| `TEE_RUNTIME` | TEE | TEE runtime implementation (`mock`, `nitro`, etc.) |
+| `TEE_RUNTIME` | TEE | Runtime implementation (`mock`, `nitro`, etc.) |
 | `PROXY_ADDR` | TEE | `direct` (direct HTTP) or `127.0.0.1:8000` (vsock bridge) |
-| `CORE_COLLECTION_MINT` | TEE | Core Collection Mint address for cNFT minting |
-| `EXT_COLLECTION_MINT` | TEE | Extension Collection Mint address for cNFT minting |
+| `CORE_COLLECTION_MINT` | TEE | Core Collection Mint address |
+| `EXT_COLLECTION_MINT` | TEE | Extension Collection Mint address |
 | `GATEWAY_PUBKEY` | TEE | Gateway's Ed25519 pubkey for request authentication |
-| `TRUSTED_EXTENSIONS` | TEE | Comma-separated WASM extension IDs |
-| `WASM_DIR` | TEE | Path to WASM binary directory |
-| `TEE_ENDPOINT` | Gateway | TEE server URL |
+| `GATEWAY_SIGNING_KEY` | Gateway | Gateway's Ed25519 secret key (hex) |
+| `TEE_ENDPOINT` | Gateway | TEE server URL (e.g., `http://localhost:4000`) |
 | `S3_ENDPOINT` | Gateway | S3-compatible storage endpoint |
 | `S3_ACCESS_KEY` | Gateway | Storage access key |
 | `S3_SECRET_KEY` | Gateway | Storage secret key |
 | `S3_BUCKET` | Gateway | Bucket name for temp uploads |
-| `SOLANA_RPC_URL` | Gateway | Solana RPC endpoint |
-| `TITLE_CONFIG_PROGRAM_ID` | Scripts | Override the default program ID |
+| `SOLANA_RPC_URL` | All | Solana RPC endpoint |
 
 See [`.env.example`](.env.example) for the full list.
+
+---
 
 ## Mainnet
 
@@ -398,10 +415,12 @@ Mainnet uses the exact same on-chain structure as devnet. The only difference is
 | GlobalConfig PDA | *Derived from program ID at launch* |
 | Authority | *DAO multi-sig (Squads Protocol)* |
 
-Once mainnet is live, the table above will be updated with the canonical addresses. The SDK and indexer will use these values by default.
-
 The trust model on mainnet:
 - The DAO multi-sig controls the authority key (no single person can modify the GlobalConfig)
 - TEE nodes must pass remote attestation — the on-chain `measurements` field ensures only verified enclave code is trusted
 - WASM module hashes are pinned — only binaries matching the registered SHA-256 hash can execute
 - Collection Authority delegation is explicit — only registered TEE nodes can mint cNFTs into the official collections
+
+The only behavioral difference between devnet and mainnet is in `title-cli register-node`:
+- **Devnet:** If `programs/title-config/keys/authority.json` exists locally, the CLI auto-signs and broadcasts
+- **Mainnet:** The CLI outputs a partial transaction for the DAO to review and co-sign

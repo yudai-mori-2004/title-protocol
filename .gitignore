@@ -35,9 +35,14 @@ CLAUDE.md
 .env.*
 !.env.example
 
-# SSH keys
+# Keys (authority keypair, SSH keys)
+keys/
+programs/title-config/keys/
 deploy/aws/keys/
 *.pem
+
+# Pending TX files (DAO approval)
+pending-*.bin
 
 # Integration test output
 integration-tests/output-*.json

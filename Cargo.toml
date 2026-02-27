@@ -7,6 +7,7 @@ members = [
     "crates/tee",
     "crates/gateway",
     "crates/proxy",
+    "crates/cli",
 ]
 exclude = [
     "wasm",
@@ -56,6 +57,7 @@ x509-cert = { version = "0.2", features = ["std"] }
 der = { version = "0.7", features = ["std", "alloc"] }
 serde_bytes = "0.11"
 async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
 
 [profile.release]
 overflow-checks = true

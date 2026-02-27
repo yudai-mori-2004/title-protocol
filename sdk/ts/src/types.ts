@@ -201,6 +201,3 @@ export interface Attribute {
   value: string;
 }
 
-// ---------------------------------------------------------------------------
-// NOTE: NodeInfo interface removed — node information is now fully on-chain
-// via GlobalConfigAccount + TeeNodeAccount PDAs. Spec §6.2

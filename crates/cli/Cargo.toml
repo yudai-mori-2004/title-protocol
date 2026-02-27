@@ -1,0 +1,30 @@
+[package]
+name = "title-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Title Protocol CLI"
+
+[[bin]]
+name = "title-cli"
+path = "src/main.rs"
+
+[dependencies]
+title-types = { path = "../types" }
+clap = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+solana-sdk = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+base58 = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+ed25519-dalek = { workspace = true }

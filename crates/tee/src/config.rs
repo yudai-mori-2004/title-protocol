@@ -34,11 +34,18 @@ pub struct TeeAppState {
     pub state: RwLock<TeeState>,
     /// 外部通信プロキシの接続先アドレス（"direct" で直接HTTP、それ以外はTCPアドレス）
     pub proxy_addr: String,
-    /// Merkle Treeアドレス（/create-tree後に設定される）
-    pub tree_address: RwLock<Option<[u8; 32]>>,
-    /// MPL-Coreコレクションアドレス（環境変数 COLLECTION_MINT で設定）
+    /// Core Merkle Treeアドレス（/create-tree後に設定される）
+    /// 仕様書 §6.5: Core用Tree
+    pub core_tree_address: RwLock<Option<[u8; 32]>>,
+    /// Extension Merkle Treeアドレス（/create-tree後に設定される）
+    /// 仕様書 §6.5: Extension用Tree
+    pub ext_tree_address: RwLock<Option<[u8; 32]>>,
+    /// Core cNFTコレクションアドレス（環境変数 CORE_COLLECTION_MINT で設定）
     /// 仕様書 §5.2 Step 1 — Global Configのcore_collection_mintに対応
-    pub collection_mint: Option<Pubkey>,
+    pub core_collection_mint: Option<Pubkey>,
+    /// Extension cNFTコレクションアドレス（環境変数 EXT_COLLECTION_MINT で設定）
+    /// 仕様書 §5.2 Step 1 — Global Configのext_collection_mintに対応
+    pub ext_collection_mint: Option<Pubkey>,
     /// Gateway認証用Ed25519公開鍵（環境変数 GATEWAY_PUBKEY で設定）
     /// 仕様書 §6.2: Global Configのgateway_pubkeyで署名を検証
     /// Noneの場合はGateway認証をスキップ（開発環境用）

@@ -195,13 +195,16 @@ mod tests {
         rt.generate_signing_keypair();
         rt.generate_encryption_keypair();
         rt.generate_tree_keypair();
+        rt.generate_ext_tree_keypair();
 
         Arc::new(TeeAppState {
             runtime: Box::new(rt),
             state: RwLock::new(TeeState::Inactive),
             proxy_addr: "127.0.0.1:0".to_string(),
-            tree_address: RwLock::new(None),
-            collection_mint: None,
+            core_tree_address: RwLock::new(None),
+            ext_tree_address: RwLock::new(None),
+            core_collection_mint: None,
+            ext_collection_mint: None,
             gateway_pubkey: None,
             wasm_loader: None,
             memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),

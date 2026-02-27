@@ -291,7 +291,8 @@ async function main() {
 
     if (createTreeRes.ok) {
       const result = await createTreeRes.json();
-      console.log(`  Tree Address: ${result.tree_address}`);
+      console.log(`  Core Tree Address: ${result.core_tree_address}`);
+      console.log(`  Extension Tree Address: ${result.ext_tree_address}`);
       console.log(`  Signing Pubkey: ${result.signing_pubkey}`);
       console.log(`  Encryption Pubkey: ${result.encryption_pubkey}`);
 
@@ -302,7 +303,8 @@ async function main() {
         writeFileSync(
           join(teeInfoDir, "tee-info.json"),
           JSON.stringify({
-            tree_address: result.tree_address,
+            core_tree_address: result.core_tree_address,
+            ext_tree_address: result.ext_tree_address,
             signing_pubkey: result.signing_pubkey,
             encryption_pubkey: result.encryption_pubkey,
           }, null, 2)
@@ -337,20 +339,34 @@ async function main() {
         console.log(`  TEE wallet 残高: ${teeBalance / LAMPORTS_PER_SOL} SOL (十分)`);
       }
 
-      // signed_tx をそのままブロードキャスト（TEEが完全署名済み）
-      const txBytes = Buffer.from(result.signed_tx, "base64");
-      const signedTx = Transaction.from(txBytes);
+      // Core Tree signed_tx をブロードキャスト（TEEが完全署名済み）
+      const coreTxBytes = Buffer.from(result.core_signed_tx, "base64");
+      const coreSignedTx = Transaction.from(coreTxBytes);
 
       try {
-        const sig = await connection.sendRawTransaction(
-          signedTx.serialize()
+        const coreSig = await connection.sendRawTransaction(
+          coreSignedTx.serialize()
         );
-        await connection.confirmTransaction(sig, "confirmed");
-        console.log(`  Merkle Tree 作成完了: ${sig}`);
+        await connection.confirmTransaction(coreSig, "confirmed");
+        console.log(`  Core Merkle Tree 作成完了: ${coreSig}`);
       } catch (e) {
-        console.log(`  Merkle Tree ブロードキャスト失敗: ${e.message?.substring(0, 120)}`);
+        console.log(`  Core Merkle Tree ブロードキャスト失敗: ${e.message?.substring(0, 120)}`);
         console.log("  TEE walletの残高不足の可能性があります。手動で送金してからリトライ:");
         console.log(`    solana transfer ${result.signing_pubkey} 0.5 --allow-unfunded-recipient`);
+      }
+
+      // Extension Tree signed_tx をブロードキャスト
+      const extTxBytes = Buffer.from(result.ext_signed_tx, "base64");
+      const extSignedTx = Transaction.from(extTxBytes);
+
+      try {
+        const extSig = await connection.sendRawTransaction(
+          extSignedTx.serialize()
+        );
+        await connection.confirmTransaction(extSig, "confirmed");
+        console.log(`  Extension Merkle Tree 作成完了: ${extSig}`);
+      } catch (e) {
+        console.log(`  Extension Merkle Tree ブロードキャスト失敗: ${e.message?.substring(0, 120)}`);
       }
     } else {
       const body = await createTreeRes.text();

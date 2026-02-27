@@ -59,18 +59,6 @@ pub async fn handle_sign(
     let verifying_key = VerifyingKey::from_bytes(&tee_pubkey_bytes)
         .map_err(|e| TeeError::Internal(format!("検証用公開鍵の構築に失敗: {e}")))?;
 
-    // Tree address
-    let tree_address_bytes = {
-        let tree_addr = state.tree_address.read().await;
-        tree_addr.ok_or(TeeError::Internal(
-            "Merkle Treeが未作成です。先に/create-treeを呼び出してください".into(),
-        ))?
-    };
-    let tree_pubkey = Pubkey::new_from_array(tree_address_bytes);
-
-    // コレクションアドレス
-    let collection_mint = state.collection_mint.as_ref();
-
     let mut partial_txs = Vec::new();
 
     for item in &request.requests {
@@ -97,6 +85,26 @@ pub async fn handle_sign(
         // signed_jsonをパース
         let signed_json: SignedJson = serde_json::from_slice(&proxy_response.body)
             .map_err(|e| TeeError::BadRequest(format!("signed_jsonのパースに失敗: {e}")))?;
+
+        // protocolに応じてTree/Collectionを選択（仕様書 §6.5）
+        let is_extension = signed_json.core.protocol == "Title-Extension-v1";
+        let tree_address_bytes = if is_extension {
+            let addr = state.ext_tree_address.read().await;
+            addr.ok_or(TeeError::Internal(
+                "Extension Merkle Treeが未作成です。先に/create-treeを呼び出してください".into(),
+            ))?
+        } else {
+            let addr = state.core_tree_address.read().await;
+            addr.ok_or(TeeError::Internal(
+                "Core Merkle Treeが未作成です。先に/create-treeを呼び出してください".into(),
+            ))?
+        };
+        let tree_pubkey = Pubkey::new_from_array(tree_address_bytes);
+        let collection_mint = if is_extension {
+            state.ext_collection_mint.as_ref()
+        } else {
+            state.core_collection_mint.as_ref()
+        };
 
         // Step 2: tee_signatureを自身の公開鍵で検証
         // 仕様書 §6.4: 自身が生成したsigned_jsonであることの確認

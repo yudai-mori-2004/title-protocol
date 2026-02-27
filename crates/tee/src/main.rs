@@ -54,16 +54,26 @@ async fn main() -> anyhow::Result<()> {
     let proxy_addr =
         std::env::var("PROXY_ADDR").unwrap_or_else(|_| "127.0.0.1:8000".to_string());
 
-    // MPL-Coreコレクションアドレス（仕様書 §5.2）
-    let collection_mint = std::env::var("COLLECTION_MINT")
+    // MPL-Coreコレクションアドレス（仕様書 §5.2, §6.5）
+    // Core cNFT用とExtension cNFT用で別コレクションを使用
+    let core_collection_mint = std::env::var("CORE_COLLECTION_MINT")
         .ok()
         .filter(|s| !s.is_empty())
-        .map(|s| Pubkey::from_str(&s).expect("COLLECTION_MINTが不正なBase58です"));
+        .map(|s| Pubkey::from_str(&s).expect("CORE_COLLECTION_MINTが不正なBase58です"));
+    let ext_collection_mint = std::env::var("EXT_COLLECTION_MINT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| Pubkey::from_str(&s).expect("EXT_COLLECTION_MINTが不正なBase58です"));
 
-    if let Some(ref mint) = collection_mint {
-        tracing::info!(collection_mint = %mint, "コレクションミント設定済み");
+    if let Some(ref mint) = core_collection_mint {
+        tracing::info!(core_collection_mint = %mint, "Coreコレクションミント設定済み");
     } else {
-        tracing::warn!("COLLECTION_MINTが未設定です。コレクションなしでミントします");
+        tracing::warn!("CORE_COLLECTION_MINTが未設定です。コレクションなしでミントします");
+    }
+    if let Some(ref mint) = ext_collection_mint {
+        tracing::info!(ext_collection_mint = %mint, "Extensionコレクションミント設定済み");
+    } else {
+        tracing::warn!("EXT_COLLECTION_MINTが未設定です。コレクションなしでミントします");
     }
 
     // Gateway認証用公開鍵（仕様書 §6.2）
@@ -122,8 +132,10 @@ async fn main() -> anyhow::Result<()> {
         runtime,
         state: RwLock::new(TeeState::Inactive),
         proxy_addr,
-        tree_address: RwLock::new(None),
-        collection_mint,
+        core_tree_address: RwLock::new(None),
+        ext_tree_address: RwLock::new(None),
+        core_collection_mint,
+        ext_collection_mint,
         gateway_pubkey,
         wasm_loader,
         memory_semaphore,
@@ -137,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
         rt.generate_signing_keypair();
         rt.generate_encryption_keypair();
         rt.generate_tree_keypair();
+        rt.generate_ext_tree_keypair();
     }
     tracing::info!("鍵生成完了");
 

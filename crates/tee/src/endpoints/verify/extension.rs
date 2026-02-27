@@ -7,7 +7,7 @@
 use base58::ToBase58;
 use base64::Engine;
 
-use title_types::{Attribute, ExtensionPayload};
+use title_types::{Attribute, ExtensionPayload, SignedJson, SignedJsonCore};
 
 use crate::config::TeeAppState;
 
@@ -104,6 +104,7 @@ pub(crate) async fn process_extension(
     ];
 
     // 署名対象の構築と署名（仕様書 §5.1 Step 5）
+    // Core signed_jsonと同じSignedJson構造体を使用し、構造を統一する
     let payload_value = serde_json::to_value(&payload)
         .map_err(|e| format!("payloadシリアライズエラー: {e}"))?;
     let attributes_value = serde_json::to_value(&attributes)
@@ -120,23 +121,22 @@ pub(crate) async fn process_extension(
     let tee_pubkey_b58 = state.runtime.signing_pubkey().to_base58();
     let attestation_b64 = b64().encode(state.runtime.get_attestation());
 
-    // Extension signed_json構築
-    let signed_json = serde_json::json!({
-        "protocol": "Title-Extension-v1",
-        "tee_type": state.runtime.tee_type(),
-        "tee_pubkey": tee_pubkey_b58,
-        "tee_signature": b64().encode(&signature),
-        "tee_attestation": attestation_b64,
-        "content_hash": content_hash_hex,
-        "content_type": mime_type,
-        "creator_wallet": owner_wallet,
-        "extension_id": extension_id,
-        "wasm_source": wasm_binary.source,
-        "wasm_hash": wasm_hash_hex,
-        "extension_input_hash": ext_input_hash,
-        "payload": payload_value,
-        "attributes": attributes_value,
-    });
+    // Extension signed_json構築（Core同様にSignedJson構造体を使用）
+    // 仕様書 §5.1 Step 5: 外殻(protocol等) + payload(nested) + attributes
+    let signed_json = SignedJson {
+        core: SignedJsonCore {
+            protocol: "Title-Extension-v1".to_string(),
+            tee_type: state.runtime.tee_type().to_string(),
+            tee_pubkey: tee_pubkey_b58,
+            tee_signature: b64().encode(&signature),
+            tee_attestation: attestation_b64,
+        },
+        payload: payload_value,
+        attributes,
+    };
 
-    Ok(signed_json)
+    let signed_json_value = serde_json::to_value(&signed_json)
+        .map_err(|e| format!("signed_jsonシリアライズエラー: {e}"))?;
+
+    Ok(signed_json_value)
 }

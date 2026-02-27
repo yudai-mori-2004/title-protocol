@@ -51,11 +51,6 @@ pub async fn handle_create_tree(
     let blockhash = solana_sdk::hash::Hash::from_str(&request.recent_blockhash)
         .map_err(|e| TeeError::BadRequest(format!("recent_blockhashのBase58デコードに失敗: {e}")))?;
 
-    // Tree公開鍵
-    let tree_pubkey_bytes: [u8; 32] = state.runtime.tree_pubkey().try_into()
-        .map_err(|_| TeeError::Internal("Tree公開鍵の取得に失敗".into()))?;
-    let tree_pubkey = Pubkey::new_from_array(tree_pubkey_bytes);
-
     // TEE署名用公開鍵（payer兼tree_creator）
     // 仕様書 §6.4: payerをTEE内部walletにすることで、
     // Merkle Treeの作成・操作権限が完全にTEE内部に閉じる。
@@ -63,36 +58,70 @@ pub async fn handle_create_tree(
         .map_err(|_| TeeError::Internal("署名用公開鍵の取得に失敗".into()))?;
     let tee_signing_pubkey = Pubkey::new_from_array(signing_pubkey_bytes);
 
-    // Bubblegum V2 CreateTreeConfig トランザクション構築（仕様書 §6.4 Step 2）
-    // payer = TEE signing_pubkey（TEE内部walletが支払う）
-    let mut tx = solana_tx::build_create_tree_tx(
+    // --- Core Tree トランザクション構築（仕様書 §6.4 Step 2, §6.5）---
+    let core_tree_pubkey_bytes: [u8; 32] = state.runtime.tree_pubkey().try_into()
+        .map_err(|_| TeeError::Internal("Core Tree公開鍵の取得に失敗".into()))?;
+    let core_tree_pubkey = Pubkey::new_from_array(core_tree_pubkey_bytes);
+
+    let mut core_tx = solana_tx::build_create_tree_tx(
         &tee_signing_pubkey,
-        &tree_pubkey,
+        &core_tree_pubkey,
         &tee_signing_pubkey,
         request.max_depth,
         request.max_buffer_size,
         &blockhash,
     );
 
-    // TEEが全署名を行う（payer=signing_key なので signing_key + tree_key の2署名）
-    let message_bytes = tx.message.serialize();
+    // Core Tree署名（payer=signing_key なので signing_key + tree_key の2署名）
+    let core_message_bytes = core_tx.message.serialize();
 
-    let tree_sig = state.runtime.tree_sign(&message_bytes);
-    solana_tx::apply_partial_signature(&mut tx, &tree_pubkey, &tree_sig)
-        .map_err(|e| TeeError::Internal(format!("Tree署名の適用に失敗: {e}")))?;
+    let core_tree_sig = state.runtime.tree_sign(&core_message_bytes);
+    solana_tx::apply_partial_signature(&mut core_tx, &core_tree_pubkey, &core_tree_sig)
+        .map_err(|e| TeeError::Internal(format!("Core Tree署名の適用に失敗: {e}")))?;
 
-    let signing_sig = state.runtime.sign(&message_bytes);
-    solana_tx::apply_partial_signature(&mut tx, &tee_signing_pubkey, &signing_sig)
-        .map_err(|e| TeeError::Internal(format!("TEE署名の適用に失敗: {e}")))?;
+    let core_signing_sig = state.runtime.sign(&core_message_bytes);
+    solana_tx::apply_partial_signature(&mut core_tx, &tee_signing_pubkey, &core_signing_sig)
+        .map_err(|e| TeeError::Internal(format!("Core TEE署名の適用に失敗: {e}")))?;
 
-    // トランザクションシリアライズ
-    let tx_bytes = solana_tx::serialize_transaction(&tx)
-        .map_err(|e| TeeError::Internal(format!("トランザクションのシリアライズに失敗: {e}")))?;
+    let core_tx_bytes = solana_tx::serialize_transaction(&core_tx)
+        .map_err(|e| TeeError::Internal(format!("Core Treeトランザクションのシリアライズに失敗: {e}")))?;
+
+    // --- Extension Tree トランザクション構築（仕様書 §6.4 Step 2, §6.5）---
+    let ext_tree_pubkey_bytes: [u8; 32] = state.runtime.ext_tree_pubkey().try_into()
+        .map_err(|_| TeeError::Internal("Extension Tree公開鍵の取得に失敗".into()))?;
+    let ext_tree_pubkey = Pubkey::new_from_array(ext_tree_pubkey_bytes);
+
+    let mut ext_tx = solana_tx::build_create_tree_tx(
+        &tee_signing_pubkey,
+        &ext_tree_pubkey,
+        &tee_signing_pubkey,
+        request.max_depth,
+        request.max_buffer_size,
+        &blockhash,
+    );
+
+    // Extension Tree署名
+    let ext_message_bytes = ext_tx.message.serialize();
+
+    let ext_tree_sig = state.runtime.ext_tree_sign(&ext_message_bytes);
+    solana_tx::apply_partial_signature(&mut ext_tx, &ext_tree_pubkey, &ext_tree_sig)
+        .map_err(|e| TeeError::Internal(format!("Extension Tree署名の適用に失敗: {e}")))?;
+
+    let ext_signing_sig = state.runtime.sign(&ext_message_bytes);
+    solana_tx::apply_partial_signature(&mut ext_tx, &tee_signing_pubkey, &ext_signing_sig)
+        .map_err(|e| TeeError::Internal(format!("Extension TEE署名の適用に失敗: {e}")))?;
+
+    let ext_tx_bytes = solana_tx::serialize_transaction(&ext_tx)
+        .map_err(|e| TeeError::Internal(format!("Extension Treeトランザクションのシリアライズに失敗: {e}")))?;
 
     // Tree addressを保存
     {
-        let mut tree_addr = state.tree_address.write().await;
-        *tree_addr = Some(tree_pubkey_bytes);
+        let mut core_addr = state.core_tree_address.write().await;
+        *core_addr = Some(core_tree_pubkey_bytes);
+    }
+    {
+        let mut ext_addr = state.ext_tree_address.write().await;
+        *ext_addr = Some(ext_tree_pubkey_bytes);
     }
 
     // 状態遷移: inactive → active (仕様書 §6.4 Step 3)
@@ -102,13 +131,16 @@ pub async fn handle_create_tree(
     }
 
     tracing::info!(
-        tree_address = %tree_pubkey,
-        "Merkle Tree作成トランザクションを構築しました。TEEはactive状態に遷移しました"
+        core_tree_address = %core_tree_pubkey,
+        ext_tree_address = %ext_tree_pubkey,
+        "Merkle Tree作成トランザクションを構築しました（Core + Extension）。TEEはactive状態に遷移しました"
     );
 
     let response = CreateTreeResponse {
-        signed_tx: b64().encode(&tx_bytes),
-        tree_address: tree_pubkey.to_string(),
+        core_signed_tx: b64().encode(&core_tx_bytes),
+        core_tree_address: core_tree_pubkey.to_string(),
+        ext_signed_tx: b64().encode(&ext_tx_bytes),
+        ext_tree_address: ext_tree_pubkey.to_string(),
         signing_pubkey: tee_signing_pubkey.to_string(),
         encryption_pubkey: b64().encode(state.runtime.encryption_pubkey()),
     };
@@ -129,13 +161,16 @@ mod tests {
         rt.generate_signing_keypair();
         rt.generate_encryption_keypair();
         rt.generate_tree_keypair();
+        rt.generate_ext_tree_keypair();
 
         Arc::new(TeeAppState {
             runtime: Box::new(rt),
             state: RwLock::new(TeeState::Inactive),
             proxy_addr: "127.0.0.1:0".to_string(),
-            tree_address: RwLock::new(None),
-            collection_mint: None,
+            core_tree_address: RwLock::new(None),
+            ext_tree_address: RwLock::new(None),
+            core_collection_mint: None,
+            ext_collection_mint: None,
             gateway_pubkey: None,
             wasm_loader: None,
             memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
@@ -160,19 +195,31 @@ mod tests {
 
         let response = result.unwrap().0;
 
-        // signed_txがBase64でデコード可能
-        let tx_bytes = b64().decode(&response.signed_tx).unwrap();
-        assert!(!tx_bytes.is_empty());
+        // Core signed_txがBase64でデコード可能
+        let core_tx_bytes = b64().decode(&response.core_signed_tx).unwrap();
+        assert!(!core_tx_bytes.is_empty());
 
-        // トランザクションがデシリアライズ可能
-        let tx: Transaction = bincode::deserialize(&tx_bytes).unwrap();
+        // Core トランザクションがデシリアライズ可能
+        let core_tx: Transaction = bincode::deserialize(&core_tx_bytes).unwrap();
         // payer = tree_creator なので署名者は2（signing_key + tree_key）
-        assert_eq!(tx.message.header.num_required_signatures, 2);
+        assert_eq!(core_tx.message.header.num_required_signatures, 2);
         // 3つの命令（compute_budget + create_account + create_tree_config_v2）
-        assert_eq!(tx.message.instructions.len(), 3);
+        assert_eq!(core_tx.message.instructions.len(), 3);
+
+        // Extension signed_txがBase64でデコード可能
+        let ext_tx_bytes = b64().decode(&response.ext_signed_tx).unwrap();
+        assert!(!ext_tx_bytes.is_empty());
+
+        // Extension トランザクションがデシリアライズ可能
+        let ext_tx: Transaction = bincode::deserialize(&ext_tx_bytes).unwrap();
+        assert_eq!(ext_tx.message.header.num_required_signatures, 2);
+        assert_eq!(ext_tx.message.instructions.len(), 3);
 
         // tree_addressがBase58
-        assert!(!response.tree_address.is_empty());
+        assert!(!response.core_tree_address.is_empty());
+        assert!(!response.ext_tree_address.is_empty());
+        // Core TreeとExtension Treeは異なるアドレス
+        assert_ne!(response.core_tree_address, response.ext_tree_address);
 
         // signing_pubkeyがBase58
         assert!(!response.signing_pubkey.is_empty());
@@ -186,8 +233,10 @@ mod tests {
         assert_eq!(*current, TeeState::Active);
 
         // tree_addressが設定されている
-        let tree_addr = state.tree_address.read().await;
-        assert!(tree_addr.is_some());
+        let core_addr = state.core_tree_address.read().await;
+        assert!(core_addr.is_some());
+        let ext_addr = state.ext_tree_address.read().await;
+        assert!(ext_addr.is_some());
     }
 
     /// active状態での二度目の/create-tree呼び出しが409を返すことを確認

@@ -234,7 +234,8 @@ S3_BUCKET=title-uploads-devnet
 S3_REGION=ap-northeast-1
 
 # Global Config
-COLLECTION_MINT=<Collection Mint address>
+CORE_COLLECTION_MINT=<Core Collection Mint address>
+EXT_COLLECTION_MINT=<Extension Collection Mint address>
 GATEWAY_PUBKEY=<Gateway public key, Base58>
 
 # PostgreSQL

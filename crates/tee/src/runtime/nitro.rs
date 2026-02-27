@@ -194,8 +194,10 @@ pub struct NitroRuntime {
     signing_key: RwLock<Option<SigningKey>>,
     /// X25519暗号化用秘密鍵（メモリ内のみ保持）
     encryption_secret: RwLock<Option<StaticSecret>>,
-    /// Tree用Ed25519キーペア（メモリ内のみ保持）
+    /// Core Tree用Ed25519キーペア（メモリ内のみ保持）
     tree_key: RwLock<Option<SigningKey>>,
+    /// Extension Tree用Ed25519キーペア（メモリ内のみ保持）
+    ext_tree_key: RwLock<Option<SigningKey>>,
 }
 
 impl NitroRuntime {
@@ -211,6 +213,7 @@ impl NitroRuntime {
             signing_key: RwLock::new(None),
             encryption_secret: RwLock::new(None),
             tree_key: RwLock::new(None),
+            ext_tree_key: RwLock::new(None),
         }
     }
 
@@ -232,6 +235,7 @@ impl NitroRuntime {
             signing_key: RwLock::new(None),
             encryption_secret: RwLock::new(None),
             tree_key: RwLock::new(None),
+            ext_tree_key: RwLock::new(None),
         }
     }
 }
@@ -325,10 +329,10 @@ impl TeeRuntime for NitroRuntime {
         pubkey.to_bytes().to_vec()
     }
 
-    /// NSM APIのエントロピーでTree用Ed25519キーペアを生成する。
-    /// 仕様書 §6.4 Step 2
+    /// NSM APIのエントロピーでCore Tree用Ed25519キーペアを生成する。
+    /// 仕様書 §6.4 Step 2, §6.5
     ///
-    /// Tree用公開鍵がそのままMerkle Treeのアカウントアドレスとなる。
+    /// Core Tree用公開鍵がそのままMerkle Treeのアカウントアドレスとなる。
     fn generate_tree_keypair(&self) {
         let entropy = self.nsm.get_random(32);
         let seed: [u8; 32] = entropy
@@ -339,19 +343,48 @@ impl TeeRuntime for NitroRuntime {
         *guard = Some(key);
     }
 
-    /// Tree用公開鍵（Ed25519 VerifyingKey）をバイト列で返す。
-    /// 仕様書 §6.4 Step 2
+    /// Core Tree用公開鍵（Ed25519 VerifyingKey）をバイト列で返す。
+    /// 仕様書 §6.4 Step 2, §6.5
     fn tree_pubkey(&self) -> Vec<u8> {
         let guard = self.tree_key.read().unwrap();
-        let key = guard.as_ref().expect("Tree用キーペアが未生成です");
+        let key = guard.as_ref().expect("Core Tree用キーペアが未生成です");
         key.verifying_key().to_bytes().to_vec()
     }
 
-    /// Tree用秘密鍵でデータに署名する。
-    /// 仕様書 §6.4 Step 2
+    /// Core Tree用秘密鍵でデータに署名する。
+    /// 仕様書 §6.4 Step 2, §6.5
     fn tree_sign(&self, message: &[u8]) -> Vec<u8> {
         let guard = self.tree_key.read().unwrap();
-        let key = guard.as_ref().expect("Tree用キーペアが未生成です");
+        let key = guard.as_ref().expect("Core Tree用キーペアが未生成です");
+        let signature = key.sign(message);
+        signature.to_bytes().to_vec()
+    }
+
+    /// NSM APIのエントロピーでExtension Tree用Ed25519キーペアを生成する。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn generate_ext_tree_keypair(&self) {
+        let entropy = self.nsm.get_random(32);
+        let seed: [u8; 32] = entropy
+            .try_into()
+            .expect("NSMエントロピーは32バイトであるべき");
+        let key = SigningKey::from_bytes(&seed);
+        let mut guard = self.ext_tree_key.write().unwrap();
+        *guard = Some(key);
+    }
+
+    /// Extension Tree用公開鍵（Ed25519 VerifyingKey）をバイト列で返す。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn ext_tree_pubkey(&self) -> Vec<u8> {
+        let guard = self.ext_tree_key.read().unwrap();
+        let key = guard.as_ref().expect("Extension Tree用キーペアが未生成です");
+        key.verifying_key().to_bytes().to_vec()
+    }
+
+    /// Extension Tree用秘密鍵でデータに署名する。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn ext_tree_sign(&self, message: &[u8]) -> Vec<u8> {
+        let guard = self.ext_tree_key.read().unwrap();
+        let key = guard.as_ref().expect("Extension Tree用キーペアが未生成です");
         let signature = key.sign(message);
         signature.to_bytes().to_vec()
     }

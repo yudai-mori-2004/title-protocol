@@ -53,15 +53,27 @@ pub trait TeeRuntime: Send + Sync {
     /// 仕様書 §6.4
     fn encryption_pubkey(&self) -> Vec<u8>;
 
-    /// Tree用Ed25519キーペアを生成し、内部に保持する。
-    /// 仕様書 §6.4 Step 2
+    /// Core Tree用Ed25519キーペアを生成し、内部に保持する。
+    /// 仕様書 §6.4 Step 2, §6.5
     fn generate_tree_keypair(&self);
 
-    /// Tree用公開鍵を取得する。
-    /// 仕様書 §6.4 Step 2
+    /// Core Tree用公開鍵を取得する。
+    /// 仕様書 §6.4 Step 2, §6.5
     fn tree_pubkey(&self) -> Vec<u8>;
 
-    /// Tree用秘密鍵でデータに署名する。
-    /// 仕様書 §6.4 Step 2
+    /// Core Tree用秘密鍵でデータに署名する。
+    /// 仕様書 §6.4 Step 2, §6.5
     fn tree_sign(&self, message: &[u8]) -> Vec<u8>;
+
+    /// Extension Tree用Ed25519キーペアを生成し、内部に保持する。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn generate_ext_tree_keypair(&self);
+
+    /// Extension Tree用公開鍵を取得する。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn ext_tree_pubkey(&self) -> Vec<u8>;
+
+    /// Extension Tree用秘密鍵でデータに署名する。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn ext_tree_sign(&self, message: &[u8]) -> Vec<u8>;
 }

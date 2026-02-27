@@ -99,7 +99,7 @@ if (!existsSync(teeInfoPath)) {
 const teeInfo = JSON.parse(readFileSync(teeInfoPath, "utf-8"));
 console.log(`  TEE signing_pubkey: ${teeInfo.signing_pubkey}`);
 console.log(`  TEE encryption_pubkey: ${teeInfo.encryption_pubkey}`);
-console.log(`  Tree address: ${teeInfo.tree_address}`);
+console.log(`  Core Tree address: ${teeInfo.core_tree_address}`);
 
 // ---------------------------------------------------------------------------
 // 画像読み込み
@@ -377,7 +377,7 @@ console.log("========================================");
 console.log(`  Image: ${IMAGE_PATH}`);
 console.log(`  Owner: ${wallet.publicKey.toBase58()}`);
 console.log(`  Processors: ${PROCESSOR_IDS.join(", ")}`);
-console.log(`  Tree: ${teeInfo.tree_address}`);
+console.log(`  Core Tree: ${teeInfo.core_tree_address}`);
 console.log(`  TXs: ${txSignatures.length}`);
 for (const sig of txSignatures) {
   console.log(`    https://explorer.solana.com/tx/${sig}?cluster=devnet`);

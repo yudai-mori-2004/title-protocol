@@ -41,8 +41,10 @@ pub struct MockRuntime {
     signing_key: RwLock<Option<SigningKey>>,
     /// X25519暗号化用秘密鍵（メモリ内生成）
     encryption_secret: RwLock<Option<StaticSecret>>,
-    /// Tree用Ed25519キーペア（メモリ内生成）
+    /// Core Tree用Ed25519キーペア（メモリ内生成）
     tree_key: RwLock<Option<SigningKey>>,
+    /// Extension Tree用Ed25519キーペア（メモリ内生成）
+    ext_tree_key: RwLock<Option<SigningKey>>,
 }
 
 impl MockRuntime {
@@ -52,6 +54,7 @@ impl MockRuntime {
             signing_key: RwLock::new(None),
             encryption_secret: RwLock::new(None),
             tree_key: RwLock::new(None),
+            ext_tree_key: RwLock::new(None),
         }
     }
 }
@@ -132,27 +135,52 @@ impl TeeRuntime for MockRuntime {
         pubkey.to_bytes().to_vec()
     }
 
-    /// メモリ内でTree用Ed25519キーペアを生成する。
-    /// 仕様書 §6.4 Step 2
+    /// メモリ内でCore Tree用Ed25519キーペアを生成する。
+    /// 仕様書 §6.4 Step 2, §6.5
     fn generate_tree_keypair(&self) {
         let key = SigningKey::generate(&mut rand::rngs::OsRng);
         let mut guard = self.tree_key.write().unwrap();
         *guard = Some(key);
     }
 
-    /// Tree用公開鍵（Ed25519 VerifyingKey）をバイト列で返す。
-    /// 仕様書 §6.4 Step 2
+    /// Core Tree用公開鍵（Ed25519 VerifyingKey）をバイト列で返す。
+    /// 仕様書 §6.4 Step 2, §6.5
     fn tree_pubkey(&self) -> Vec<u8> {
         let guard = self.tree_key.read().unwrap();
-        let key = guard.as_ref().expect("Tree用キーペアが未生成です");
+        let key = guard.as_ref().expect("Core Tree用キーペアが未生成です");
         key.verifying_key().to_bytes().to_vec()
     }
 
-    /// Tree用秘密鍵でデータに署名する。
-    /// 仕様書 §6.4 Step 2
+    /// Core Tree用秘密鍵でデータに署名する。
+    /// 仕様書 §6.4 Step 2, §6.5
     fn tree_sign(&self, message: &[u8]) -> Vec<u8> {
         let guard = self.tree_key.read().unwrap();
-        let key = guard.as_ref().expect("Tree用キーペアが未生成です");
+        let key = guard.as_ref().expect("Core Tree用キーペアが未生成です");
+        let signature = key.sign(message);
+        signature.to_bytes().to_vec()
+    }
+
+    /// メモリ内でExtension Tree用Ed25519キーペアを生成する。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn generate_ext_tree_keypair(&self) {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut guard = self.ext_tree_key.write().unwrap();
+        *guard = Some(key);
+    }
+
+    /// Extension Tree用公開鍵（Ed25519 VerifyingKey）をバイト列で返す。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn ext_tree_pubkey(&self) -> Vec<u8> {
+        let guard = self.ext_tree_key.read().unwrap();
+        let key = guard.as_ref().expect("Extension Tree用キーペアが未生成です");
+        key.verifying_key().to_bytes().to_vec()
+    }
+
+    /// Extension Tree用秘密鍵でデータに署名する。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn ext_tree_sign(&self, message: &[u8]) -> Vec<u8> {
+        let guard = self.ext_tree_key.read().unwrap();
+        let key = guard.as_ref().expect("Extension Tree用キーペアが未生成です");
         let signature = key.sign(message);
         signature.to_bytes().to_vec()
     }

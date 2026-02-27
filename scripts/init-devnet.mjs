@@ -12,7 +12,7 @@
  * 5. WASM モジュール登録
  * 6. Collection Authority 委譲（TEE signing_pubkey へ）
  * 7. Merkle Tree 作成（TEE /create-tree）
- * 8. COLLECTION_MINT を .env に反映
+ * 8. CORE_COLLECTION_MINT, EXT_COLLECTION_MINT を .env に反映
  *
  * 使い方:
  *   cd scripts && npm install
@@ -655,7 +655,8 @@ async function main() {
 
         if (res.ok) {
           treeResult = await res.json();
-          console.log(`  Tree Address: ${treeResult.tree_address}`);
+          console.log(`  Core Tree Address: ${treeResult.core_tree_address}`);
+          console.log(`  Extension Tree Address: ${treeResult.ext_tree_address}`);
           console.log(`  TEE Signing Pubkey: ${treeResult.signing_pubkey}`);
           console.log(`  TEE Encryption Pubkey: ${treeResult.encryption_pubkey}`);
 
@@ -665,7 +666,8 @@ async function main() {
           writeFileSync(
             teeInfoPath,
             JSON.stringify({
-              tree_address: treeResult.tree_address,
+              core_tree_address: treeResult.core_tree_address,
+              ext_tree_address: treeResult.ext_tree_address,
               signing_pubkey: treeResult.signing_pubkey,
               encryption_pubkey: treeResult.encryption_pubkey,
             }, null, 2)
@@ -695,17 +697,28 @@ async function main() {
             console.log(`  TEE wallet 残高: ${teeBalance / LAMPORTS_PER_SOL} SOL (十分)`);
           }
 
-          // signed_tx をブロードキャスト
-          const txBytes = Buffer.from(treeResult.signed_tx, "base64");
-          const signedTx = Transaction.from(txBytes);
+          // Core Tree signed_tx をブロードキャスト
+          const coreTxBytes = Buffer.from(treeResult.core_signed_tx, "base64");
+          const coreSignedTx = Transaction.from(coreTxBytes);
           try {
-            const txSig = await connection.sendRawTransaction(signedTx.serialize());
-            await connection.confirmTransaction(txSig, "confirmed");
-            console.log(`  Merkle Tree 作成完了: ${txSig}`);
+            const coreSig = await connection.sendRawTransaction(coreSignedTx.serialize());
+            await connection.confirmTransaction(coreSig, "confirmed");
+            console.log(`  Core Merkle Tree 作成完了: ${coreSig}`);
           } catch (e) {
-            console.log(`  Merkle Tree ブロードキャスト失敗: ${e.message?.substring(0, 120)}`);
+            console.log(`  Core Merkle Tree ブロードキャスト失敗: ${e.message?.substring(0, 120)}`);
             console.log("  TEE walletの残高不足の可能性があります。以下を実行後にリトライ:");
             console.log(`    solana transfer ${treeResult.signing_pubkey} 0.5 --allow-unfunded-recipient --url ${RPC_URL}`);
+          }
+
+          // Extension Tree signed_tx をブロードキャスト
+          const extTxBytes = Buffer.from(treeResult.ext_signed_tx, "base64");
+          const extSignedTx = Transaction.from(extTxBytes);
+          try {
+            const extSig = await connection.sendRawTransaction(extSignedTx.serialize());
+            await connection.confirmTransaction(extSig, "confirmed");
+            console.log(`  Extension Merkle Tree 作成完了: ${extSig}`);
+          } catch (e) {
+            console.log(`  Extension Merkle Tree ブロードキャスト失敗: ${e.message?.substring(0, 120)}`);
           }
 
           break; // 成功したらループを抜ける
@@ -800,7 +813,8 @@ async function main() {
   // =====================================================================
   console.log("\n[Step 10] .env 更新ガイダンス");
   console.log("  以下の値を .env に設定してください:");
-  console.log(`    COLLECTION_MINT=${coreMintStr}`);
+  console.log(`    CORE_COLLECTION_MINT=${coreMintStr}`);
+  console.log(`    EXT_COLLECTION_MINT=${extMintStr}`);
   if (teeEncryptionPubkey) {
     console.log(`    TEE_ENCRYPTION_PUBKEY=${teeEncryptionPubkey}`);
   }
@@ -808,10 +822,11 @@ async function main() {
     console.log(`    GATEWAY_PUBKEY=${gatewayPubkey}`);
   }
 
-  // EC2上の .env に COLLECTION_MINT を書き込みガイダンス
-  if (coreMintStr) {
+  // EC2上の .env に CORE_COLLECTION_MINT, EXT_COLLECTION_MINT を書き込みガイダンス
+  if (coreMintStr && extMintStr) {
     console.log("\n  EC2上のTEEを更新する場合:");
-    console.log(`    ssh ec2-user@<IP> "echo 'COLLECTION_MINT=${coreMintStr}' >> ~/title-protocol/.env"`);
+    console.log(`    ssh ec2-user@<IP> "echo 'CORE_COLLECTION_MINT=${coreMintStr}' >> ~/title-protocol/.env"`);
+    console.log(`    ssh ec2-user@<IP> "echo 'EXT_COLLECTION_MINT=${extMintStr}' >> ~/title-protocol/.env"`);
     console.log("    → Enclave再起動が必要です");
   }
 

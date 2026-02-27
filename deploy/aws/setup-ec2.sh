@@ -66,7 +66,7 @@ REQUIRED_VARS=(
   S3_SECRET_KEY
   DB_PASSWORD
 )
-# COLLECTION_MINT, GATEWAY_PUBKEY は init-config.mjs 実行後に設定するため、初回は不要
+# CORE_COLLECTION_MINT, EXT_COLLECTION_MINT, GATEWAY_PUBKEY は init-config.mjs 実行後に設定するため、初回は不要
 
 MISSING=()
 for var in "${REQUIRED_VARS[@]}"; do
@@ -237,7 +237,8 @@ else
     if [ -f "target/release/title-tee" ]; then
       TEE_RUNTIME=mock PROXY_ADDR=direct \
         SOLANA_RPC_URL="$SOLANA_RPC_URL" \
-        COLLECTION_MINT="${COLLECTION_MINT:-}" \
+        CORE_COLLECTION_MINT="${CORE_COLLECTION_MINT:-}" \
+        EXT_COLLECTION_MINT="${EXT_COLLECTION_MINT:-}" \
         GATEWAY_PUBKEY="${GATEWAY_PUBKEY:-}" \
         TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-phash-v1,hardware-google,c2pa-training-v1,c2pa-license-v1}" \
         WASM_DIR="$WASM_OUTPUT" \
@@ -263,7 +264,7 @@ if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
   # 本番: vsock経由のProxy
   if ! pgrep -f title-proxy &>/dev/null; then
     if [ -f "target/release/title-proxy" ]; then
-      nohup ./target/release/title-proxy > /var/log/title-proxy.log 2>&1 &
+      nohup ./target/release/title-proxy > ~/title-proxy.log 2>&1 &
       echo "  Proxy起動 (vsock mode, PID=$!)"
     else
       echo "  Proxyバイナリが見つかりません。ビルドしてください:"

@@ -82,10 +82,10 @@ solana account JCY1KfHLVR1YNAUcDS3S2qSY7ofhTGz9WrqcHLiubs5S --url devnet
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) with `wasm32-unknown-unknown` target
-- [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) (v1.18+)
+- [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) (v2.0+)
 - `cargo-build-sbf` (installed with Solana CLI)
 - [Node.js](https://nodejs.org/) 22+
-- ~3 SOL on devnet (use `solana airdrop` or [faucet.solana.com](https://faucet.solana.com))
+- ~5 SOL on devnet (program deploy costs ~2 SOL; use `solana airdrop` or [faucet.solana.com](https://faucet.solana.com))
 
 ### Step 1: Build the Anchor Program
 
@@ -107,22 +107,28 @@ solana-keygen new -o my-authority.json
 solana airdrop 2 $(solana-keygen pubkey my-authority.json) --url devnet
 # If airdrop fails due to rate limits, use https://faucet.solana.com
 
-# Deploy the program
-solana program deploy target/deploy/title_config.so \
-  --url devnet \
-  --keypair my-authority.json
+# Generate a program keypair (determines the on-chain address)
+solana-keygen new -o program-keypair.json
+solana-keygen pubkey program-keypair.json   # Note this Program ID
 ```
 
-Note the **Program Id** from the output — this is your program's address.
-
-> **Important:** The deployed binary contains a hardcoded program ID (`declare_id!` in `lib.rs`). If you deploy to a new address, you must update `declare_id!` in `programs/title-config/src/lib.rs` to match, rebuild, and upgrade:
+> **Important:** The binary contains a hardcoded program ID (`declare_id!` in `lib.rs`). Before deploying, update it to match your program keypair, then **rebuild Step 1**:
 >
 > ```bash
-> solana program deploy target/deploy/title_config.so \
->   --url devnet \
->   --keypair my-authority.json \
->   --program-id <YOUR_PROGRAM_ID>
+> # Edit programs/title-config/src/lib.rs — replace the declare_id! value
+> # with the pubkey from program-keypair.json, then rebuild:
+> cd programs/title-config
+> rm -f Cargo.lock && cargo generate-lockfile
+> cargo-build-sbf --manifest-path Cargo.toml --tools-version v1.52
 > ```
+
+```bash
+# Deploy with the matching program keypair
+solana program deploy target/deploy/title_config.so \
+  --url devnet \
+  --keypair my-authority.json \
+  --program-id program-keypair.json
+```
 
 ### Step 3: Build WASM Modules
 
@@ -358,7 +364,7 @@ For a complete working example with real C2PA-signed test fixtures, see:
 ```bash
 cd integration-tests
 npm install
-npx ts-node register-photo.ts
+npx tsx register-photo.ts
 ```
 
 ## Environment Variable Reference
@@ -367,7 +373,8 @@ npx ts-node register-photo.ts
 |----------|---------|-------------|
 | `TEE_RUNTIME` | TEE | TEE runtime implementation (`mock`, `nitro`, etc.) |
 | `PROXY_ADDR` | TEE | `direct` (direct HTTP) or `127.0.0.1:8000` (vsock bridge) |
-| `COLLECTION_MINT` | TEE | Core Collection Mint address for cNFT minting |
+| `CORE_COLLECTION_MINT` | TEE | Core Collection Mint address for cNFT minting |
+| `EXT_COLLECTION_MINT` | TEE | Extension Collection Mint address for cNFT minting |
 | `GATEWAY_PUBKEY` | TEE | Gateway's Ed25519 pubkey for request authentication |
 | `TRUSTED_EXTENSIONS` | TEE | Comma-separated WASM extension IDs |
 | `WASM_DIR` | TEE | Path to WASM binary directory |

@@ -140,7 +140,7 @@ pub struct GlobalConfig {
     pub ext_collection_mint: String,
     /// 信頼されたTEEノードのリスト
     pub trusted_tee_nodes: Vec<TrustedTeeNode>,
-    /// 信頼するTSA公開鍵ハッシュのリスト (Base64)
+    /// 信頼するTSA公開鍵ハッシュのリスト (0xプレフィックス付きhex)
     pub trusted_tsa_keys: Vec<String>,
     /// 信頼されたWASMモジュールのリスト
     pub trusted_wasm_modules: Vec<TrustedWasmModule>,
@@ -444,13 +444,19 @@ pub struct CreateTreeRequest {
 }
 
 /// /create-tree レスポンス。
-/// 仕様書 §6.4
+/// 仕様書 §6.4, §6.5
+///
+/// Core用とExtension用の2つのMerkle Treeを同時に作成する。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateTreeResponse {
-    /// Base64エンコードされた完全署名済みトランザクション（そのままブロードキャスト可能）
-    pub signed_tx: String,
-    /// Base58エンコードされたMerkle Treeアドレス
-    pub tree_address: String,
+    /// Base64エンコードされたCore Tree完全署名済みトランザクション（そのままブロードキャスト可能）
+    pub core_signed_tx: String,
+    /// Base58エンコードされたCore Merkle Treeアドレス
+    pub core_tree_address: String,
+    /// Base64エンコードされたExtension Tree完全署名済みトランザクション（そのままブロードキャスト可能）
+    pub ext_signed_tx: String,
+    /// Base58エンコードされたExtension Merkle Treeアドレス
+    pub ext_tree_address: String,
     /// Base58エンコードされたEd25519署名用公開鍵
     pub signing_pubkey: String,
     /// Base64エンコードされたX25519暗号化用公開鍵

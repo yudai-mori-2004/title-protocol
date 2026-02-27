@@ -111,8 +111,10 @@ async fn test_verify_roundtrip() {
         runtime: Box::new(rt),
         state: RwLock::new(TeeState::Active),
         proxy_addr: format!("127.0.0.1:{proxy_port}"),
-        tree_address: RwLock::new(None),
-        collection_mint: None,
+        core_tree_address: RwLock::new(None),
+        ext_tree_address: RwLock::new(None),
+        core_collection_mint: None,
+        ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: None,
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
@@ -278,8 +280,10 @@ async fn test_verify_with_extension() {
         runtime: Box::new(rt),
         state: RwLock::new(TeeState::Active),
         proxy_addr: format!("127.0.0.1:{proxy_port}"),
-        tree_address: RwLock::new(None),
-        collection_mint: None,
+        core_tree_address: RwLock::new(None),
+        ext_tree_address: RwLock::new(None),
+        core_collection_mint: None,
+        ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: Some(Box::new(crate::wasm_loader::FileLoader::new(
             wasm_dir.to_str().unwrap().to_string(),
@@ -338,7 +342,9 @@ async fn test_verify_with_extension() {
         ext_result.signed_json["protocol"],
         "Title-Extension-v1"
     );
-    assert_eq!(ext_result.signed_json["extension_id"], "phash-v1");
+    // Extension signed_jsonもSignedJson構造体を使用するため、
+    // extension_idはpayload内にある
+    assert_eq!(ext_result.signed_json["payload"]["extension_id"], "phash-v1");
     // WASM実行結果がpayloadに含まれることを確認
     assert_eq!(
         ext_result.signed_json["payload"]["phash"], "test",
@@ -360,8 +366,10 @@ async fn test_verify_inactive_returns_503() {
         runtime: Box::new(rt),
         state: RwLock::new(TeeState::Inactive),
         proxy_addr: "127.0.0.1:0".to_string(),
-        tree_address: RwLock::new(None),
-        collection_mint: None,
+        core_tree_address: RwLock::new(None),
+        ext_tree_address: RwLock::new(None),
+        core_collection_mint: None,
+        ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: None,
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
@@ -451,8 +459,10 @@ async fn test_verify_rejects_untrusted_extension() {
         runtime: Box::new(rt),
         state: RwLock::new(TeeState::Active),
         proxy_addr: format!("127.0.0.1:{proxy_port}"),
-        tree_address: RwLock::new(None),
-        collection_mint: None,
+        core_tree_address: RwLock::new(None),
+        ext_tree_address: RwLock::new(None),
+        core_collection_mint: None,
+        ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: Some(Box::new(crate::wasm_loader::FileLoader::new(
             wasm_dir.to_str().unwrap().to_string(),

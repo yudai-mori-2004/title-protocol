@@ -30,10 +30,6 @@ pub struct GatewayState {
     pub solana_rpc_url: Option<String>,
     /// Solana Gateway ウォレットキーペア（sign-and-mint用）
     pub solana_keypair: Option<solana_sdk::signer::keypair::Keypair>,
-    /// サポートするExtensionリスト
-    pub supported_extensions: Vec<String>,
-    /// ノードのリソース制限情報
-    pub node_limits: NodeLimits,
     /// デフォルトリソース制限（リクエストごと）
     pub default_resource_limits: ResourceLimits,
     /// アップロード最大サイズ（バイト）

@@ -264,12 +264,11 @@ node init-devnet.mjs \
 
 This performs:
 
-1. **Gets node info** from the Gateway (`/.well-known/title-node-info`)
-2. **Funds the TEE wallet** — transfers SOL from the authority to the TEE's signing key for rent and transaction fees
-3. **Calls TEE `/register-node`** — the TEE builds a `register_tee_node` transaction, signs it with its internal key (proving key ownership), and returns a partially-signed transaction
-4. **Authority co-signs** — the script adds the authority signature and broadcasts
-5. **Delegates Collection Authority** — grants the TEE permission to mint into your collections
-6. **Calls TEE `/create-tree`** — the TEE builds a Merkle Tree creation transaction (depth=14, buffer=64, ~131KB), signs it, and the script broadcasts it
+1. **Funds the TEE wallet** — transfers SOL from the authority to the TEE's signing key for rent and transaction fees
+2. **Calls TEE `/register-node`** — the TEE builds a `register_tee_node` transaction, signs it with its internal key (proving key ownership), and returns a partially-signed transaction
+3. **Authority co-signs** — the script adds the authority signature and broadcasts
+4. **Delegates Collection Authority** — grants the TEE permission to mint into your collections
+5. **Calls TEE `/create-tree`** — the TEE builds a Merkle Tree creation transaction (depth=14, buffer=64, ~131KB), signs it, and the script broadcasts it
 
 After this, the node is fully operational and can verify content and mint cNFTs.
 
@@ -290,9 +289,9 @@ With a running node, you can register C2PA-signed content on-chain. The flow use
 ```
 1. Client                    2. Client                  3. Client
    │                            │                          │
-   │  GET /node-info            │  POST /upload-url        │  PUT <upload_url>
-   │  ─────────────►            │  ─────────────►          │  ─────────────►
-   │  ◄─────────────            │  ◄─────────────          │  ◄─────────────
+   │  Read GlobalConfig         │  POST /upload-url        │  PUT <upload_url>
+   │  (on-chain PDA)            │  ─────────────►          │  ─────────────►
+   │  ──► Solana RPC            │  ◄─────────────          │  ◄─────────────
    │  encryption_pubkey         │  upload_url              │  200 OK
    │                            │  download_url            │
    │                            │                          │
@@ -309,7 +308,7 @@ With a running node, you can register C2PA-signed content on-chain. The flow use
    ▼                            ▼                          ▼  broadcast
 ```
 
-1. **Get node info** — Fetch the TEE's X25519 encryption pubkey from the Gateway
+1. **Get node info** — Look up the TEE's X25519 encryption pubkey from on-chain GlobalConfig + TeeNodeAccount PDA
 2. **Get upload URL** — Request a presigned S3 upload URL from the Gateway
 3. **Upload encrypted payload** — Encrypt the content + owner wallet with ECDH (X25519 + HKDF-SHA256 + AES-256-GCM), upload to temp storage
 4. **Verify** — The Gateway relays to the TEE, which decrypts, verifies C2PA signatures, builds the provenance graph, and runs WASM extensions. Results are returned encrypted
@@ -327,18 +326,19 @@ import { TitleClient } from "@title-protocol/sdk";
 
 // Point to your running node's Gateway
 const client = new TitleClient({
-  gatewayUrl: "http://<YOUR_NODE_IP>:3000",
+  teeNodes: ["http://<YOUR_NODE_IP>:3000"],
   solanaRpcUrl: "https://api.devnet.solana.com",
+  globalConfig: { /* fetched from on-chain GlobalConfig PDA */ },
 });
 
-// Step 1: Get node info
-const nodeInfo = await client.getNodeInfo();
+// Step 1: Select a node (sync — from on-chain GlobalConfig)
+const session = client.selectNode();
 
 // Step 2-3: Encrypt and upload content
 const { symmetricKey, downloadUrl } = await client.uploadEncrypted(
   contentBytes,     // Uint8Array — C2PA-signed image/video
   ownerWallet,      // string — Solana wallet to attribute
-  nodeInfo,
+  session,
 );
 
 // Step 4: Verify (TEE processes the content)

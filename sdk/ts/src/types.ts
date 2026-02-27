@@ -202,15 +202,5 @@ export interface Attribute {
 }
 
 // ---------------------------------------------------------------------------
-// Node info (Spec §6.2)
-// ---------------------------------------------------------------------------
-
-/** `/.well-known/title-node-info` response. Spec §6.2 */
-export interface NodeInfo {
-  signing_pubkey: string;
-  supported_extensions: string[];
-  limits: {
-    max_single_content_bytes: number;
-    max_concurrent_bytes: number;
-  };
-}
+// NOTE: NodeInfo interface removed — node information is now fully on-chain
+// via GlobalConfigAccount + TeeNodeAccount PDAs. Spec §6.2

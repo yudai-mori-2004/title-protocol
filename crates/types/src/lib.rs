@@ -497,30 +497,8 @@ pub struct RegisterNodeResponse {
     pub tee_node_pda: String,
 }
 
-// ---------------------------------------------------------------------------
-// ノード情報 (仕様書 §6.2)
-// ---------------------------------------------------------------------------
-
-/// /.well-known/title-node-info レスポンス。
-/// 仕様書 §6.2
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeInfo {
-    /// Base58エンコードされたEd25519署名用公開鍵
-    pub signing_pubkey: String,
-    /// サポートするExtensionの識別子リスト
-    pub supported_extensions: Vec<String>,
-    /// リソース制限情報
-    pub limits: NodeLimits,
-}
-
-/// ノードのリソース制限情報。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeLimits {
-    /// 単体コンテンツの最大サイズ（バイト）
-    pub max_single_content_bytes: u64,
-    /// 同時処理可能な合計データ量（バイト）
-    pub max_concurrent_bytes: u64,
-}
+// NOTE: NodeInfo / NodeLimits 削除 — ノード情報はオンチェーン
+// (GlobalConfigAccount + TeeNodeAccount PDA) で一元管理。仕様書 §6.2
 
 #[cfg(test)]
 mod tests {

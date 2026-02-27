@@ -157,8 +157,11 @@ cp .env.example .env
 ## Step 5: 動作確認
 
 ```bash
-# Gateway の NodeInfo を確認
-curl http://<IP>:3000/.well-known/title-node-info
+# Gateway のヘルスチェック（upload-url エンドポイントが応答するか確認）
+curl -s -o /dev/null -w "%{http_code}" http://<IP>:3000/upload-url
+
+# ノード情報はオンチェーン (GlobalConfig + TeeNodeAccount PDA) で確認
+solana account <TeeNodeAccount_PDA> --url devnet
 
 # Indexer の死活確認
 curl http://<IP>:5000/health

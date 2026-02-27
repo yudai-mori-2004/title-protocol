@@ -19,7 +19,6 @@ import type {
   SignRequest,
   SignResponse,
   EncryptedPayload,
-  NodeInfo,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -81,43 +80,18 @@ export class TitleClient {
 
   /**
    * Select a random TEE node and start a session.
-   * Call this before performing an encrypted upload.
-   * Pass the returned TeeSession to subsequent verify/sign calls
-   * to ensure node affinity.
-   *
-   * Spec §6.7
+   * All node information is resolved from on-chain GlobalConfig data
+   * without additional HTTP requests. Spec §6.7
    */
-  async selectNode(): Promise<TeeSession> {
+  selectNode(): TeeSession {
     const gatewayUrl = this.pickRandomNode();
-
-    const nodeInfo = await this.getNodeInfo(gatewayUrl);
-    const teeNode = this.findTeeNodeBySigningPubkey(nodeInfo.signing_pubkey);
+    const teeNode = this.findTeeNodeByGatewayUrl(gatewayUrl);
 
     return {
       gatewayUrl,
       encryptionPubkey: teeNode.encryption_pubkey,
       signingPubkey: teeNode.signing_pubkey,
     };
-  }
-
-  /**
-   * Fetch `/.well-known/title-node-info` from a Gateway.
-   * Spec §6.2
-   */
-  async getNodeInfo(gatewayUrl: string): Promise<NodeInfo> {
-    const url = new URL("/.well-known/title-node-info", stripQuery(gatewayUrl));
-    const apiKey = extractApiKey(gatewayUrl);
-    if (apiKey) {
-      url.searchParams.set("apikey", apiKey);
-    }
-
-    const res = await fetch(url.toString());
-    if (!res.ok) {
-      throw new Error(
-        `Failed to fetch node info: HTTP ${res.status} ${await res.text()}`
-      );
-    }
-    return (await res.json()) as NodeInfo;
   }
 
   /**
@@ -254,14 +228,15 @@ export class TitleClient {
     return this.config.teeNodes[idx];
   }
 
-  /** Look up a TeeNode in GlobalConfig by signing_pubkey. */
-  private findTeeNodeBySigningPubkey(signingPubkey: string): TrustedTeeNode {
+  /** Look up a TeeNode in GlobalConfig by gateway URL. */
+  private findTeeNodeByGatewayUrl(gatewayUrl: string): TrustedTeeNode {
+    const base = stripQuery(gatewayUrl);
     const node = this.config.globalConfig.trusted_tee_nodes.find(
-      (n) => n.signing_pubkey === signingPubkey
+      (n) => n.gateway_endpoint === base || n.gateway_endpoint === base + "/"
     );
     if (!node) {
       throw new Error(
-        `TEE node with signing_pubkey=${signingPubkey} not found in GlobalConfig`
+        `TEE node with gateway_endpoint matching ${base} not found in GlobalConfig`
       );
     }
     return node;

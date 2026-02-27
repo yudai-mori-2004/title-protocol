@@ -17,7 +17,7 @@
 //! - `POST /verify` — TEEへのリクエスト中継 + Gateway認証署名付与
 //! - `POST /sign` — TEEへのリクエスト中継
 //! - `POST /sign-and-mint` — sign + ブロードキャスト代行
-//! - `GET /.well-known/title-node-info` — ノード情報公開
+//! NOTE: ノード情報はオンチェーン (GlobalConfig + TeeNodeAccount PDA) で管理。§6.2
 
 mod auth;
 mod config;
@@ -84,15 +84,6 @@ async fn main() -> anyhow::Result<()> {
         solana_sdk::signer::keypair::Keypair::from_base58_string(&s)
     });
 
-    // サポートするExtensionリスト
-    let supported_extensions = vec![
-        "core-c2pa".to_string(),
-        "phash-v1".to_string(),
-        "hardware-google".to_string(),
-        "c2pa-training-v1".to_string(),
-        "c2pa-license-v1".to_string(),
-    ];
-
     let state = Arc::new(GatewayState {
         tee_endpoint,
         http_client: reqwest::Client::new(),
@@ -101,11 +92,6 @@ async fn main() -> anyhow::Result<()> {
         temp_storage,
         solana_rpc_url,
         solana_keypair,
-        supported_extensions,
-        node_limits: NodeLimits {
-            max_single_content_bytes: 2 * 1024 * 1024 * 1024, // 2GB
-            max_concurrent_bytes: 8 * 1024 * 1024 * 1024,     // 8GB
-        },
         default_resource_limits: ResourceLimits {
             max_single_content_bytes: Some(2 * 1024 * 1024 * 1024),
             max_concurrent_bytes: Some(8 * 1024 * 1024 * 1024),
@@ -124,10 +110,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/verify", axum::routing::post(endpoints::handle_verify))
         .route("/sign", axum::routing::post(endpoints::handle_sign))
         .route("/sign-and-mint", axum::routing::post(endpoints::handle_sign_and_mint))
-        .route(
-            "/.well-known/title-node-info",
-            axum::routing::get(endpoints::handle_node_info),
-        )
         .with_state(state);
 
     let addr = "0.0.0.0:3000";
@@ -143,7 +125,6 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use auth::{b64, build_gateway_auth_wrapper};
-    use base58::ToBase58;
     use config::GatewayState;
     use endpoints::*;
     use storage::{PresignedUrls, TempStorage};
@@ -183,11 +164,6 @@ mod tests {
             temp_storage: Box::new(MockTempStorage),
             solana_rpc_url: None,
             solana_keypair: None,
-            supported_extensions: vec![],
-            node_limits: NodeLimits {
-                max_single_content_bytes: 1024,
-                max_concurrent_bytes: 4096,
-            },
             default_resource_limits: ResourceLimits {
                 max_single_content_bytes: Some(1024),
                 max_concurrent_bytes: None,
@@ -284,48 +260,6 @@ mod tests {
             title_crypto::ed25519_verify(&other_verifying_key, &sign_bytes, &signature).is_err(),
             "異なる公開鍵での検証が成功してしまった"
         );
-    }
-
-    /// /.well-known/title-node-info が正しいNodeInfoを返すことを確認
-    #[tokio::test]
-    async fn test_node_info() {
-        let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
-        let verifying_key = Ed25519VerifyingKey::from(&signing_key);
-        let expected_pubkey = verifying_key.to_bytes().to_base58();
-
-        let state = Arc::new(GatewayState {
-            tee_endpoint: "http://localhost:4000".to_string(),
-            http_client: reqwest::Client::new(),
-            signing_key,
-            verifying_key,
-            temp_storage: Box::new(MockTempStorage),
-            solana_rpc_url: None,
-            solana_keypair: None,
-            supported_extensions: vec!["core-c2pa".to_string(), "phash-v1".to_string()],
-            node_limits: NodeLimits {
-                max_single_content_bytes: 1024,
-                max_concurrent_bytes: 4096,
-            },
-            default_resource_limits: ResourceLimits {
-                max_single_content_bytes: Some(1024),
-                max_concurrent_bytes: None,
-                min_upload_speed_bytes: None,
-                base_processing_time_sec: None,
-                max_global_timeout_sec: None,
-                chunk_read_timeout_sec: None,
-                c2pa_max_graph_size: None,
-            },
-            max_upload_size: 1024,
-            presign_expiry_secs: 3600,
-        });
-
-        let result = handle_node_info(State(state)).await;
-        let node_info = result.0;
-
-        assert_eq!(node_info.signing_pubkey, expected_pubkey);
-        assert_eq!(node_info.supported_extensions, vec!["core-c2pa", "phash-v1"]);
-        assert_eq!(node_info.limits.max_single_content_bytes, 1024);
-        assert_eq!(node_info.limits.max_concurrent_bytes, 4096);
     }
 
     /// /upload-urlでサイズ上限チェックが機能することを確認
@@ -532,11 +466,6 @@ mod tests {
             temp_storage: Box::new(MockTempStorage),
             solana_rpc_url: Some("http://localhost:8899".to_string()),
             solana_keypair: None,
-            supported_extensions: vec![],
-            node_limits: NodeLimits {
-                max_single_content_bytes: 1024,
-                max_concurrent_bytes: 4096,
-            },
             default_resource_limits: ResourceLimits {
                 max_single_content_bytes: Some(1024),
                 max_concurrent_bytes: None,

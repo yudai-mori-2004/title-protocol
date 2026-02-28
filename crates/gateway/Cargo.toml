@@ -10,6 +10,7 @@ description = "Title Protocol Gateway"
 [features]
 default = ["vendor-aws"]
 vendor-aws = ["rust-s3"]
+vendor-local = []
 
 [dependencies]
 title-types = { path = "../types" }

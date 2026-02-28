@@ -32,14 +32,20 @@ use title_types::*;
 
 use config::GatewayState;
 
-/// Temporary Storageを構築する。
+/// Temporary Storageを構築する（vendor-aws: S3互換ストレージ）。
 #[cfg(feature = "vendor-aws")]
 fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
     Ok(Box::new(storage::S3TempStorage::from_env()?))
 }
 
+/// Temporary Storageを構築する（vendor-local: ローカルファイルサーバー）。
+#[cfg(all(feature = "vendor-local", not(feature = "vendor-aws")))]
+fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
+    Ok(Box::new(storage::LocalTempStorage::from_env()?))
+}
+
 /// TempStorage実装が有効でない場合は起動時エラーで通知する。
-#[cfg(not(feature = "vendor-aws"))]
+#[cfg(not(any(feature = "vendor-aws", feature = "vendor-local")))]
 fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
     anyhow::bail!(
         "TempStorage実装が見つかりません。\

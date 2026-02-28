@@ -1,0 +1,19 @@
+[package]
+name = "title-temp-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Title Protocol Local Temporary Storage Server"
+
+[[bin]]
+name = "title-temp-storage"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

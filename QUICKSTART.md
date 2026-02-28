@@ -80,7 +80,7 @@ solana account CLizWsiGX2Lva42boGuGuutessekt2HV8JyAHWYcmFYk --url devnet
 Title Protocol deployment is split into two independent phases:
 
 ```
-Phase 1: Network Setup (once, from your local machine)
+Phase 1: Network Setup (once)
   title-cli init-global
     +-- Deploy Anchor program
     +-- Create MPL Core collections
@@ -88,10 +88,11 @@ Phase 1: Network Setup (once, from your local machine)
     +-- Register WASM modules
     +-- Output network.json
 
-Phase 2: Node Deployment (per node, on EC2)
-  deploy/aws/setup-ec2.sh
-    +-- Build WASM + binaries + Enclave
-    +-- Start TEE + Gateway + Indexer
+Phase 2: Node Deployment (per node)
+  deploy/local/setup.sh   (local)
+  deploy/aws/setup-ec2.sh (production)
+    +-- Build WASM + binaries
+    +-- Start TEE + Gateway + TempStorage + Indexer
     +-- title-cli register-node  (TEE signs -> authority co-signs)
     +-- title-cli create-tree    (Merkle trees for cNFT minting)
 ```
@@ -192,34 +193,68 @@ solana account <global_config_pda> --url devnet
 
 ---
 
-## Phase 2: Node Deployment (EC2)
+## Phase 2: Node Deployment
 
 ### Node Architecture
 
 ```
-Client --> Gateway (:3000) --> TEE --> Solana
-               |                 |
-               v                 v
-          Temp Storage      WASM Modules
-          (S3-compatible)   (phash, etc.)
+Client --> Gateway (:3000) --> TempStorage --> TEE (:4000) --> Solana
+                                                |
+                                           WASM Modules
+                                           (phash, etc.)
 ```
 
 - **Gateway** — Client-facing HTTP server. Handles uploads, relays requests to the TEE, and optionally broadcasts transactions.
 - **TEE** — Trusted Execution Environment. Verifies C2PA signatures, runs WASM extensions, and signs transactions with ephemeral keys that exist only in enclave memory.
-- **Temp Storage** — S3-compatible object storage for encrypted payloads (auto-deleted after processing).
+- **Temp Storage** — Object storage for encrypted payloads (auto-deleted after processing).
 - **Proxy** — Mediates TEE network access when the enclave has no direct network (e.g., vsock on Nitro).
 
 ### Vendor-Neutral Design
 
 The protocol core is **vendor-neutral**; all vendor-specific code is isolated behind traits (`TeeRuntime`, `TempStorage`) and Cargo feature flags.
 
-| Example | Path | TEE Platform | Status |
-|---------|------|-------------|--------|
-| AWS Nitro | `deploy/aws/` | AWS Nitro Enclaves | Available |
+| Vendor | Path | TempStorage | TEE Platform | Feature Flag | Status |
+|--------|------|-------------|-------------|--------------|--------|
+| **Local** | `deploy/local/` | Local HTTP file server | MockRuntime | `vendor-local` | Available |
+| AWS Nitro | `deploy/aws/` | S3-compatible | Nitro Enclaves | `vendor-aws` | Available |
 
 > To add a new vendor implementation, implement the `TeeRuntime` and `TempStorage` traits, create a `deploy/<vendor>/` directory, and add a corresponding Cargo feature flag. See `deploy/aws/` for reference.
 
-### Deploying with the AWS Example
+### Deploying Locally
+
+The simplest way to run a full node. All processes run directly on your machine.
+
+```bash
+# 1. Create .env (minimal — only SOLANA_RPC_URL is required)
+cp .env.example .env
+# Edit .env: set SOLANA_RPC_URL=https://api.devnet.solana.com
+
+# 2. Start everything
+./deploy/local/setup.sh
+```
+
+This starts 5 processes:
+
+| Process | Port | Role |
+|---------|------|------|
+| `title-temp-storage` | 3001 | Temporary file storage |
+| `title-gateway` | 3000 | Client-facing API |
+| `title-tee` | 4000 | TEE (C2PA verification, WASM execution) |
+| `indexer` | 5000 | cNFT indexer |
+| `postgres` | 5432 | Indexer DB (Docker) |
+
+```bash
+# View logs
+tail -f /tmp/title-tee.log
+tail -f /tmp/title-gateway.log
+
+# Stop everything
+./deploy/local/teardown.sh
+```
+
+See [`deploy/local/README.md`](deploy/local/README.md) for details.
+
+### Deploying with AWS (EC2 + Nitro Enclaves)
 
 ```bash
 # 1. Provision AWS resources (EC2, S3, IAM, Security Group)

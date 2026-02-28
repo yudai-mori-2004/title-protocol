@@ -12,6 +12,12 @@ pub mod s3;
 #[cfg(feature = "vendor-aws")]
 pub use s3::S3TempStorage;
 
+#[cfg(feature = "vendor-local")]
+pub mod local;
+
+#[cfg(feature = "vendor-local")]
+pub use local::LocalTempStorage;
+
 use crate::error::GatewayError;
 
 /// Temporary Storageの署名付きURL生成結果。

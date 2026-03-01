@@ -155,9 +155,9 @@ pub fn build_remove_tee_node_ix(
 /// MPL Core CreateCollectionV2 命令を手動構築する。
 ///
 /// MPL Core プログラムのCreateCollectionV2命令:
-///   discriminator: [43, 220, 59, 207, 220, 2, 68, 240]  (固定)
+///   Borsh enum variant index: 21 (MplAssetInstruction::CreateCollectionV2)
 ///   data: Borsh { name: String, uri: String, plugins: Option<Vec<_>>, external_plugins: Option<Vec<_>> }
-///   accounts: [collection(signer+mut), payer(signer+mut), system_program]
+///   accounts: [collection(signer+mut), update_authority(optional), payer(signer+mut), system_program]
 pub fn build_create_collection_ix(
     collection: &Pubkey,
     payer: &Pubkey,
@@ -168,11 +168,10 @@ pub fn build_create_collection_ix(
     let mpl_core_program =
         Pubkey::try_from("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d").unwrap();
 
-    // CreateCollectionV2 discriminator (fixed)
-    let disc: [u8; 8] = [43, 220, 59, 207, 220, 2, 68, 240];
-
+    // CreateCollectionV2: Borsh enum variant index 21
+    // (MPL Core uses BorshDeserialize for instruction dispatch, not Anchor-style 8-byte discriminator)
     let mut data = Vec::new();
-    data.extend_from_slice(&disc);
+    data.push(21);
     data.extend_from_slice(&borsh_string(name));
     data.extend_from_slice(&borsh_string(uri));
     // plugins: Option<Vec<_>> = None
@@ -184,6 +183,7 @@ pub fn build_create_collection_ix(
         program_id: mpl_core_program,
         accounts: vec![
             AccountMeta::new(*collection, true),
+            AccountMeta::new_readonly(*payer, false), // update_authority (optional, defaults to payer)
             AccountMeta::new(*payer, true),
             AccountMeta::new_readonly(system_program::id(), false),
         ],
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_find_global_config_pda() {
-        let program_id: Pubkey = "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq"
+        let program_id: Pubkey = "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ"
             .parse()
             .unwrap();
         let (pda, bump) = find_global_config_pda(&program_id);
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_find_tee_node_pda() {
-        let program_id: Pubkey = "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq"
+        let program_id: Pubkey = "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ"
             .parse()
             .unwrap();
         let key = [42u8; 32];
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_build_set_resource_limits_ix() {
-        let program_id: Pubkey = "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq"
+        let program_id: Pubkey = "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ"
             .parse()
             .unwrap();
         let (pda, _) = find_global_config_pda(&program_id);

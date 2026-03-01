@@ -305,7 +305,7 @@ cd ../../..
 ssh -i deploy/aws/keys/title-protocol-devnet.pem ec2-user@NODE_IP
 
 # --- on EC2 ---
-git clone <REPO_URL> ~/title-protocol && cd ~/title-protocol
+git clone https://github.com/yudai-mori-2004/title-protocol.git ~/title-protocol && cd ~/title-protocol
 cp .env.example .env
 # Edit .env — see the mapping table below for which values to set
 ```
@@ -511,6 +511,9 @@ For a complete working example with real C2PA-signed test fixtures, see:
 - `integration-tests/fixtures/` — Sample C2PA-signed images
 
 ```bash
+# Build the SDK first (integration tests depend on it)
+cd sdk/ts && npm install && npm run build && cd ../..
+
 cd integration-tests
 npm install
 
@@ -618,6 +621,49 @@ Mainnet uses the exact same on-chain structure as devnet. The only difference is
 | Program ID | *Not yet deployed* |
 | GlobalConfig PDA | *Derived from program ID at launch* |
 | Authority | *DAO multi-sig (Squads Protocol)* |
+
+### Running a Mainnet Node
+
+Node operators do not run Phase 1 — the DAO has already deployed the program and initialized GlobalConfig. You only need Phase 2.
+
+**1. Get `network.json`**
+
+Download the canonical `network.json` from the protocol's public repository or DAO website. This contains the mainnet Program ID, GlobalConfig PDA, and collection mints.
+
+**2. Deploy your node**
+
+Follow the same [AWS deployment steps](#deploying-with-aws-ec2--nitro-enclaves) as devnet. The only differences:
+
+- Use the mainnet `network.json` (not your own)
+- Set `SOLANA_RPC_URL` to a mainnet RPC endpoint in `.env`
+- Do **not** copy `keys/authority.json` (you don't have it — the DAO controls it)
+
+```bash
+# On EC2:
+./deploy/aws/setup-ec2.sh
+```
+
+**3. Submit the registration transaction for DAO approval**
+
+Since `keys/authority.json` is absent, `setup-ec2.sh` will output a partially-signed transaction (base64) instead of broadcasting directly. The TEE has already signed it — it just needs the DAO authority's co-signature.
+
+```
+TEEノード登録: authority.json が見つかりません
+以下のトランザクションを authority に署名・送信してください:
+<base64-encoded partial transaction>
+```
+
+Send this to the DAO via the designated channel (e.g. governance proposal, multi-sig queue). Once the DAO co-signs and broadcasts, your node is registered on-chain and can begin minting cNFTs.
+
+**4. Create Merkle Trees**
+
+After registration is confirmed, run tree creation separately:
+
+```bash
+./target/release/title-cli create-tree --cluster mainnet
+```
+
+This also requires DAO co-signature if the tree rent payer differs from the authority. In practice, `setup-ec2.sh` handles this — it will output another partial transaction if needed.
 
 ### Why the DAO GlobalConfig Is the Single Source of Truth
 

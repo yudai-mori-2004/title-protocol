@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
@@ -43,9 +43,10 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState { storage_dir });
 
     let app = axum::Router::new()
-        .route("/objects/{key}", axum::routing::put(handle_put))
-        .route("/objects/{key}", axum::routing::get(handle_get))
+        .route("/objects/{*key}", axum::routing::put(handle_put))
+        .route("/objects/{*key}", axum::routing::get(handle_get))
         .route("/health", axum::routing::get(handle_health))
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{port}");

@@ -78,6 +78,13 @@ ok "Rust $(rustc --version | awk '{print $2}')"
 ok "Solana CLI $(solana --version 2>&1 | awk '{print $2}')"
 ok "Docker $(docker --version | awk '{print $3}' | tr -d ',')"
 
+# wasm32-unknown-unknown ターゲット
+if ! rustup target list --installed | grep -q wasm32-unknown-unknown; then
+  warn "wasm32-unknown-unknown ターゲットが未インストール。自動追加します..."
+  rustup target add wasm32-unknown-unknown
+fi
+ok "wasm32-unknown-unknown ターゲット"
+
 # .env
 echo ""
 echo "  設定ファイルの読み込み..."
@@ -161,6 +168,25 @@ WALLET_PUBKEY=$(solana-keygen pubkey "$SOLANA_WALLET")
 ok "Solana ウォレット: $WALLET_PUBKEY"
 solana config set --url "$SOLANA_RPC_URL" > /dev/null 2>&1 || true
 
+# SOL残高チェック（ノード登録 + Merkle Tree 作成に ~0.6 SOL 必要）
+REQUIRED_SOL="0.6"
+BALANCE=$(solana balance "$WALLET_PUBKEY" --url "$SOLANA_RPC_URL" 2>/dev/null | awk '{print $1}')
+if [ -n "$BALANCE" ] && python3 -c "exit(0 if float('$BALANCE') >= $REQUIRED_SOL else 1)" 2>/dev/null; then
+  ok "SOL残高: ${BALANCE} SOL"
+else
+  echo ""
+  echo "  ⚠ SOL残高が不足しています（現在: ${BALANCE:-0} SOL、必要: ~${REQUIRED_SOL} SOL）"
+  echo ""
+  echo "  以下のアドレスに ${REQUIRED_SOL} SOL 以上を送金してください:"
+  echo "    $WALLET_PUBKEY"
+  echo ""
+  echo "  devnet の場合: https://faucet.solana.com で取得できます"
+  echo ""
+  read -rp "  送金完了後、Enter を押してください... "
+  BALANCE=$(solana balance "$WALLET_PUBKEY" --url "$SOLANA_RPC_URL" 2>/dev/null | awk '{print $1}')
+  ok "SOL残高: ${BALANCE:-?} SOL"
+fi
+
 # ---------------------------------------------------------------------------
 # Step 1: WASMモジュールのビルド
 # ---------------------------------------------------------------------------
@@ -207,7 +233,7 @@ ok "ビルド完了"
 echo ""
 echo "[Step 3/7] TEE の起動..."
 
-TEE_PID=$(pgrep -x title-tee 2>/dev/null || true)
+TEE_PID=$(pgrep -f title-tee 2>/dev/null | head -1 || true)
 if [ -z "$TEE_PID" ]; then
   TEE_RUNTIME=mock PROXY_ADDR=direct \
     SOLANA_RPC_URL="$SOLANA_RPC_URL" \
@@ -236,7 +262,7 @@ echo "  PostgreSQL (Docker Compose)..."
 docker compose -f deploy/local/docker-compose.yml up -d
 
 # TempStorage
-TEMP_STORAGE_PID=$(pgrep -x title-temp-st 2>/dev/null || true)
+TEMP_STORAGE_PID=$(pgrep -f title-temp-storage 2>/dev/null | head -1 || true)
 if [ -z "$TEMP_STORAGE_PID" ]; then
   STORAGE_DIR="/tmp/title-uploads" \
     STORAGE_PORT=3001 \
@@ -250,7 +276,7 @@ else
 fi
 
 # Gateway
-GATEWAY_PID=$(pgrep -x title-gateway 2>/dev/null || true)
+GATEWAY_PID=$(pgrep -f title-gateway 2>/dev/null | head -1 || true)
 if [ -z "$GATEWAY_PID" ]; then
   TEE_ENDPOINT="http://localhost:4000" \
     LOCAL_STORAGE_ENDPOINT="http://localhost:3001" \
@@ -291,9 +317,7 @@ echo "  サービスの起動を待機中..."
 GATEWAY_READY=false
 for i in $(seq 1 15); do
   if curl -sf http://localhost:3001/health > /dev/null 2>&1 && \
-     curl -sf -X POST -H "Content-Type: application/json" \
-       -d '{"content_size":1,"content_type":"image/jpeg"}' \
-       http://localhost:3000/upload-url > /dev/null 2>&1; then
+     curl -sf http://localhost:3000/health > /dev/null 2>&1; then
     ok "TempStorage 応答確認"
     ok "Gateway 応答確認"
     GATEWAY_READY=true
@@ -324,11 +348,12 @@ REGISTER_OUTPUT=$(./target/release/title-cli register-node \
 echo "$REGISTER_OUTPUT" | sed 's/^/  /'
 
 if [ "$REGISTER_OK" = true ]; then
-  ok "TEEノード登録完了"
-elif echo "$REGISTER_OUTPUT" | grep -q "already exists\|既に登録済み\|AlreadyInUse"; then
-  ok "TEEノード: 既に登録済み"
+  ok "TEEノード登録 OK"
 else
-  fail "TEEノード登録に失敗しました（上記のログを確認してください）"
+  fail "TEEノード登録に失敗しました"
+  echo "  確認事項:"
+  echo "    - SOL残高: solana balance --url $SOLANA_RPC_URL"
+  echo "    - TEEログ: tail -20 /tmp/title-tee.log"
   echo "  手動で再実行: ./target/release/title-cli register-node --tee-url http://localhost:4000 --gateway-endpoint http://localhost:3000"
 fi
 
@@ -347,9 +372,13 @@ TREE_OUTPUT=$(./target/release/title-cli create-tree \
 echo "$TREE_OUTPUT" | sed 's/^/  /'
 
 if [ "$TREE_OK" = true ]; then
-  ok "Merkle Tree 作成完了"
+  ok "Merkle Tree OK"
 else
-  fail "Merkle Tree 作成に失敗しました（上記のログを確認してください）"
+  fail "Merkle Tree 作成に失敗しました"
+  echo "  確認事項:"
+  echo "    - SOL残高: solana balance --url $SOLANA_RPC_URL"
+  echo "    - TEEログ: tail -20 /tmp/title-tee.log"
+  echo "  手動で再実行: ./target/release/title-cli create-tree --tee-url http://localhost:4000 --max-depth 14 --max-buffer-size 64"
 fi
 
 # ---------------------------------------------------------------------------
@@ -379,9 +408,7 @@ else
 fi
 
 # Gateway
-if curl -sf -X POST -H "Content-Type: application/json" \
-  -d '{"content_size":1,"content_type":"image/jpeg"}' \
-  http://localhost:3000/upload-url > /dev/null 2>&1; then
+if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
   ok "Gateway (:3000)"
 else
   fail "Gateway"

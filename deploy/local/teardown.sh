@@ -34,34 +34,28 @@ stop_process() {
   fi
 }
 
-# プロセス名ベースのフォールバック停止
-stop_by_name() {
-  local name="$1"
-  local pid
-  pid=$(pgrep -x "$name" 2>/dev/null || true)
-  if [ -n "$pid" ]; then
-    kill "$pid" 2>/dev/null || true
-    echo "  停止: $name (PID=$pid, プロセス名で検出)"
+# プロセス名ベースのフォールバック停止（-f で部分一致）
+stop_by_pattern() {
+  local label="$1"
+  local pattern="$2"
+  local pids
+  pids=$(pgrep -f "$pattern" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    echo "$pids" | xargs kill 2>/dev/null || true
+    echo "  停止: $label (PID=$pids, プロセス名で検出)"
   fi
 }
 
-# 各プロセスを停止
+# 各プロセスを停止（PIDファイル → プロセス名フォールバック）
 stop_process "indexer"
 stop_process "gateway"
 stop_process "temp-storage"
 stop_process "tee"
 
-# PIDファイルがない場合のフォールバック
-stop_by_name "title-gateway"
-stop_by_name "title-temp-st"
-stop_by_name "title-tee"
-
-# Indexer (node プロセス)
-INDEXER_PID=$(pgrep -f "node.*indexer/dist" 2>/dev/null || true)
-if [ -n "$INDEXER_PID" ]; then
-  kill "$INDEXER_PID" 2>/dev/null || true
-  echo "  停止: indexer (PID=$INDEXER_PID)"
-fi
+stop_by_pattern "title-gateway"      "title-gateway"
+stop_by_pattern "title-temp-storage" "title-temp-storage"
+stop_by_pattern "title-tee"          "title-tee"
+stop_by_pattern "indexer"            "node.*indexer/dist"
 
 # Docker Compose
 echo "  Docker Compose 停止中..."

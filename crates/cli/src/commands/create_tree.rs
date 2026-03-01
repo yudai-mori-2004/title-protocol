@@ -42,9 +42,18 @@ pub async fn run(
 
     let result: CreateTreeResponse =
         match helpers::call_tee_endpoint(tee_url, "/create-tree", &tree_request).await? {
-            Some(r) => r,
-            None => {
-                println!("  WARNING: Merkle Tree 作成失敗。TEE起動後に再実行してください。");
+            helpers::TeeCallResult::Success(r) => r,
+            helpers::TeeCallResult::HttpError { status: 409, .. } => {
+                println!("  Merkle Tree: 既に作成済み（スキップ）");
+                return Ok(());
+            }
+            helpers::TeeCallResult::HttpError { status, body } => {
+                println!("  Merkle Tree 作成に失敗: HTTP {status}: {}", &body[..body.len().min(100)]);
+                return Ok(());
+            }
+            helpers::TeeCallResult::ConnectionFailed(msg) => {
+                println!("  TEEに接続できません: {}", &msg[..msg.len().min(60)]);
+                println!("  TEE起動後に再実行してください。");
                 return Ok(());
             }
         };

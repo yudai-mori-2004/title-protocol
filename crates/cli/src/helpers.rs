@@ -84,6 +84,16 @@ pub async fn fund_tee_wallet(
     Ok(())
 }
 
+/// TEEエンドポイント呼び出しの結果。
+pub enum TeeCallResult<T> {
+    /// 成功（200 OK）
+    Success(T),
+    /// HTTP エラー応答（ステータスコード + ボディ）
+    HttpError { status: u16, body: String },
+    /// ネットワーク接続失敗
+    ConnectionFailed(String),
+}
+
 /// TEEエンドポイントを直接呼び出す。
 ///
 /// 管理コマンド（/register-node, /create-tree）はオペレーターが
@@ -93,7 +103,7 @@ pub async fn call_tee_endpoint<T: serde::de::DeserializeOwned>(
     tee_url: &str,
     path: &str,
     request: &impl serde::Serialize,
-) -> Result<Option<T>, CliError> {
+) -> Result<TeeCallResult<T>, CliError> {
     let client = reqwest::Client::new();
     let url = format!("{tee_url}{path}");
     println!("  {path}: {url}");
@@ -108,22 +118,16 @@ pub async fn call_tee_endpoint<T: serde::de::DeserializeOwned>(
         Ok(resp) => {
             if resp.status().is_success() {
                 let result: T = resp.json().await?;
-                Ok(Some(result))
+                Ok(TeeCallResult::Success(result))
             } else {
-                let status = resp.status();
+                let status = resp.status().as_u16();
                 let body = resp.text().await.unwrap_or_default();
-                println!(
-                    "    HTTP {}: {}",
-                    status,
-                    &body[..body.len().min(100)]
-                );
-                Ok(None)
+                Ok(TeeCallResult::HttpError { status, body })
             }
         }
         Err(e) => {
             let msg = e.to_string();
-            println!("    接続失敗: {}", &msg[..msg.len().min(60)]);
-            Ok(None)
+            Ok(TeeCallResult::ConnectionFailed(msg))
         }
     }
 }

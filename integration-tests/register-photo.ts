@@ -265,38 +265,28 @@ async function main() {
   log("STEP 1", `trusted_tee_nodes: ${globalConfig.trusted_tee_nodes.length}`);
   log("STEP 1", `trusted_wasm_modules: ${globalConfig.trusted_wasm_modules.length}`);
 
-  // Gateway URLに一致するTEEノードを探す
-  const teeNode = globalConfig.trusted_tee_nodes.find(
-    (n) => n.gateway_endpoint === gatewayUrl
-  ) ?? globalConfig.trusted_tee_nodes[0];
-
-  if (!teeNode) {
-    console.error("エラー: オンチェーンにTEEノード情報が登録されていません");
-    process.exit(1);
-  }
-  log("STEP 1", `signing_pubkey: ${teeNode.signing_pubkey}`);
-  log("STEP 1", `gateway_endpoint: ${teeNode.gateway_endpoint}`);
-
   // ---------------------------------------------------------------------------
-  // Step 2: encryption_pubkey の取得（CLIオーバーライドまたはオンチェーン）
-  // ---------------------------------------------------------------------------
-  let encryptionPubkey: string;
-  if (args.encryptionPubkey) {
-    encryptionPubkey = args.encryptionPubkey;
-    log("STEP 2", `encryption_pubkey (CLI指定): ${encryptionPubkey.slice(0, 20)}...`);
-  } else {
-    encryptionPubkey = teeNode.encryption_pubkey;
-    log("STEP 2", `encryption_pubkey (on-chain): ${encryptionPubkey.slice(0, 20)}...`);
-  }
-
-  // ---------------------------------------------------------------------------
-  // TitleClient 構築
+  // TitleClient 構築 + ノード選択（ヘルスチェック付き）
   // ---------------------------------------------------------------------------
   const client = new TitleClient({
     teeNodes: [gatewayUrl],
     solanaRpcUrl: args.solanaRpc,
     globalConfig,
   });
+
+  const session = await client.selectNode();
+  log("STEP 1", `signing_pubkey: ${session.signingPubkey}`);
+  log("STEP 1", `gateway_endpoint: ${session.gatewayUrl}`);
+
+  // encryption_pubkey: CLIオーバーライドまたはselectNodeの結果
+  let encryptionPubkey: string;
+  if (args.encryptionPubkey) {
+    encryptionPubkey = args.encryptionPubkey;
+    log("STEP 2", `encryption_pubkey (CLI指定): ${encryptionPubkey.slice(0, 20)}...`);
+  } else {
+    encryptionPubkey = session.encryptionPubkey;
+    log("STEP 2", `encryption_pubkey (on-chain): ${encryptionPubkey.slice(0, 20)}...`);
+  }
 
   // ---------------------------------------------------------------------------
   // Step 3: ペイロード暗号化 + アップロード
@@ -324,7 +314,7 @@ async function main() {
 
   log("STEP 3", "Temporary Storageにアップロード中...");
   const { downloadUrl, sizeBytes } = await client.upload(
-    gatewayUrl,
+    session.gatewayUrl,
     encryptedPayload
   );
   log(
@@ -341,7 +331,7 @@ async function main() {
   );
   const t0 = Date.now();
 
-  const encryptedResponse = await client.verify(gatewayUrl, {
+  const encryptedResponse = await client.verify(session.gatewayUrl, {
     download_url: downloadUrl,
     processor_ids: args.processorIds,
   });
@@ -440,7 +430,7 @@ async function main() {
   log("STEP 6", `/sign を呼び出し中...`);
   const t1 = Date.now();
 
-  const signResponse = await client.sign(gatewayUrl, {
+  const signResponse = await client.sign(session.gatewayUrl, {
     recent_blockhash: blockhash,
     requests: signRequests,
   });

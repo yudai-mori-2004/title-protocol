@@ -116,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = axum::Router::new()
+        .route("/health", axum::routing::get(|| async { "ok" }))
         .route("/upload-url", axum::routing::post(endpoints::handle_upload_url))
         .route("/verify", axum::routing::post(endpoints::handle_verify))
         .route("/sign", axum::routing::post(endpoints::handle_sign))

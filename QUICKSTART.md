@@ -7,21 +7,39 @@ This guide walks you through running Title Protocol locally and registering cont
 The repository already includes a deployed devnet environment (`network.json`). To start a local node against it:
 
 ```bash
-# 1. Create .env (only SOLANA_RPC_URL is required)
+# 1. Create .env (the default SOLANA_RPC_URL is already set — just copy)
 cp .env.example .env
 
-# 2. Start all services
+# 2. Make sure you have devnet SOL (~0.6 SOL required)
+solana airdrop 2 --url devnet    # skip if you already have SOL
+
+# 3. Start all services
 ./deploy/local/setup.sh
 
-# 3. That's it. Verify:
-curl http://localhost:4000/health
+# 4. Verify all services are running:
+curl http://localhost:4000/health   # TEE
+curl http://localhost:3000/health   # Gateway
 ```
 
 > **First run:** The build step compiles 4 WASM modules and 4 Rust release binaries. Expect **10-20 minutes** on the first run; subsequent runs use the Cargo cache and finish in seconds.
 
 This starts TEE, Gateway, TempStorage, Indexer, and PostgreSQL on your machine, registers the node on devnet, and creates Merkle Trees — all automatically.
 
-> **If this is all you need, skip ahead to [Register Content](#register-content).** The rest of this document explains the on-chain architecture and how to deploy your own network from scratch.
+**Ports used:** 3000 (Gateway), 3001 (TempStorage), 4000 (TEE), 5001 (Indexer), 5432 (PostgreSQL). If any of these are already in use, `setup.sh` will detect the existing process and skip starting a new one. To force a clean restart, run `./deploy/local/teardown.sh` first.
+
+> **Quick test** — verify a C2PA-signed photo through the local TEE:
+>
+> ```bash
+> cd integration-tests && npm install
+> npx tsx register-photo.ts localhost ./fixtures/pixel_photo_ramen.jpg \
+>   --wallet ~/.config/solana/id.json --skip-sign
+> ```
+>
+> You should see `STEP 4 /verify 完了` and a provenance graph output. This confirms the full pipeline (upload → encrypt → TEE verify → C2PA check) is working.
+>
+> **Stop everything:** `./deploy/local/teardown.sh`
+>
+> The rest of this document explains the on-chain architecture, how to deploy your own network from scratch, and how to register content with the full SDK. **Skip ahead to [Register Content](#register-content)** if you just want to integrate.
 
 ---
 
@@ -117,16 +135,18 @@ Phase 2: Node Deployment (required)
 
 ## Phase 2: Node Deployment
 
+> The TL;DR section above is a shortcut for this phase. If you already ran `setup.sh` successfully, skip to [Register Content](#register-content).
+
 ### Prerequisites
 
 | Tool | Required | Notes |
 |------|----------|-------|
 | [Rust](https://rustup.rs/) + `wasm32-unknown-unknown` target | Yes | `rustup target add wasm32-unknown-unknown` |
 | [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) v2.0+ | Yes | |
-| [Docker](https://docs.docker.com/get-docker/) | Yes | PostgreSQL for indexer |
+| [Docker](https://docs.docker.com/get-docker/) (with Compose V2) | Yes | PostgreSQL for indexer (uses port 5432) |
 | [Python 3](https://www.python.org/) | Yes | `setup.sh` uses it to parse `network.json` (pre-installed on macOS/most Linux) |
 | [Node.js](https://nodejs.org/) 20+ | Optional | Indexer (skipped if not installed) |
-| ~0.6 SOL on devnet | Yes | Node registration + Merkle Tree creation. Use `solana airdrop 2 --url devnet` |
+| ~0.6 SOL on devnet | Yes | `setup.sh` checks the balance and pauses if insufficient. Get SOL: `solana airdrop 2 --url devnet` or [faucet.solana.com](https://faucet.solana.com). Wallet is auto-created at `~/.config/solana/id.json` if missing |
 
 ### Node Architecture
 
@@ -147,10 +167,13 @@ PostgreSQL (:5432) <-- Indexer (:5001)
 ### Deploying Locally
 
 ```bash
-# 1. Create .env (only SOLANA_RPC_URL is required — everything else is auto-configured)
+# 1. Create .env (the default SOLANA_RPC_URL is already set — just copy)
 cp .env.example .env
 
-# 2. Start everything (builds, starts services, registers node, creates Merkle Trees)
+# 2. Make sure you have devnet SOL (setup.sh will check and pause if insufficient)
+solana airdrop 2 --url devnet
+
+# 3. Start everything (builds, starts services, registers node, creates Merkle Trees)
 ./deploy/local/setup.sh
 ```
 
@@ -303,8 +326,8 @@ const client = new TitleClient({
   globalConfig,
 });
 
-// 3. Select a node (sync — resolved from on-chain GlobalConfig)
-const session = client.selectNode();
+// 3. Select a node (health-checks each gateway, skips unreachable nodes)
+const session = await client.selectNode();
 
 // 4. Encrypt content with TEE's X25519 public key (E2EE)
 const teePubkey = Buffer.from(session.encryptionPubkey, "base64");
@@ -350,7 +373,14 @@ For a complete working example with real C2PA-signed test fixtures, see:
 ```bash
 cd integration-tests
 npm install
-npx tsx register-photo.ts
+
+# Verify only (no Arweave upload, no cNFT minting)
+npx tsx register-photo.ts localhost ./fixtures/pixel_photo_ramen.jpg \
+  --wallet ~/.config/solana/id.json --skip-sign
+
+# Full flow: verify + Arweave upload + cNFT mint + broadcast
+npx tsx register-photo.ts localhost ./fixtures/pixel_photo_ramen.jpg \
+  --wallet ~/.config/solana/id.json --broadcast
 ```
 
 ---
@@ -441,6 +471,68 @@ After completion, commit the new `network.json` and proceed to Phase 2.
 | `S3_BUCKET` | Gateway | Bucket name for temp uploads (vendor-aws only) |
 
 See [`.env.example`](.env.example) for the full list.
+
+---
+
+## Troubleshooting
+
+### Port already in use
+
+```
+Error: Address already in use (os error 48)
+```
+
+A previous session's process is still running. Stop everything and retry:
+
+```bash
+./deploy/local/teardown.sh
+./deploy/local/setup.sh
+```
+
+If a process still clings to a port, kill it directly:
+
+```bash
+lsof -ti :3000 | xargs kill   # replace 3000 with the blocked port
+```
+
+### `setup.sh` fails at node registration or Merkle Tree creation
+
+Both steps require devnet SOL. Check your balance:
+
+```bash
+solana balance --url devnet
+```
+
+If insufficient, request more:
+
+```bash
+solana airdrop 2 --url devnet
+```
+
+Then re-run `./deploy/local/setup.sh` (it skips already-running services and retries the failed steps).
+
+### AES-GCM decryption failure on `/verify`
+
+```
+ペイロードの復号に失敗: AES-GCM復号に失敗しました
+```
+
+The SDK encrypted the payload with a stale TEE node's key. TEE nodes regenerate keys on every restart, but old node entries remain on-chain. The SDK (`selectNode()`) deduplicates by gateway endpoint and uses the most recently registered entry. If you still see this error after updating the SDK, restart with a clean slate:
+
+```bash
+./deploy/local/teardown.sh
+./deploy/local/setup.sh
+```
+
+### Docker / PostgreSQL won't start
+
+Make sure Docker Desktop (or the Docker daemon) is running:
+
+```bash
+docker info
+```
+
+Port 5432 may conflict with a local PostgreSQL installation. Stop it or change the port in `deploy/local/docker-compose.yml`.
 
 ---
 

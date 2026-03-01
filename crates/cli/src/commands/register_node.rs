@@ -67,9 +67,18 @@ pub async fn run(
 
     let result: RegisterNodeResponse =
         match helpers::call_tee_endpoint(tee_url, "/register-node", &register_request).await? {
-            Some(r) => r,
-            None => {
-                println!("  WARNING: TEEに接続できません。TEE起動後に再実行してください。");
+            helpers::TeeCallResult::Success(r) => r,
+            helpers::TeeCallResult::HttpError { status: 409, .. } => {
+                println!("  TEEノード: 既に登録済み（スキップ）");
+                return Ok(());
+            }
+            helpers::TeeCallResult::HttpError { status, body } => {
+                println!("  TEEノード登録に失敗: HTTP {status}: {}", &body[..body.len().min(100)]);
+                return Ok(());
+            }
+            helpers::TeeCallResult::ConnectionFailed(msg) => {
+                println!("  TEEに接続できません: {}", &msg[..msg.len().min(60)]);
+                println!("  TEE起動後に再実行してください。");
                 return Ok(());
             }
         };
@@ -116,9 +125,17 @@ pub async fn run(
 
         match rpc.send_and_confirm(&signed_bytes).await {
             Ok(sig) => println!("  TEEノード登録完了: {sig}"),
-            Err(e) => println!(
-                "  TEEノード登録失敗（既に登録済みの可能性）: {e}"
-            ),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("custom program error")
+                    || msg.contains("already in use")
+                    || msg.contains("AlreadyInUse")
+                {
+                    println!("  TEEノード: 既に登録済み（スキップ）");
+                } else {
+                    println!("  TEEノード登録失敗: {e}");
+                }
+            }
         }
     } else {
         // mainnet: DAOのガバナンスシステムに審査依頼

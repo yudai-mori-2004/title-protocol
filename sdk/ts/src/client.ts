@@ -70,28 +70,52 @@ export interface TeeSession {
 
 export class TitleClient {
   readonly config: TitleClientConfig;
+  /** Mutable candidate list — dead nodes are removed on health-check failure. */
+  private availableNodes: TrustedTeeNode[];
 
   constructor(config: TitleClientConfig) {
-    if (config.teeNodes.length === 0) {
-      throw new Error("teeNodes must contain at least one URL");
-    }
     this.config = config;
+    this.availableNodes = [...config.globalConfig.trusted_tee_nodes];
   }
 
   /**
-   * Select a random TEE node and start a session.
-   * All node information is resolved from on-chain GlobalConfig data
-   * without additional HTTP requests. Spec §6.7
+   * Select a live TEE node and start a session.
+   * Picks a random candidate, health-checks its gateway, and removes
+   * unreachable nodes from the candidate list. Spec §6.7
    */
-  selectNode(): TeeSession {
-    const gatewayUrl = this.pickRandomNode();
-    const teeNode = this.findTeeNodeByGatewayUrl(gatewayUrl);
+  async selectNode(): Promise<TeeSession> {
+    // Deduplicate by gateway_endpoint — keep only the last (newest) entry per endpoint
+    const byEndpoint = new Map<string, TrustedTeeNode>();
+    for (const node of this.availableNodes) {
+      const ep = node.gateway_endpoint.replace(/\/$/, "");
+      byEndpoint.set(ep, node); // later entries overwrite earlier ones
+    }
 
-    return {
-      gatewayUrl,
-      encryptionPubkey: teeNode.encryption_pubkey,
-      signingPubkey: teeNode.signing_pubkey,
-    };
+    const candidates = [...byEndpoint.values()];
+    while (candidates.length > 0) {
+      const idx = Math.floor(Math.random() * candidates.length);
+      const node = candidates[idx];
+      const base = node.gateway_endpoint.replace(/\/$/, "");
+
+      try {
+        const res = await fetch(`${base}/health`);
+        if (res.status === 404) {
+          candidates.splice(idx, 1);
+          continue;
+        }
+      } catch {
+        candidates.splice(idx, 1);
+        continue;
+      }
+
+      return {
+        gatewayUrl: base,
+        encryptionPubkey: node.encryption_pubkey,
+        signingPubkey: node.signing_pubkey,
+      };
+    }
+
+    throw new Error("No healthy TEE node found");
   }
 
   /**
@@ -222,26 +246,6 @@ export class TitleClient {
 
   // --- Internal helpers ---
 
-  /** Randomly select a TEE node URL. */
-  private pickRandomNode(): string {
-    const idx = Math.floor(Math.random() * this.config.teeNodes.length);
-    return this.config.teeNodes[idx];
-  }
-
-  /** Look up a TeeNode in GlobalConfig by gateway URL. */
-  private findTeeNodeByGatewayUrl(gatewayUrl: string): TrustedTeeNode {
-    const base = stripQuery(gatewayUrl);
-    const node = this.config.globalConfig.trusted_tee_nodes.find(
-      (n) => n.gateway_endpoint === base || n.gateway_endpoint === base + "/"
-    );
-    if (!node) {
-      throw new Error(
-        `TEE node with gateway_endpoint matching ${base} not found in GlobalConfig`
-      );
-    }
-    return node;
-  }
-
   /** Send a POST request to a Gateway endpoint. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async gatewayPost(gatewayUrl: string, path: string, body: unknown): Promise<any> {
@@ -287,3 +291,5 @@ function extractApiKey(url: string): string | null {
     return null;
   }
 }
+
+

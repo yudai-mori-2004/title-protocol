@@ -64,6 +64,21 @@ set -a
 source .env
 set +a
 
+# GATEWAY_SIGNING_KEY の自動生成
+# Gateway と register-node が同じ鍵を使う必要があるため、ここで生成して両方に渡す
+if [ -z "${GATEWAY_SIGNING_KEY:-}" ]; then
+  GATEWAY_SIGNING_KEY=$(openssl rand -hex 32)
+  echo "  GATEWAY_SIGNING_KEY を自動生成しました"
+fi
+export GATEWAY_SIGNING_KEY
+
+# DB_PASSWORD の自動生成
+if [ -z "${DB_PASSWORD:-}" ]; then
+  DB_PASSWORD=$(openssl rand -hex 16)
+  echo "  DB_PASSWORD を自動生成しました"
+fi
+export DB_PASSWORD
+
 # network.json
 NETWORK_JSON="$PROJECT_ROOT/network.json"
 if [ ! -f "$NETWORK_JSON" ]; then
@@ -99,12 +114,10 @@ EXT_COLLECTION_MINT="${EXT_COLLECTION_MINT:-$EXT_COLLECTION_MINT_NET}"
 # 必須変数の検証
 REQUIRED_VARS=(
   SOLANA_RPC_URL
-  GATEWAY_SIGNING_KEY
   S3_ENDPOINT
   S3_BUCKET
   S3_ACCESS_KEY
   S3_SECRET_KEY
-  DB_PASSWORD
 )
 
 MISSING=()

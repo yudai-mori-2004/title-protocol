@@ -194,7 +194,7 @@ echo "  title-cli をビルド中..."
 cargo build --release --bin title-cli
 
 echo "  title-temp-storage をビルド中..."
-cargo build --release --bin title-temp-storage
+cargo build --release --manifest-path deploy/local/temp-storage/Cargo.toml
 
 echo "  title-gateway をビルド中 (vendor-local)..."
 cargo build --release -p title-gateway --no-default-features --features vendor-local
@@ -240,7 +240,7 @@ TEMP_STORAGE_PID=$(pgrep -x title-temp-st 2>/dev/null || true)
 if [ -z "$TEMP_STORAGE_PID" ]; then
   STORAGE_DIR="/tmp/title-uploads" \
     STORAGE_PORT=3001 \
-    nohup ./target/release/title-temp-storage > /tmp/title-temp-storage.log 2>&1 &
+    nohup ./deploy/local/temp-storage/target/release/title-temp-storage > /tmp/title-temp-storage.log 2>&1 &
   TEMP_STORAGE_PID=$!
   echo "$TEMP_STORAGE_PID" > "$PID_DIR/temp-storage.pid"
   ok "TempStorage起動 (port 3001, PID=$TEMP_STORAGE_PID)"

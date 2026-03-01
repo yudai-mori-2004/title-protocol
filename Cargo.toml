@@ -8,11 +8,11 @@ members = [
     "crates/gateway",
     "crates/proxy",
     "crates/cli",
-    "deploy/local/temp-storage",
 ]
 exclude = [
     "wasm",
     "programs",
+    "deploy/local/temp-storage",
 ]
 resolver = "2"
 

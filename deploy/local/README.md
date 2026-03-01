@@ -8,7 +8,7 @@ Client --> Gateway (:3000) --> TempStorage (:3001) --> TEE (:4000) --> Solana
                                                   WASM Modules
                                                   (phash, etc.)
 
-PostgreSQL (:5432) <-- Indexer (:5000)
+PostgreSQL (:5432) <-- Indexer (:5001)
 ```
 
 すべてのプロセスがホスト上で直接動作する（Dockerは PostgreSQL のみ）。
@@ -19,7 +19,7 @@ PostgreSQL (:5432) <-- Indexer (:5000)
 | `title-temp-storage` | 3001 | 一時ファイルストレージ |
 | `title-gateway` | 3000 | クライアント向けHTTP API |
 | `title-tee` | 4000 | TEE（C2PA検証、WASM実行） |
-| `indexer` | 5000 | cNFTインデクサ |
+| `indexer` | 5001 | cNFTインデクサ |
 | `postgres` | 5432 | インデクサ用DB（Docker） |
 
 ## 前提条件
@@ -27,6 +27,7 @@ PostgreSQL (:5432) <-- Indexer (:5000)
 - [Rust](https://rustup.rs/) + `wasm32-unknown-unknown` ターゲット
 - [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) (v2.0+)
 - [Docker](https://docs.docker.com/get-docker/) (PostgreSQL用)
+- [Python 3](https://www.python.org/) (setup.sh の network.json 解析に使用)
 - [Node.js](https://nodejs.org/) 20+ (Indexer用、オプション)
 - Phase 1 完了済み（`network.json` が存在すること）
 
@@ -35,7 +36,7 @@ PostgreSQL (:5432) <-- Indexer (:5000)
 ```bash
 # 1. .env を作成（最小設定）
 cp .env.example .env
-# SOLANA_RPC_URL を設定するだけでOK
+# SOLANA_RPC_URL を設定するだけでOK（他は自動設定）
 
 # 2. 起動
 ./deploy/local/setup.sh
@@ -60,6 +61,7 @@ tail -f /tmp/title-indexer.log
 kill $(cat /tmp/title-local/gateway.pid)
 TEE_ENDPOINT=http://localhost:4000 \
   LOCAL_STORAGE_ENDPOINT=http://localhost:3001 \
+  GATEWAY_SIGNING_KEY=<hex> \
   SOLANA_RPC_URL=https://api.devnet.solana.com \
   ./target/release/title-gateway
 ```

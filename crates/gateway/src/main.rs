@@ -62,15 +62,20 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("TEE_ENDPOINT").unwrap_or_else(|_| "http://localhost:4000".to_string());
 
     // Gateway認証用Ed25519キーペア
-    let signing_key = if let Ok(key_hex) = std::env::var("GATEWAY_SIGNING_KEY") {
-        let key_bytes = hex::decode(&key_hex)?;
-        let key_arr: [u8; 32] = key_bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("GATEWAY_SIGNING_KEYは32バイトの16進数である必要があります"))?;
-        Ed25519SigningKey::from_bytes(&key_arr)
-    } else {
-        tracing::warn!("GATEWAY_SIGNING_KEYが未設定です。ランダムキーを生成します（開発環境用）");
-        Ed25519SigningKey::generate(&mut rand::rngs::OsRng)
+    let signing_key = match std::env::var("GATEWAY_SIGNING_KEY") {
+        Ok(key_hex) if !key_hex.is_empty() => {
+            let key_bytes = hex::decode(&key_hex)?;
+            let key_arr: [u8; 32] = key_bytes.try_into().map_err(|_| {
+                anyhow::anyhow!("GATEWAY_SIGNING_KEYは32バイトの16進数である必要があります")
+            })?;
+            Ed25519SigningKey::from_bytes(&key_arr)
+        }
+        _ => {
+            tracing::warn!(
+                "GATEWAY_SIGNING_KEYが未設定です。ランダムキーを生成します（開発環境用）"
+            );
+            Ed25519SigningKey::generate(&mut rand::rngs::OsRng)
+        }
     };
     let verifying_key = Ed25519VerifyingKey::from(&signing_key);
     {

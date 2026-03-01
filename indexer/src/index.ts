@@ -12,7 +12,7 @@
  *   例: "https://das-provider.example.com/?api-key=xxx"
  * - COLLECTION_MINTS: カンマ区切りの監視対象コレクションMintアドレス
  * - POLL_INTERVAL_MS: ポーリング間隔（ミリ秒、デフォルト: 300000 = 5分）
- * - WEBHOOK_PORT: Webhookサーバーのポート（デフォルト: 5000）
+ * - WEBHOOK_PORT: Webhookサーバーのポート（デフォルト: 5001）
  */
 
 import * as http from "node:http";
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
   }
 
   const pollIntervalMs = parseInt(process.env.POLL_INTERVAL_MS ?? "300000", 10);
-  const webhookPort = parseInt(process.env.WEBHOOK_PORT ?? "5000", 10);
+  const webhookPort = parseInt(process.env.WEBHOOK_PORT ?? "5001", 10);
 
   // 2. DB接続 + マイグレーション
   const db = new IndexerDb(databaseUrl);

@@ -1,8 +1,33 @@
 # Quick Start
 
-This guide walks you through the on-chain architecture of Title Protocol and how to deploy your own instance on Solana devnet.
+This guide walks you through running Title Protocol locally and registering content on Solana devnet.
 
-## GlobalConfig: The Root of Trust
+## TL;DR — Fastest Path
+
+The repository already includes a deployed devnet environment (`network.json`). To start a local node against it:
+
+```bash
+# 1. Create .env (only SOLANA_RPC_URL is required)
+cp .env.example .env
+
+# 2. Start all services
+./deploy/local/setup.sh
+
+# 3. That's it. Verify:
+curl http://localhost:4000/health
+```
+
+> **First run:** The build step compiles 4 WASM modules and 4 Rust release binaries. Expect **10-20 minutes** on the first run; subsequent runs use the Cargo cache and finish in seconds.
+
+This starts TEE, Gateway, TempStorage, Indexer, and PostgreSQL on your machine, registers the node on devnet, and creates Merkle Trees — all automatically.
+
+> **If this is all you need, skip ahead to [Register Content](#register-content).** The rest of this document explains the on-chain architecture and how to deploy your own network from scratch.
+
+---
+
+## On-Chain Architecture
+
+### GlobalConfig: The Root of Trust
 
 Every Title Protocol network has exactly **one GlobalConfig** — a single on-chain account (PDA) that anchors the entire trust chain. Think of it like a DNS root zone or a CA root certificate: everything in the protocol traces its authority back to this account.
 
@@ -46,22 +71,9 @@ Every Title Protocol network has exactly **one GlobalConfig** — a single on-ch
 
 **TeeNodeAccount** (one per TEE node) stores the node's full specification — its cryptographic keys, gateway endpoint, TEE platform type, and expected attestation measurements. This PDA is created by the TEE itself during registration, ensuring that the node's internal keys are cryptographically bound to the on-chain record.
 
-### Mainnet vs. Devnet
+### Devnet Reference Environment
 
-On **mainnet**, there will be one canonical GlobalConfig controlled by the protocol DAO. All production TEE nodes, WASM modules, and collections are registered under this single authority.
-
-On **devnet**, you are free to deploy your own program and create your own GlobalConfig. This lets you:
-
-- Experiment with the full protocol stack without needing permission
-- Run your own TEE nodes against your own trust root
-- Test WASM module registration and cNFT minting end-to-end
-- Develop applications on top of the protocol in an isolated environment
-
-The on-chain structure is identical in both cases — devnet is just mainnet without the social consensus on which GlobalConfig is canonical.
-
-## Official Devnet Reference
-
-The project maintains a reference GlobalConfig on devnet for integration testing:
+The repository ships with a pre-deployed devnet environment in `network.json`:
 
 | Item | Value |
 |------|-------|
@@ -75,12 +87,14 @@ The project maintains a reference GlobalConfig on devnet for integration testing
 solana account CLizWsiGX2Lva42boGuGuutessekt2HV8JyAHWYcmFYk --url devnet
 ```
 
+Most developers should use this existing environment. If you need your own isolated GlobalConfig (e.g., for testing program changes), see [Phase 1: Network Setup](#phase-1-network-setup-optional) below.
+
+---
+
 ## Two-Phase Setup
 
-Title Protocol deployment is split into two independent phases:
-
 ```
-Phase 1: Network Setup (once)
+Phase 1: Network Setup (optional — already done for devnet)
   title-cli init-global
     +-- Deploy Anchor program
     +-- Create MPL Core collections
@@ -88,7 +102,7 @@ Phase 1: Network Setup (once)
     +-- Register WASM modules
     +-- Output network.json
 
-Phase 2: Node Deployment (per node)
+Phase 2: Node Deployment (required)
   deploy/local/setup.sh   (local)
   deploy/aws/setup-ec2.sh (production)
     +-- Build WASM + binaries
@@ -97,117 +111,72 @@ Phase 2: Node Deployment (per node)
     +-- title-cli create-tree    (Merkle trees for cNFT minting)
 ```
 
-`network.json` is the bridge between the two phases. Phase 1 creates it; Phase 2 reads it.
-
----
-
-## Phase 1: Network Setup (Local)
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) with `wasm32-unknown-unknown` target
-- [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) (v2.0+)
-- `cargo-build-sbf` (installed with Solana CLI)
-- ~5 SOL on devnet (program deploy costs ~2 SOL; use `solana airdrop` or [faucet.solana.com](https://faucet.solana.com))
-
-### Step 1: Build and Deploy the Anchor Program
-
-```bash
-# Build
-cd programs/title-config
-rm -f Cargo.lock && cargo generate-lockfile
-cargo-build-sbf --manifest-path Cargo.toml --tools-version v1.52
-```
-
-The first build generates a program keypair at `target/deploy/title_config-keypair.json`. Verify the program ID matches `declare_id!` in `src/lib.rs`:
-
-```bash
-solana-keygen pubkey target/deploy/title_config-keypair.json
-```
-
-If the IDs differ (e.g. fresh deploy), update `declare_id!` and all references, then rebuild:
-
-- `programs/title-config/src/lib.rs` — `declare_id!("...")`
-- `Anchor.toml` — `[programs.localnet]` and `[programs.devnet]`
-- `crates/cli/src/commands/init_global.rs` — `DEFAULT_PROGRAM_ID`
-- `crates/cli/src/anchor.rs` — test program IDs
-- `crates/tee/src/endpoints/register_node.rs` — test program IDs
-- `sdk/ts/src/chain.ts` — `TITLE_CONFIG_PROGRAM_ID`
-
-```bash
-# Deploy (uses the default program ID)
-solana program deploy target/deploy/title_config.so \
-  --url devnet \
-  --keypair ~/.config/solana/id.json
-```
-
-### Step 2: Build WASM Modules
-
-```bash
-# From the project root
-for dir in wasm/*/; do
-  (cd "$dir" && cargo build --target wasm32-unknown-unknown --release)
-done
-```
-
-### Step 3: Build the CLI
-
-```bash
-cargo build --release -p title-cli
-```
-
-### Step 4: Initialize GlobalConfig
-
-```bash
-./target/release/title-cli init-global --cluster devnet
-```
-
-This is **idempotent** — safe to run multiple times. It will:
-
-1. Load or create an authority keypair at `programs/title-config/keys/authority.json`
-2. Create two MPL Core Collections (Core + Extension) if not already present
-3. Call `initialize` to create the GlobalConfig PDA (skipped if it already exists)
-4. Register the 4 built-in WASM modules via `add_wasm_module` (upsert — updates hash if already registered)
-5. Write `network.json` to the project root
-
-### What You Get
-
-```
-network.json
-{
-  "cluster": "devnet",
-  "program_id": "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq",
-  "global_config_pda": "CLizWsiGX2Lva42boGuGuutessekt2HV8JyAHWYcmFYk",
-  "authority": "wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna",
-  "core_collection_mint": "H51z...",
-  "ext_collection_mint": "5cJG...",
-  "wasm_modules": { "phash-v1": { "hash": "1ced..." }, ... }
-}
-```
-
-Commit `network.json` to the repository. Every node reads it at startup.
-
-```bash
-solana account <global_config_pda> --url devnet
-```
+`network.json` is the bridge between the two phases. Phase 1 creates it; Phase 2 reads it. **The repository already includes a `network.json` for the devnet reference environment, so you can go straight to Phase 2.**
 
 ---
 
 ## Phase 2: Node Deployment
 
+### Prerequisites
+
+| Tool | Required | Notes |
+|------|----------|-------|
+| [Rust](https://rustup.rs/) + `wasm32-unknown-unknown` target | Yes | `rustup target add wasm32-unknown-unknown` |
+| [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) v2.0+ | Yes | |
+| [Docker](https://docs.docker.com/get-docker/) | Yes | PostgreSQL for indexer |
+| [Python 3](https://www.python.org/) | Yes | `setup.sh` uses it to parse `network.json` (pre-installed on macOS/most Linux) |
+| [Node.js](https://nodejs.org/) 20+ | Optional | Indexer (skipped if not installed) |
+| ~0.6 SOL on devnet | Yes | Node registration + Merkle Tree creation. Use `solana airdrop 2 --url devnet` |
+
 ### Node Architecture
 
 ```
-Client --> Gateway (:3000) --> TempStorage --> TEE (:4000) --> Solana
-                                                |
-                                           WASM Modules
-                                           (phash, etc.)
+Client --> Gateway (:3000) --> TempStorage (:3001) --> TEE (:4000) --> Solana
+                                                       |
+                                                  WASM Modules
+                                                  (phash, etc.)
+
+PostgreSQL (:5432) <-- Indexer (:5001)
 ```
 
 - **Gateway** — Client-facing HTTP server. Handles uploads, relays requests to the TEE, and optionally broadcasts transactions.
 - **TEE** — Trusted Execution Environment. Verifies C2PA signatures, runs WASM extensions, and signs transactions with ephemeral keys that exist only in enclave memory.
-- **Temp Storage** — Object storage for encrypted payloads (auto-deleted after processing).
-- **Proxy** — Mediates TEE network access when the enclave has no direct network (e.g., vsock on Nitro).
+- **TempStorage** — Object storage for encrypted payloads (auto-deleted after processing).
+- **Indexer** — Indexes cNFTs from on-chain Merkle Trees into PostgreSQL for querying.
+
+### Deploying Locally
+
+```bash
+# 1. Create .env (only SOLANA_RPC_URL is required — everything else is auto-configured)
+cp .env.example .env
+
+# 2. Start everything (builds, starts services, registers node, creates Merkle Trees)
+./deploy/local/setup.sh
+```
+
+`setup.sh` handles the entire process:
+
+| Step | What | Details |
+|------|------|---------|
+| 0 | Prerequisite check | Verifies Rust, Solana CLI, Docker, .env, network.json |
+| 1 | Build WASM modules | 4 modules → `wasm-modules/` |
+| 2 | Build host binaries | TEE, Gateway, TempStorage, CLI |
+| 3 | Start TEE | MockRuntime, port 4000 |
+| 4 | Start services | TempStorage (:3001), Gateway (:3000), PostgreSQL (:5432), Indexer (:5001) |
+| 5 | Register TEE node | On-chain node registration (auto-signs if authority keypair exists) |
+| 6 | Create Merkle Trees | Core + Extension trees for cNFT minting |
+| 7 | Health check | Verifies all services are responding |
+
+```bash
+# View logs
+tail -f /tmp/title-tee.log
+tail -f /tmp/title-gateway.log
+
+# Stop everything
+./deploy/local/teardown.sh
+```
+
+See [`deploy/local/README.md`](deploy/local/README.md) for details on individual process management.
 
 ### Vendor-Neutral Design
 
@@ -219,40 +188,6 @@ The protocol core is **vendor-neutral**; all vendor-specific code is isolated be
 | AWS Nitro | `deploy/aws/` | S3-compatible | Nitro Enclaves | `vendor-aws` | Available |
 
 > To add a new vendor implementation, implement the `TeeRuntime` and `TempStorage` traits, create a `deploy/<vendor>/` directory, and add a corresponding Cargo feature flag. See `deploy/aws/` for reference.
-
-### Deploying Locally
-
-The simplest way to run a full node. All processes run directly on your machine.
-
-```bash
-# 1. Create .env (minimal — only SOLANA_RPC_URL is required)
-cp .env.example .env
-# Edit .env: set SOLANA_RPC_URL=https://api.devnet.solana.com
-
-# 2. Start everything
-./deploy/local/setup.sh
-```
-
-This starts 5 processes:
-
-| Process | Port | Role |
-|---------|------|------|
-| `title-temp-storage` | 3001 | Temporary file storage |
-| `title-gateway` | 3000 | Client-facing API |
-| `title-tee` | 4000 | TEE (C2PA verification, WASM execution) |
-| `indexer` | 5000 | cNFT indexer |
-| `postgres` | 5432 | Indexer DB (Docker) |
-
-```bash
-# View logs
-tail -f /tmp/title-tee.log
-tail -f /tmp/title-gateway.log
-
-# Stop everything
-./deploy/local/teardown.sh
-```
-
-See [`deploy/local/README.md`](deploy/local/README.md) for details.
 
 ### Deploying with AWS (EC2 + Nitro Enclaves)
 
@@ -280,25 +215,7 @@ cd ~/title-protocol
 ./deploy/aws/setup-ec2.sh
 ```
 
-### What setup-ec2.sh Does
-
-| Step | What | Tool |
-|------|------|------|
-| 0 | Load `.env` + `network.json`, validate | Shell |
-| 1 | Build 4 WASM modules | `cargo build --target wasm32-unknown-unknown` |
-| 2 | Build host binaries (`title-cli`, `title-proxy`) | `cargo build --release` |
-| 3 | Build Enclave Image File (EIF) | `nitro-cli build-enclave` |
-| 4 | Start TEE (Nitro Enclave or MockRuntime) | `nitro-cli run-enclave` |
-| 5 | Start Proxy (Enclave mode only) | `title-proxy` |
-| 6 | Start Gateway + Indexer + PostgreSQL | `docker compose` |
-| 7 | Verify S3 access | `aws s3` |
-| 8 | Register TEE node on-chain | `title-cli register-node` |
-| 9 | Create Merkle Trees | `title-cli create-tree` |
-| 10 | Health checks (TEE, Gateway, Indexer, RPC) | `curl` |
-
-Total setup time: ~15-30 minutes (first build). See [`deploy/aws/README.md`](deploy/aws/README.md) for full details.
-
-### TEE Node Registration (Step 8)
+### TEE Node Registration
 
 The node registration uses a **partial-signature pattern**:
 
@@ -314,13 +231,13 @@ Then, depending on the environment:
 | Exists (your own GlobalConfig) | CLI loads authority, co-signs, broadcasts immediately |
 | Does not exist (e.g. DAO-controlled) | CLI outputs partial TX for multi-sig approval |
 
-After registration, `GlobalConfig.trusted_node_keys` gains the new node's pubkey, and a `TeeNodeAccount` PDA is created with the node's full specification.
+The repository includes the authority keypair for the devnet reference environment, so `setup.sh` auto-signs during local development.
 
 ### Node Lifecycle
 
 **Registration:** `title-cli register-node` + `title-cli create-tree`. The TEE signs transactions with its internal key, proving ownership. The authority co-signs to approve.
 
-**Restart:** TEE nodes are stateless. On restart, all keys are regenerated. The node must re-register and create a new Merkle Tree. `setup-ec2.sh` handles this automatically.
+**Restart:** TEE nodes are stateless. On restart, all keys are regenerated. The node must re-register and create a new Merkle Tree. `setup.sh` handles this automatically.
 
 **Decommission:** Remove the node's signing pubkey from GlobalConfig using the authority key. Existing cNFTs minted by the node remain valid.
 
@@ -354,7 +271,7 @@ With a running node, you can register C2PA-signed content on-chain. The flow use
 ```
 
 1. **Get node info** — Fetch the TEE's X25519 encryption pubkey from on-chain GlobalConfig + TeeNodeAccount PDA
-2. **Get upload URL** — Request a presigned S3 upload URL from the Gateway
+2. **Get upload URL** — Request a presigned upload URL from the Gateway
 3. **Upload encrypted payload** — Encrypt the content + owner wallet with ECDH (X25519 + HKDF-SHA256 + AES-256-GCM), upload to temp storage
 4. **Verify** — The Gateway relays to the TEE, which decrypts, verifies C2PA signatures, builds the provenance graph, and runs WASM extensions. Results are returned encrypted
 5. **Store results** — Upload the signed JSON to permanent storage (Arweave via Irys)
@@ -438,22 +355,90 @@ npx tsx register-photo.ts
 
 ---
 
+## Phase 1: Network Setup (Optional)
+
+> **Skip this section if you're using the existing devnet reference environment** (i.e., the `network.json` already in the repository). Phase 1 is only needed if you want to deploy your own program and create your own GlobalConfig from scratch.
+
+### Prerequisites
+
+- Everything from [Phase 2 Prerequisites](#prerequisites) above
+- `cargo-build-sbf` (installed with Solana CLI)
+- ~5 SOL on devnet (program deploy costs ~2 SOL; use `solana airdrop` or [faucet.solana.com](https://faucet.solana.com))
+
+### Step 1: Build and Deploy the Anchor Program
+
+```bash
+cd programs/title-config
+rm -f Cargo.lock && cargo generate-lockfile
+cargo-build-sbf --manifest-path Cargo.toml --tools-version v1.52
+```
+
+The repository includes a program keypair at `target/deploy/title_config-keypair.json` that matches the devnet reference Program ID (`CD3KZe1...`). For a fresh deployment with a new Program ID:
+
+1. Generate a new keypair: `solana-keygen new -o target/deploy/title_config-keypair.json --force`
+2. Get the new Program ID: `solana-keygen pubkey target/deploy/title_config-keypair.json`
+3. Update `declare_id!` in the following files, then rebuild:
+   - `programs/title-config/src/lib.rs` — `declare_id!("...")`
+   - `Anchor.toml` — `[programs.localnet]` and `[programs.devnet]`
+   - `crates/cli/src/commands/init_global.rs` — `DEFAULT_PROGRAM_ID`
+   - `crates/cli/src/anchor.rs` — test program IDs
+   - `crates/tee/src/endpoints/register_node.rs` — test program IDs
+   - `sdk/ts/src/chain.ts` — `TITLE_CONFIG_PROGRAM_ID`
+
+```bash
+solana program deploy target/deploy/title_config.so \
+  --url devnet \
+  --keypair ~/.config/solana/id.json
+```
+
+### Step 2: Build WASM Modules
+
+```bash
+for dir in wasm/*/; do
+  (cd "$dir" && cargo build --target wasm32-unknown-unknown --release)
+done
+```
+
+### Step 3: Build the CLI
+
+```bash
+cargo build --release -p title-cli
+```
+
+### Step 4: Initialize GlobalConfig
+
+```bash
+./target/release/title-cli init-global --cluster devnet
+```
+
+This is **idempotent** — safe to run multiple times. It will:
+
+1. Load or create an authority keypair at `programs/title-config/keys/authority.json`
+2. Create two MPL Core Collections (Core + Extension) if not already present
+3. Call `initialize` to create the GlobalConfig PDA (skipped if it already exists)
+4. Register the 4 built-in WASM modules via `add_wasm_module` (upsert — updates hash if already registered)
+5. Write `network.json` to the project root
+
+After completion, commit the new `network.json` and proceed to Phase 2.
+
+---
+
 ## Environment Variables
 
 | Variable | Service | Description |
 |----------|---------|-------------|
+| `SOLANA_RPC_URL` | All | Solana RPC endpoint (**only required variable for local dev**) |
+| `GATEWAY_SIGNING_KEY` | Gateway, CLI | Ed25519 secret key (64-char hex). Auto-generated by `setup.sh` if unset |
 | `TEE_RUNTIME` | TEE | Runtime implementation (`mock`, `nitro`, etc.) |
 | `PROXY_ADDR` | TEE | `direct` (direct HTTP) or `127.0.0.1:8000` (vsock bridge) |
-| `CORE_COLLECTION_MINT` | TEE | Core Collection Mint address |
-| `EXT_COLLECTION_MINT` | TEE | Extension Collection Mint address |
+| `CORE_COLLECTION_MINT` | TEE | Core Collection Mint address (auto-read from `network.json`) |
+| `EXT_COLLECTION_MINT` | TEE | Extension Collection Mint address (auto-read from `network.json`) |
 | `GATEWAY_PUBKEY` | TEE | Gateway's Ed25519 pubkey for request authentication |
-| `GATEWAY_SIGNING_KEY` | Gateway | Gateway's Ed25519 secret key (hex) |
 | `TEE_ENDPOINT` | Gateway | TEE server URL (e.g., `http://localhost:4000`) |
-| `S3_ENDPOINT` | Gateway | S3-compatible storage endpoint |
-| `S3_ACCESS_KEY` | Gateway | Storage access key |
-| `S3_SECRET_KEY` | Gateway | Storage secret key |
-| `S3_BUCKET` | Gateway | Bucket name for temp uploads |
-| `SOLANA_RPC_URL` | All | Solana RPC endpoint |
+| `S3_ENDPOINT` | Gateway | S3-compatible storage endpoint (vendor-aws only) |
+| `S3_ACCESS_KEY` | Gateway | Storage access key (vendor-aws only) |
+| `S3_SECRET_KEY` | Gateway | Storage secret key (vendor-aws only) |
+| `S3_BUCKET` | Gateway | Bucket name for temp uploads (vendor-aws only) |
 
 See [`.env.example`](.env.example) for the full list.
 
@@ -474,7 +459,3 @@ The trust model on mainnet:
 - TEE nodes must pass remote attestation — the on-chain `measurements` field ensures only verified enclave code is trusted
 - WASM module hashes are pinned — only binaries matching the registered SHA-256 hash can execute
 - Collection Authority delegation is explicit — only registered TEE nodes can mint cNFTs into the official collections
-
-The behavioral difference in `title-cli register-node` depends on whether the node has access to the authority keypair:
-- **Authority keypair present:** CLI auto-signs and broadcasts (typical for your own GlobalConfig)
-- **Authority keypair absent:** CLI outputs a partial transaction for the authority (e.g. DAO multi-sig) to review and co-sign

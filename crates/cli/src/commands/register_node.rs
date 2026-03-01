@@ -155,9 +155,16 @@ pub async fn run(
 
 /// GATEWAY_SIGNING_KEY環境変数からEd25519公開鍵を導出する。
 fn derive_gateway_pubkey() -> Result<String, CliError> {
-    let hex_key = std::env::var("GATEWAY_SIGNING_KEY").map_err(|_| {
-        CliError::Config("GATEWAY_SIGNING_KEY 環境変数が設定されていません".into())
-    })?;
+    let hex_key = match std::env::var("GATEWAY_SIGNING_KEY") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            return Err(CliError::Config(
+                "GATEWAY_SIGNING_KEY 環境変数が設定されていません。\n  \
+                 setup.sh が自動生成するか、.env に64文字のHex値を設定してください。"
+                    .into(),
+            ));
+        }
+    };
 
     let seed_bytes = hex::decode(&hex_key).map_err(|e| {
         CliError::Config(format!("GATEWAY_SIGNING_KEY のHexデコードに失敗: {e}"))

@@ -84,52 +84,46 @@ pub async fn fund_tee_wallet(
     Ok(())
 }
 
-/// TEEエンドポイントを呼び出す（Gateway経由 → TEE直接のフォールバック）。
+/// TEEエンドポイントを直接呼び出す。
 ///
-/// `tee_url` のポート4000を3000に置換してGateway URLを導出し、
-/// Gateway → TEE の順にPOSTリクエストを試行する。
+/// 管理コマンド（/register-node, /create-tree）はオペレーターが
+/// TEEと同一ホスト上で実行するため、Gateway経由は不要。
+/// TEEはネットワーク層（Security Group / vsock）で外部から隔離されている。
 pub async fn call_tee_endpoint<T: serde::de::DeserializeOwned>(
     tee_url: &str,
     path: &str,
     request: &impl serde::Serialize,
 ) -> Result<Option<T>, CliError> {
     let client = reqwest::Client::new();
+    let url = format!("{tee_url}{path}");
+    println!("  {path}: {url}");
 
-    let gateway_url = tee_url.replace(":4000", ":3000");
-    let urls = [
-        format!("{gateway_url}{path}"),
-        format!("{tee_url}{path}"),
-    ];
-
-    for url in &urls {
-        println!("  {path}: {url}");
-        match client
-            .post(url)
-            .json(request)
-            .timeout(std::time::Duration::from_secs(15))
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    let result: T = resp.json().await?;
-                    return Ok(Some(result));
-                } else {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    println!(
-                        "    HTTP {}: {}",
-                        status,
-                        &body[..body.len().min(100)]
-                    );
-                }
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                println!("    接続失敗: {}", &msg[..msg.len().min(60)]);
+    match client
+        .post(&url)
+        .json(request)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                let result: T = resp.json().await?;
+                Ok(Some(result))
+            } else {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                println!(
+                    "    HTTP {}: {}",
+                    status,
+                    &body[..body.len().min(100)]
+                );
+                Ok(None)
             }
         }
+        Err(e) => {
+            let msg = e.to_string();
+            println!("    接続失敗: {}", &msg[..msg.len().min(60)]);
+            Ok(None)
+        }
     }
-
-    Ok(None)
 }

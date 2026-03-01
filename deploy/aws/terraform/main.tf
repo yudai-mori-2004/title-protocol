@@ -1,14 +1,18 @@
 # Title Protocol Devnet — AWS インフラ定義
 #
-# アーキテクチャ:
-#   1x EC2 Nitro Instance: TEE(Enclave) + Proxy + Gateway + PostgreSQL + Indexer
-#   1x S3 Bucket: Temporary Storage (暗号化ペイロードの一時保管)
+# アーキテクチャ (per node):
+#   1x EC2 Nitro Instance + Elastic IP: TEE(Enclave) + Proxy + Gateway
+#   共有: 1x S3 Bucket (Temporary Storage)
+#
+# ノード数は node_count 変数で制御。各ノードは独立したTEEとして
+# GlobalConfig に登録され、並列に動作する。
 #
 # 使い方:
-#   cd deploy/terraform
+#   cd deploy/aws/terraform
 #   terraform init
-#   terraform plan -var="key_name=my-key"
-#   terraform apply -var="key_name=my-key"
+#   terraform plan
+#   terraform apply                        # 1ノード（デフォルト）
+#   terraform apply -var="node_count=3"    # 3ノードに拡張
 
 terraform {
   required_version = ">= 1.5"
@@ -52,7 +56,7 @@ data "aws_ami" "al2023" {
 data "aws_caller_identity" "current" {}
 
 # ---------------------------------------------------------------------------
-# S3 バケット (Temporary Storage)
+# S3 バケット (Temporary Storage — 全ノードで共有)
 # ---------------------------------------------------------------------------
 
 resource "aws_s3_bucket" "uploads" {
@@ -209,15 +213,6 @@ resource "aws_security_group" "main" {
     description = "Gateway API"
   }
 
-  # Indexer Webhook
-  ingress {
-    from_port   = 5000
-    to_port     = 5000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Indexer Webhook"
-  }
-
   # Outbound
   egress {
     from_port   = 0
@@ -231,10 +226,12 @@ resource "aws_security_group" "main" {
 }
 
 # ---------------------------------------------------------------------------
-# EC2 インスタンス (Nitro Enclave対応)
+# EC2 インスタンス (Nitro Enclave対応) × node_count
 # ---------------------------------------------------------------------------
 
-resource "aws_instance" "main" {
+resource "aws_instance" "node" {
+  count = var.node_count
+
   ami                    = data.aws_ami.al2023.id
   instance_type          = var.instance_type
   key_name               = var.key_name
@@ -259,7 +256,23 @@ resource "aws_instance" "main" {
   })
 
   tags = {
-    Name    = "${var.project_name}-devnet"
+    Name    = "${var.project_name}-node-${count.index}"
+    Project = var.project_name
+    NodeIndex = count.index
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Elastic IP (ノードごとに固定IP)
+# ---------------------------------------------------------------------------
+
+resource "aws_eip" "node" {
+  count    = var.node_count
+  instance = aws_instance.node[count.index].id
+  domain   = "vpc"
+
+  tags = {
+    Name    = "${var.project_name}-node-${count.index}"
     Project = var.project_name
   }
 }

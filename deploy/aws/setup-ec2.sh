@@ -15,13 +15,13 @@
 #   3. ホスト側バイナリのビルド
 #   4. Enclave イメージのビルド + 起動（またはMockRuntime直接起動）
 #   5. Proxy の起動（Enclaveモードのみ）
-#   6. Docker Compose (Gateway + PostgreSQL + Indexer) の起動
+#   6. Docker Compose (Gateway) の起動
 #   7. S3バケットの確認
 #   8. TEEノード登録 (/register-node → DAO署名)
 #   9. Merkle Tree 作成 (/create-tree)
 #  10. ヘルスチェック
 #
-# Authority keypair が programs/title-config/keys/authority.json に存在する場合:
+# Authority keypair が keys/authority.json に存在する場合:
 #   → register-node TX を自動で共同署名しブロードキャストする（devnet向け）
 # 存在しない場合:
 #   → 部分署名済みTXをファイルに保存し、DAO承認待ちとする（mainnet向け）
@@ -71,13 +71,6 @@ if [ -z "${GATEWAY_SIGNING_KEY:-}" ]; then
   echo "  GATEWAY_SIGNING_KEY を自動生成しました"
 fi
 export GATEWAY_SIGNING_KEY
-
-# DB_PASSWORD の自動生成
-if [ -z "${DB_PASSWORD:-}" ]; then
-  DB_PASSWORD=$(openssl rand -hex 16)
-  echo "  DB_PASSWORD を自動生成しました"
-fi
-export DB_PASSWORD
 
 # network.json
 NETWORK_JSON="$PROJECT_ROOT/network.json"
@@ -137,30 +130,70 @@ fi
 
 echo "  .env: OK"
 
-# Authority keypair の存在チェック
-AUTHORITY_KEY_PATH="$PROJECT_ROOT/programs/title-config/keys/authority.json"
+# keys/ ディレクトリ（キーペア管理の一元化）
+KEYS_DIR="$PROJECT_ROOT/keys"
+mkdir -p "$KEYS_DIR"
+
+# Authority keypair の存在チェック（レガシーパスからの自動マイグレーション）
+AUTHORITY_KEY_PATH="$KEYS_DIR/authority.json"
+LEGACY_AUTHORITY="$PROJECT_ROOT/programs/title-config/keys/authority.json"
+if [ ! -f "$AUTHORITY_KEY_PATH" ] && [ -f "$LEGACY_AUTHORITY" ]; then
+  echo "  NOTE: レガシーパスから authority.json を keys/ に移行します..."
+  cp "$LEGACY_AUTHORITY" "$AUTHORITY_KEY_PATH"
+  echo "  authority.json を keys/ に移行完了"
+fi
+
 if [ -f "$AUTHORITY_KEY_PATH" ]; then
-  echo "  Authority keypair: 検出 → 自動署名モード (devnet)"
+  echo "  Authority keypair (keys/authority.json): 検出 → 自動署名モード (devnet)"
   AUTO_SIGN=true
 else
   echo "  Authority keypair: なし → DAO承認モード (mainnet)"
   AUTO_SIGN=false
 fi
 
-# Solana ウォレットの確認
-SOLANA_WALLET="$HOME/.config/solana/id.json"
-if [ ! -f "$SOLANA_WALLET" ]; then
-  echo "  Solana ウォレットが見つかりません。自動作成します..."
-  solana-keygen new --no-bip39-passphrase -o "$SOLANA_WALLET"
+# Operator keypair の確認（ノード運営者の資金元ウォレット）
+OPERATOR_KEY_PATH="$KEYS_DIR/operator.json"
+if [ ! -f "$OPERATOR_KEY_PATH" ]; then
+  if [ -f "$HOME/.config/solana/id.json" ]; then
+    echo "  keys/operator.json が見つかりません。~/.config/solana/id.json からコピーします..."
+    cp "$HOME/.config/solana/id.json" "$OPERATOR_KEY_PATH"
+  else
+    echo "  オペレーターキーペアが見つかりません。自動作成します..."
+    solana-keygen new --no-bip39-passphrase -o "$OPERATOR_KEY_PATH"
+  fi
 fi
-WALLET_PUBKEY=$(solana-keygen pubkey "$SOLANA_WALLET")
-echo "  Solana ウォレット: $WALLET_PUBKEY"
+WALLET_PUBKEY=$(solana-keygen pubkey "$OPERATOR_KEY_PATH")
+echo "  オペレーターウォレット (keys/operator.json): $WALLET_PUBKEY"
 solana config set --url "$SOLANA_RPC_URL" > /dev/null 2>&1 || true
+
+# SOL残高チェック（ノード登録 + Merkle Tree 作成に ~0.6 SOL 必要）
+REQUIRED_SOL="0.6"
+BALANCE=$(solana balance "$WALLET_PUBKEY" --url "$SOLANA_RPC_URL" 2>/dev/null | awk '{print $1}')
+if [ -n "$BALANCE" ] && python3 -c "exit(0 if float('$BALANCE') >= $REQUIRED_SOL else 1)" 2>/dev/null; then
+  echo "  SOL残高: ${BALANCE} SOL"
+else
+  echo ""
+  echo "  WARNING: SOL残高が不足しています（現在: ${BALANCE:-0} SOL、必要: ~${REQUIRED_SOL} SOL）"
+  echo ""
+  echo "  以下のアドレスに ${REQUIRED_SOL} SOL 以上を送金してください:"
+  echo "    $WALLET_PUBKEY"
+  echo ""
+  echo "  devnet の場合:"
+  echo "    solana airdrop 2 $WALLET_PUBKEY --url devnet"
+  echo "    または https://faucet.solana.com で取得"
+  echo "    (EC2からのエアドロップはrate limitされることがあります。ローカルから送金も可能:"
+  echo "     solana transfer $WALLET_PUBKEY 2 --url devnet)"
+  echo ""
+  read -rp "  送金完了後、Enter を押してください... "
+  BALANCE=$(solana balance "$WALLET_PUBKEY" --url "$SOLANA_RPC_URL" 2>/dev/null | awk '{print $1}')
+  echo "  SOL残高: ${BALANCE:-?} SOL"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1: WASMモジュールのビルド
 # ---------------------------------------------------------------------------
-echo "\n[Step 1/10] WASMモジュールのビルド..."
+echo ""
+echo "[Step 1/10] WASMモジュールのビルド..."
 
 WASM_OUTPUT="$PROJECT_ROOT/wasm-modules"
 mkdir -p "$WASM_OUTPUT"
@@ -188,6 +221,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 2: ホスト側バイナリのビルド
 # ---------------------------------------------------------------------------
+echo ""
 echo "[Step 2/10] ホスト側バイナリのビルド..."
 
 if command -v cargo &>/dev/null; then
@@ -208,6 +242,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 3: Enclave イメージのビルド
 # ---------------------------------------------------------------------------
+echo ""
 echo "[Step 3/10] Enclave イメージのビルド..."
 
 EIF_PATH="$PROJECT_ROOT/title-tee.eif"
@@ -237,6 +272,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 4: Enclave / TEE の起動
 # ---------------------------------------------------------------------------
+echo ""
 echo "[Step 4/10] TEE の起動..."
 
 ENCLAVE_CPU="${ENCLAVE_CPU_COUNT:-2}"
@@ -298,6 +334,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 5: Proxy の起動
 # ---------------------------------------------------------------------------
+echo ""
 echo "[Step 5/10] Proxy の起動..."
 
 if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
@@ -316,9 +353,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 6: Docker Compose (Gateway + PostgreSQL + Indexer)
+# Step 6: Docker Compose (Gateway)
 # ---------------------------------------------------------------------------
-echo "[Step 6/10] Docker Compose 起動..."
+echo ""
+echo "[Step 6/10] Docker Compose (Gateway) 起動..."
+
+# Auto-generated値を .env に書き出す（Docker コンテナが env_file 経由で読む）
+# 冪等: 既に存在するキーは上書きしない
+ensure_env() {
+  local key="$1" value="$2"
+  if ! grep -q "^${key}=" .env 2>/dev/null; then
+    echo "${key}=${value}" >> .env
+    echo "  .env に ${key} を追加"
+  fi
+}
+ensure_env "GATEWAY_SIGNING_KEY" "$GATEWAY_SIGNING_KEY"
 
 docker compose -f deploy/aws/docker-compose.production.yml up -d --build
 echo "  Docker Compose 起動完了"
@@ -337,6 +386,7 @@ done
 # ---------------------------------------------------------------------------
 # Step 7: S3バケットの確認
 # ---------------------------------------------------------------------------
+echo ""
 echo "[Step 7/10] S3ストレージの確認..."
 
 BUCKET_NAME="${S3_BUCKET:-title-uploads}"
@@ -366,6 +416,7 @@ fi
 # Authority keypair が存在する場合: 即署名+ブロードキャスト（devnet）
 # 存在しない場合: DAOのガバナンスシステムに審査TXを送信（mainnet）
 # ---------------------------------------------------------------------------
+echo ""
 echo "[Step 8/10] TEEノード登録..."
 
 # EC2メタデータから公開IPを自動取得（IMDSv2）
@@ -394,6 +445,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 9: Merkle Tree 作成
 # ---------------------------------------------------------------------------
+echo ""
 echo "[Step 9/10] Merkle Tree 作成..."
 
 ./target/release/title-cli create-tree \
@@ -405,6 +457,7 @@ echo "[Step 9/10] Merkle Tree 作成..."
 # ---------------------------------------------------------------------------
 # Step 10: ヘルスチェック
 # ---------------------------------------------------------------------------
+echo ""
 echo "[Step 10/10] ヘルスチェック..."
 
 # Solana RPC
@@ -430,13 +483,6 @@ if curl -sf http://localhost:4000/health > /dev/null 2>&1; then
   echo "  OK  TEE"
 else
   echo "  NG  TEE"
-fi
-
-# Indexer
-if curl -sf http://localhost:5000/health > /dev/null 2>&1; then
-  echo "  OK  Indexer"
-else
-  echo "  NG  Indexer"
 fi
 
 echo ""

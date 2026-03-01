@@ -35,14 +35,18 @@ CLAUDE.md
 .env.*
 !.env.example
 
-# Keys (authority keypair, SSH keys)
+# Keys (keypairs, SSH keys)
 keys/
+!keys/README.md
 programs/title-config/keys/
 deploy/aws/keys/
 *.pem
 
 # Pending TX files (DAO approval)
 pending-*.bin
+
+# Network config (each developer creates their own via init-global)
+network.json
 
 # Integration test output
 integration-tests/output-*.json

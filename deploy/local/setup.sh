@@ -148,24 +148,40 @@ if [ -z "${GATEWAY_SIGNING_KEY:-}" ]; then
 fi
 export GATEWAY_SIGNING_KEY
 
-# Authority keypair の存在チェック
-AUTHORITY_KEY_PATH="$PROJECT_ROOT/programs/title-config/keys/authority.json"
+# keys/ ディレクトリ（キーペア管理の一元化）
+KEYS_DIR="$PROJECT_ROOT/keys"
+mkdir -p "$KEYS_DIR"
+
+# Authority keypair の存在チェック（レガシーパスからの自動マイグレーション）
+AUTHORITY_KEY_PATH="$KEYS_DIR/authority.json"
+LEGACY_AUTHORITY="$PROJECT_ROOT/programs/title-config/keys/authority.json"
+if [ ! -f "$AUTHORITY_KEY_PATH" ] && [ -f "$LEGACY_AUTHORITY" ]; then
+  warn "レガシーパスから authority.json を keys/ に移行します..."
+  cp "$LEGACY_AUTHORITY" "$AUTHORITY_KEY_PATH"
+  ok "authority.json を keys/ に移行"
+fi
+
 if [ -f "$AUTHORITY_KEY_PATH" ]; then
-  ok "Authority keypair: 検出 → 自動署名モード"
+  ok "Authority keypair (keys/authority.json): 検出 → 自動署名モード"
   AUTO_SIGN=true
 else
   warn "Authority keypair: なし → DAO承認モード"
   AUTO_SIGN=false
 fi
 
-# Solana ウォレットの確認
-SOLANA_WALLET="$HOME/.config/solana/id.json"
-if [ ! -f "$SOLANA_WALLET" ]; then
-  warn "Solana ウォレットが見つかりません。自動作成します..."
-  solana-keygen new --no-bip39-passphrase -o "$SOLANA_WALLET"
+# Operator keypair の確認（ノード運営者の資金元ウォレット）
+OPERATOR_KEY_PATH="$KEYS_DIR/operator.json"
+if [ ! -f "$OPERATOR_KEY_PATH" ]; then
+  if [ -f "$HOME/.config/solana/id.json" ]; then
+    warn "keys/operator.json が見つかりません。~/.config/solana/id.json からコピーします..."
+    cp "$HOME/.config/solana/id.json" "$OPERATOR_KEY_PATH"
+  else
+    warn "オペレーターキーペアが見つかりません。自動作成します..."
+    solana-keygen new --no-bip39-passphrase -o "$OPERATOR_KEY_PATH"
+  fi
 fi
-WALLET_PUBKEY=$(solana-keygen pubkey "$SOLANA_WALLET")
-ok "Solana ウォレット: $WALLET_PUBKEY"
+WALLET_PUBKEY=$(solana-keygen pubkey "$OPERATOR_KEY_PATH")
+ok "オペレーターウォレット (keys/operator.json): $WALLET_PUBKEY"
 solana config set --url "$SOLANA_RPC_URL" > /dev/null 2>&1 || true
 
 # SOL残高チェック（ノード登録 + Merkle Tree 作成に ~0.6 SOL 必要）

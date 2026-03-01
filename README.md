@@ -47,7 +47,7 @@ The protocol operates as neutral infrastructure, much like TCP/IP. It acts as a 
 * **Stateless:**
 The protocol runs inside **TEEs (Trusted Execution Environments)**. These nodes hold no state between requests; they simply accept input, perform computation, and return a result.
 * **Permissionless:**
-Anyone can build applications on top of the protocol. Node operation is managed by a DAO, preventing dependence on any single centralized entity.
+Anyone can build applications on top of the protocol, and anyone can deploy their own instance of the program. Node operation on the canonical network is managed by a DAO, preventing dependence on any single centralized entity. The DAO-controlled GlobalConfig on mainnet is the single source of truth — only cNFTs in the official collections it designates are recognized as protocol-canonical content records.
 * **Privacy-First (E2EE):**
 Data sent to the protocol is End-to-End Encrypted. Even the node operator cannot view the raw content, ensuring privacy and minimizing liability for operators.
 
@@ -167,7 +167,7 @@ To create a vendor-neutral distribution, exclude: `deploy/`, `docker/`, and buil
 
 ## Quick Start
 
-**[QUICKSTART.md](QUICKSTART.md)** — Deploy your own GlobalConfig on devnet and experiment with the full protocol stack.
+**[QUICKSTART.md](QUICKSTART.md)** — Run a local node against the devnet reference environment, or deploy your own GlobalConfig to experiment with the full protocol stack.
 
 ```bash
 # Build and test the Rust workspace

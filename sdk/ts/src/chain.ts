@@ -344,6 +344,13 @@ export async function fetchTeeNodeAccount(
  * and WASM modules. Then fetches each TeeNodeAccount PDA listed in
  * `trusted_node_keys` and assembles a complete GlobalConfig.
  *
+ * The default `programId` points to the canonical Title Protocol program.
+ * The canonical GlobalConfig (controlled by the DAO multi-sig on mainnet)
+ * designates the official cNFT collections — only content registered
+ * through this GlobalConfig is recognized as protocol-canonical.
+ * Anyone can deploy their own program and GlobalConfig, but verifiers
+ * only check the canonical one.
+ *
  * 仕様書 §5.2 Step 1
  */
 export async function fetchGlobalConfig(

@@ -38,6 +38,7 @@ const WASM_MODULES: &[&str] = &[
 #[allow(deprecated)]
 pub async fn run(
     project_root: &Path,
+    keys_dir: &Path,
     cluster: &str,
     rpc_override: Option<&str>,
     program_id_override: Option<&str>,
@@ -59,11 +60,7 @@ pub async fn run(
     // Step 1: Authority Keypair
     // =====================================================================
     println!("[Step 1] Authority Keypair");
-    let authority_path = project_root
-        .join("programs")
-        .join("title-config")
-        .join("keys")
-        .join("authority.json");
+    let authority_path = config::resolve_key_path(keys_dir, project_root, "authority.json");
     let authority = config::load_or_create_authority(&authority_path)?;
     let authority_pubkey = authority.pubkey();
     println!("  Authority: {authority_pubkey}");
@@ -246,7 +243,7 @@ pub async fn run(
     println!("次のステップ:");
     println!("  1. network.json をリポジトリにコミット");
     println!("  2. ノード起動: deploy/aws/setup-ec2.sh");
-    println!("  ※ programs/title-config/keys/authority.json を各ノードにコピーすれば自動承認可能");
+    println!("  ※ keys/authority.json を各ノードにコピーすれば自動承認可能");
     println!();
 
     Ok(())

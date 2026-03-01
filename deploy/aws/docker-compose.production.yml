@@ -1,7 +1,10 @@
 # Title Protocol — AWS Production Docker Compose
 #
-# Runs Gateway, Indexer, and PostgreSQL as containers.
+# Runs Gateway as a container.
 # TEE + Proxy run separately inside the Nitro Enclave (not in Docker).
+#
+# Note: Indexer + PostgreSQL are NOT part of node deployment.
+# They are a separate concern and should be managed independently.
 #
 # Prerequisites:
 #   - .env is configured with production values (see .env.example)
@@ -11,24 +14,6 @@
 #   docker compose -f deploy/aws/docker-compose.production.yml up -d
 
 services:
-  # PostgreSQL (インデクサ用)
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:5432:5432"
-    environment:
-      POSTGRES_DB: title_indexer
-      POSTGRES_USER: ${DB_USER:-title}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-title}"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   # Gateway
   gateway:
     build:
@@ -44,22 +29,3 @@ services:
       TEE_ENDPOINT: "http://host.docker.internal:4000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-  # インデクサ
-  indexer:
-    build:
-      context: ../..
-      dockerfile: docker/indexer.Dockerfile
-    restart: unless-stopped
-    ports:
-      - "5000:5000"
-    env_file:
-      - ../../.env
-    environment:
-      DATABASE_URL: "postgres://${DB_USER:-title}:${DB_PASSWORD}@postgres:5432/title_indexer"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-volumes:
-  postgres-data:

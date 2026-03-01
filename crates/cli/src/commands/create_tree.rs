@@ -19,6 +19,7 @@ use crate::rpc::{b64, SolanaRpc};
 /// create-tree サブコマンドを実行する。
 pub async fn run(
     project_root: &Path,
+    keys_dir: &Path,
     tee_url: &str,
     max_depth: u32,
     max_buffer_size: u32,
@@ -68,7 +69,7 @@ pub async fn run(
         .parse()
         .map_err(|e| CliError::Config(format!("signing_pubkeyのパースに失敗: {e}")))?;
 
-    helpers::fund_tee_wallet(&rpc, project_root, &tee_pk, 500_000_000).await?;
+    helpers::fund_tee_wallet(&rpc, keys_dir, &tee_pk, 500_000_000).await?;
 
     // Core Tree ブロードキャスト
     let core_tx_bytes = b64()

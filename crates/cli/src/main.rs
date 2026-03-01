@@ -3,7 +3,7 @@
 //! Title Protocol CLI。
 //!
 //! JSインフラスクリプトを統合したRust CLIバイナリ。
-//! 3つのサブコマンド: init-global, register-node, create-tree
+//! 4つのサブコマンド: init-global, register-node, create-tree, remove-node
 
 mod anchor;
 mod commands;
@@ -19,6 +19,10 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "title-cli", about = "Title Protocol CLI")]
 struct Cli {
+    /// 鍵ディレクトリ (デフォルト: <project_root>/keys)
+    #[arg(long, default_value = "keys", global = true)]
+    keys_dir: PathBuf,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -61,6 +65,12 @@ enum Commands {
         #[arg(long, default_value = "64")]
         max_buffer_size: u32,
     },
+    /// TEEノードのオンチェーン削除（authority keypair 必須）
+    RemoveNode {
+        /// 削除するTEEノードの signing pubkey (Base58)
+        #[arg(long)]
+        signing_pubkey: String,
+    },
 }
 
 /// プロジェクトルートを検出する。
@@ -83,6 +93,12 @@ async fn main() {
     let cli = Cli::parse();
     let project_root = find_project_root();
 
+    let keys_dir = if cli.keys_dir.is_absolute() {
+        cli.keys_dir
+    } else {
+        project_root.join(&cli.keys_dir)
+    };
+
     let result = match cli.command {
         Commands::InitGlobal {
             cluster,
@@ -91,6 +107,7 @@ async fn main() {
         } => {
             commands::init_global::run(
                 &project_root,
+                &keys_dir,
                 &cluster,
                 rpc.as_deref(),
                 program_id.as_deref(),
@@ -104,6 +121,7 @@ async fn main() {
         } => {
             commands::register_node::run(
                 &project_root,
+                &keys_dir,
                 &tee_url,
                 &gateway_endpoint,
                 measurements.as_deref(),
@@ -115,8 +133,11 @@ async fn main() {
             max_depth,
             max_buffer_size,
         } => {
-            commands::create_tree::run(&project_root, &tee_url, max_depth, max_buffer_size)
+            commands::create_tree::run(&project_root, &keys_dir, &tee_url, max_depth, max_buffer_size)
                 .await
+        }
+        Commands::RemoveNode { signing_pubkey } => {
+            commands::remove_node::run(&project_root, &keys_dir, &signing_pubkey).await
         }
     };
 

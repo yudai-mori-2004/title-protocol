@@ -6,6 +6,12 @@ variable "aws_region" {
   default     = "ap-northeast-1"
 }
 
+variable "node_count" {
+  description = "デプロイするTEEノード数。各ノードが独立したEC2 + Elastic IPを持つ"
+  type        = number
+  default     = 1
+}
+
 variable "instance_type" {
   description = "EC2インスタンスタイプ（Nitro Enclave対応が必要）"
   type        = string

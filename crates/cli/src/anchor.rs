@@ -125,6 +125,32 @@ pub fn build_add_wasm_module_ix(
     }
 }
 
+/// `remove_tee_node` 命令を構築する。
+/// 仕様書 §8.2 TEEノードの削除
+///
+/// TeeNodeAccount PDA をクローズし、trusted_node_keys から signing_pubkey を除去する。
+/// rent lamports は rent_recipient に返還される。
+pub fn build_remove_tee_node_ix(
+    program_id: &Pubkey,
+    global_config_pda: &Pubkey,
+    tee_node_pda: &Pubkey,
+    authority: &Pubkey,
+    rent_recipient: &Pubkey,
+) -> Instruction {
+    let data = anchor_discriminator("remove_tee_node").to_vec();
+
+    Instruction {
+        program_id: *program_id,
+        accounts: vec![
+            AccountMeta::new(*global_config_pda, false),
+            AccountMeta::new(*tee_node_pda, false),
+            AccountMeta::new_readonly(*authority, true),
+            AccountMeta::new(*rent_recipient, false),
+        ],
+        data,
+    }
+}
+
 /// MPL Core CreateCollectionV2 命令を手動構築する。
 ///
 /// MPL Core プログラムのCreateCollectionV2命令:

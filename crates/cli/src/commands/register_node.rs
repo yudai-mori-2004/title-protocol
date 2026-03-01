@@ -4,7 +4,7 @@
 //!
 //! TEEノードのオンチェーン登録を行う。
 //! TEEが部分署名したTXに対し、authority keypairがあれば自動署名+ブロードキャスト、
-//! なければDAO承認用の部分署名TXを表示する。
+//! なければDAOに承認してもらう用の部分署名TXを表示する。
 
 use std::path::Path;
 
@@ -28,6 +28,7 @@ use crate::rpc::{b64, SolanaRpc};
 #[allow(deprecated)]
 pub async fn run(
     project_root: &Path,
+    keys_dir: &Path,
     tee_url: &str,
     gateway_endpoint: &str,
     measurements_json: Option<&str>,
@@ -92,14 +93,10 @@ pub async fn run(
         .parse()
         .map_err(|e| CliError::Config(format!("signing_pubkeyのパースに失敗: {e}")))?;
 
-    helpers::fund_tee_wallet(&rpc, project_root, &tee_pk, 100_000_000).await?;
+    helpers::fund_tee_wallet(&rpc, keys_dir, &tee_pk, 100_000_000).await?;
 
     // Authority keypair の存在で分岐
-    let authority_key_path = project_root
-        .join("programs")
-        .join("title-config")
-        .join("keys")
-        .join("authority.json");
+    let authority_key_path = config::resolve_key_path(keys_dir, project_root, "authority.json");
     let tx_bytes = b64()
         .decode(&result.partial_tx)
         .map_err(|e| CliError::Config(format!("partial_txのデコードに失敗: {e}")))?;

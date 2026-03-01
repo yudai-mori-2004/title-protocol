@@ -19,44 +19,33 @@ use crate::config;
 use crate::error::CliError;
 use crate::rpc::SolanaRpc;
 
-/// ホームディレクトリを取得する。
-pub fn dirs_home() -> Result<std::path::PathBuf, CliError> {
-    std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .map_err(|_| CliError::Config("HOME環境変数が設定されていません".into()))
-}
-
 /// TEE walletにSOLを送金する。
 ///
-/// authority keypair → Solana CLI wallet の順にfunderを探索する。
-/// どちらも見つからない場合は手動送金を案内して正常終了する。
+/// `keys/operator.json` からfunderをロードする。
+/// 存在しない場合は手動送金を案内して正常終了する。
 #[allow(deprecated)]
 pub async fn fund_tee_wallet(
     rpc: &SolanaRpc,
-    project_root: &Path,
+    keys_dir: &Path,
     tee_pubkey: &Pubkey,
     required_lamports: u64,
 ) -> Result<(), CliError> {
-    let authority_path = project_root
-        .join("programs")
-        .join("title-config")
-        .join("keys")
-        .join("authority.json");
-    let wallet_path = dirs_home()?.join(".config").join("solana").join("id.json");
+    let operator_path = keys_dir.join("operator.json");
 
-    let funder = if authority_path.exists() {
-        config::load_keypair(&authority_path)?
-    } else if wallet_path.exists() {
-        config::load_keypair(&wallet_path)?
+    let funder = if operator_path.exists() {
+        config::load_keypair(&operator_path)?
     } else {
         let sol = required_lamports as f64 / 1_000_000_000.0;
-        println!("  WARNING: SOL送金元のキーペアが見つかりません。手動で送金してください:");
+        println!("  WARNING: keys/operator.json が見つかりません。手動で送金してください:");
         println!("    solana transfer {tee_pubkey} {sol} --allow-unfunded-recipient");
+        println!();
+        println!("  オペレーターキーペアを作成するには:");
+        println!("    solana-keygen new --no-bip39-passphrase -o {}", operator_path.display());
         return Ok(());
     };
 
     let Some(funder) = funder else {
-        println!("  WARNING: キーペアのロードに失敗。手動送金してください。");
+        println!("  WARNING: operator.json のロードに失敗。手動送金してください。");
         return Ok(());
     };
 

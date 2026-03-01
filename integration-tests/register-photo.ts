@@ -13,24 +13,24 @@
  * Examples:
  *   # verify + sign (Arweave保存 → cNFT発行トランザクション取得)
  *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
- *     --wallet ~/.config/solana/id.json
+ *     --wallet keys/operator.json
  *
  *   # verify + sign + broadcast (実際にオンチェーン発行)
  *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
- *     --wallet ~/.config/solana/id.json --broadcast
+ *     --wallet keys/operator.json --broadcast
  *
  *   # verify のみ (sign スキップ)
  *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
- *     --wallet ~/.config/solana/id.json --skip-sign
+ *     --wallet keys/operator.json --skip-sign
  *
  *   # encryption_pubkeyをオーバーライド（オンチェーン値と異なる場合）
  *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
- *     --wallet ~/.config/solana/id.json \
+ *     --wallet keys/operator.json \
  *     --encryption-pubkey "nwfxpl7+BSpSxxE+aK3flQA/Yq26/+JKe9kmjilDnUw="
  *
  *   # 追加オプション
  *   npx tsx register-photo.ts 54.238.1.100 ./fixtures/pixel_photo_ramen.jpg \
- *     --wallet ~/.config/solana/id.json \
+ *     --wallet keys/operator.json \
  *     --port 3000 \
  *     --rpc https://api.devnet.solana.com \
  *     --processors core-c2pa,phash-v1

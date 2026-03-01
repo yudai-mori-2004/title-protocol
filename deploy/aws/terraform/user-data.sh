@@ -58,6 +58,8 @@ su - ec2-user -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh
 su - ec2-user -c 'source ~/.cargo/env && rustup target add wasm32-unknown-unknown'
 # EC2直接ビルド時にシステムOpenSSLを使用
 echo 'export OPENSSL_NO_VENDOR=1' >> /home/ec2-user/.bashrc
+# Solana CLI / Cargo の PATH
+echo 'export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"' >> /home/ec2-user/.bashrc
 
 # --- 作業ディレクトリ ---
 mkdir -p /home/ec2-user/title-protocol

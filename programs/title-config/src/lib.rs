@@ -330,6 +330,11 @@ pub mod title_config {
 /// Global Config PDA。信頼の原点。
 /// 仕様書 §5.2 Step 1
 ///
+/// プログラムはpermissionless: 誰でもデプロイしてGlobalConfigを作成できるが、
+/// プロトコルとして正規なのはメインネット上のDAO multi-sigが管理するもののみ。
+/// 正規GlobalConfigが指定する公式コレクションに属するcNFTだけが、
+/// プロトコル検証者から正規のコンテンツ記録として認識される。
+///
 /// TEEノードの詳細は個別のTeeNodeAccount PDAに格納される。
 /// 本アカウントはノードのsigning_pubkeyリスト（フラット）のみを保持する。
 #[account]

@@ -1,51 +1,6 @@
 # Quick Start
 
-This guide walks you through running Title Protocol locally and registering content on Solana devnet.
-
-## TL;DR
-
-Each developer deploys their own GlobalConfig on devnet. This gives you full authority control and prevents node conflicts with other developers.
-
-### First-Time Setup
-
-```bash
-# 1. Create .env
-cp .env.example .env
-
-# 2. Deploy your own GlobalConfig on devnet (creates keys/authority.json + network.json)
-#    See "Phase 1: Network Setup" below for detailed steps.
-#    Requires: cargo-build-sbf, ~5 SOL on devnet.
-
-# 3. Start all services (builds, starts, registers node, creates Merkle Trees)
-#    First run: ~10-20 minutes (WASM + Rust compilation). Subsequent runs: seconds.
-./deploy/local/setup.sh
-```
-
-### After Initial Setup
-
-```bash
-# Just start services (network.json and keys/authority.json already exist)
-./deploy/local/setup.sh
-```
-
-- `setup.sh` auto-creates `keys/operator.json` if missing.
-- **SOL funding:** The script checks your operator wallet balance (~0.6 SOL required) and pauses with instructions if insufficient. Get devnet SOL at [faucet.solana.com](https://faucet.solana.com) or via `solana airdrop 2 --url devnet`.
-
-**Ports used:** 3000 (Gateway), 3001 (TempStorage), 4000 (TEE). If any of these are already in use, `setup.sh` will detect the existing process and skip starting a new one. To force a clean restart, run `./deploy/local/teardown.sh` first.
-
-> **Quick test** — verify a C2PA-signed photo through the local TEE:
->
-> ```bash
-> cd integration-tests && npm install
-> npx tsx register-photo.ts localhost ./fixtures/pixel_photo_ramen.jpg \
->   --wallet keys/operator.json --skip-sign
-> ```
->
-> You should see `STEP 4 /verify 完了` and a provenance graph output. This confirms the full pipeline (upload → encrypt → TEE verify → C2PA check) is working.
->
-> **Stop everything:** `./deploy/local/teardown.sh`
->
-> The rest of this document explains the on-chain architecture, how to deploy your own network, and how to register content with the full SDK. **Skip ahead to [Register Content](#register-content)** if you just want to integrate.
+This guide walks you through running Title Protocol locally and registering content on Solana devnet. Read through the full document before starting — the setup has two phases, and Phase 1 must be completed before Phase 2 will work.
 
 ---
 
@@ -66,6 +21,7 @@ Every Title Protocol network has exactly **one GlobalConfig** — a single on-ch
                     |  trusted_node_keys[]       |--+
                     |  trusted_tsa_keys[]        |  |
                     |  trusted_wasm_modules[]    |  |
+                    |  resource_limits           |  |
                     +----------------------------+  |
                                                     |  references
                     +----------------------------+  |
@@ -92,6 +48,7 @@ Every Title Protocol network has exactly **one GlobalConfig** — a single on-ch
 | `trusted_node_keys` | List of TEE node signing pubkeys authorized to operate on this network. |
 | `trusted_tsa_keys` | Trusted TSA (Time Stamping Authority) certificate hashes for timestamp verification. |
 | `trusted_wasm_modules` | Registered WASM extension modules (extension\_id + SHA-256 hash of the binary). |
+| `resource_limits` | On-chain resource limit ceiling (file size, concurrency, timeouts). Gateway clamps its defaults to never exceed these values. |
 
 **TeeNodeAccount** (one per TEE node) stores the node's full specification — its cryptographic keys, gateway endpoint, TEE platform type, and expected attestation measurements. This PDA is created by the TEE itself during registration, ensuring that the node's internal keys are cryptographically bound to the on-chain record.
 
@@ -127,6 +84,7 @@ Phase 1: Network Setup (first-time only)
     +-- Create MPL Core collections
     +-- Initialize GlobalConfig PDA
     +-- Register WASM modules
+    +-- Set ResourceLimits
     +-- Output network.json
 
 Phase 2: Node Deployment (every time)
@@ -158,8 +116,9 @@ Each developer deploys their own program instance on devnet. This ensures comple
 
 ```bash
 # 1. Generate a new program keypair
-solana-keygen new -o target/deploy/title_config-keypair.json --force
-solana-keygen pubkey target/deploy/title_config-keypair.json
+mkdir -p programs/title-config/target/deploy
+solana-keygen new -o programs/title-config/target/deploy/title_config-keypair.json --force
+solana-keygen pubkey programs/title-config/target/deploy/title_config-keypair.json
 # Note this Program ID — you'll need it below.
 
 # 2. Update declare_id! to match your new Program ID in these files:
@@ -177,7 +136,9 @@ cargo-build-sbf --manifest-path Cargo.toml --tools-version v1.52
 cd ../..
 
 # 4. Deploy (uses your Solana CLI default wallet as payer — needs ~5 SOL)
-solana program deploy target/deploy/title_config.so --url devnet
+solana program deploy programs/title-config/target/deploy/title_config.so \
+  --program-id programs/title-config/target/deploy/title_config-keypair.json \
+  --url devnet
 ```
 
 ### Step 2: Build WASM Modules
@@ -206,7 +167,8 @@ This is **idempotent** — safe to run multiple times. It will:
 2. Create two MPL Core Collections (Core + Extension) if not already present
 3. Call `initialize` to create the GlobalConfig PDA (skipped if it already exists)
 4. Register the 4 built-in WASM modules via `add_wasm_module` (upsert — updates hash if already registered)
-5. Write `network.json` to the project root
+5. Set default ResourceLimits on-chain via `set_resource_limits` (file size caps, timeouts, etc.)
+6. Write `network.json` to the project root
 
 Both `keys/authority.json` and `network.json` are gitignored — they are local to your environment. After completion, proceed to Phase 2.
 
@@ -574,6 +536,7 @@ npx tsx register-photo.ts localhost ./fixtures/pixel_photo_ramen.jpg \
 | `CORE_COLLECTION_MINT` | TEE | Core Collection Mint address (auto-read from `network.json`) |
 | `EXT_COLLECTION_MINT` | TEE | Extension Collection Mint address (auto-read from `network.json`) |
 | `GATEWAY_PUBKEY` | TEE | Gateway's Ed25519 pubkey for request authentication |
+| `GLOBAL_CONFIG_PDA` | Gateway | GlobalConfig PDA address. If set, Gateway fetches on-chain ResourceLimits at startup (auto-read from `network.json`) |
 | `TEE_ENDPOINT` | Gateway | TEE server URL (e.g., `http://localhost:4000`) |
 | `S3_ENDPOINT` | Gateway | S3-compatible storage endpoint (vendor-aws only) |
 | `S3_ACCESS_KEY` | Gateway | Storage access key (vendor-aws only) |

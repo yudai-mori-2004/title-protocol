@@ -298,6 +298,7 @@ if [ -z "$GATEWAY_PID" ]; then
     LOCAL_STORAGE_ENDPOINT="http://localhost:3001" \
     GATEWAY_SIGNING_KEY="$GATEWAY_SIGNING_KEY" \
     SOLANA_RPC_URL="$SOLANA_RPC_URL" \
+    GLOBAL_CONFIG_PDA="$GLOBAL_CONFIG_PDA" \
     nohup ./target/release/title-gateway > /tmp/title-gateway.log 2>&1 &
   GATEWAY_PID=$!
   echo "$GATEWAY_PID" > "$PID_DIR/gateway.pid"

@@ -368,6 +368,7 @@ ensure_env() {
   fi
 }
 ensure_env "GATEWAY_SIGNING_KEY" "$GATEWAY_SIGNING_KEY"
+ensure_env "GLOBAL_CONFIG_PDA" "$GLOBAL_CONFIG_PDA"
 
 docker compose -f deploy/aws/docker-compose.production.yml up -d --build
 echo "  Docker Compose 起動完了"

@@ -38,6 +38,31 @@ function u32le(n: number): Buffer {
   return buf;
 }
 
+function u64le(n: bigint): Buffer {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(n);
+  return buf;
+}
+
+/** Borsh Option<u64>: 0x00 for None, 0x01 + 8-byte LE for Some */
+function optionU64(val: number | undefined): Buffer {
+  if (val === undefined) return Buffer.from([0x00]);
+  return Buffer.concat([Buffer.from([0x01]), u64le(BigInt(val))]);
+}
+
+/** Build default ResourceLimitsOnChain (all None). */
+function defaultResourceLimits(): Buffer {
+  return Buffer.concat([
+    optionU64(undefined),
+    optionU64(undefined),
+    optionU64(undefined),
+    optionU64(undefined),
+    optionU64(undefined),
+    optionU64(undefined),
+    optionU64(undefined),
+  ]);
+}
+
 function borshString(s: string): Buffer {
   const encoded = Buffer.from(s, "utf-8");
   return Buffer.concat([u32le(encoded.length), encoded]);
@@ -51,6 +76,7 @@ function buildGlobalConfigBuffer(opts: {
   nodeKeys: Buffer[];
   tsaKeys: Buffer[];
   wasmModules: { extensionId: Buffer; wasmHash: Buffer; wasmSource: string }[];
+  resourceLimits?: Buffer;
 }): Buffer {
   const parts: Buffer[] = [];
 
@@ -74,6 +100,9 @@ function buildGlobalConfigBuffer(opts: {
     parts.push(m.wasmHash);
     parts.push(borshString(m.wasmSource));
   }
+
+  // ResourceLimitsOnChain
+  parts.push(opts.resourceLimits ?? defaultResourceLimits());
 
   return Buffer.concat(parts);
 }
@@ -250,6 +279,53 @@ describe("chain", () => {
         result.trustedWasmModules[0].wasmSource,
         "https://example.com/phash.wasm"
       );
+    });
+
+    it("deserializes resource_limits (all None)", () => {
+      const buf = buildGlobalConfigBuffer({
+        authority: randomBytes32(),
+        coreMint: randomBytes32(),
+        extMint: randomBytes32(),
+        nodeKeys: [],
+        tsaKeys: [],
+        wasmModules: [],
+      });
+
+      const result = _deserializeGlobalConfig(buf);
+      assert.equal(result.resourceLimits.max_single_content_bytes, undefined);
+      assert.equal(result.resourceLimits.max_concurrent_bytes, undefined);
+      assert.equal(result.resourceLimits.c2pa_max_graph_size, undefined);
+    });
+
+    it("deserializes resource_limits with values", () => {
+      const limits = Buffer.concat([
+        optionU64(2_000_000_000),  // max_single_content_bytes
+        optionU64(8_000_000_000),  // max_concurrent_bytes
+        optionU64(undefined),      // min_upload_speed_bytes
+        optionU64(30),             // base_processing_time_sec
+        optionU64(3600),           // max_global_timeout_sec
+        optionU64(undefined),      // chunk_read_timeout_sec
+        optionU64(10000),          // c2pa_max_graph_size
+      ]);
+
+      const buf = buildGlobalConfigBuffer({
+        authority: randomBytes32(),
+        coreMint: randomBytes32(),
+        extMint: randomBytes32(),
+        nodeKeys: [randomBytes32()],
+        tsaKeys: [],
+        wasmModules: [],
+        resourceLimits: limits,
+      });
+
+      const result = _deserializeGlobalConfig(buf);
+      assert.equal(result.resourceLimits.max_single_content_bytes, 2_000_000_000);
+      assert.equal(result.resourceLimits.max_concurrent_bytes, 8_000_000_000);
+      assert.equal(result.resourceLimits.min_upload_speed_bytes, undefined);
+      assert.equal(result.resourceLimits.base_processing_time_sec, 30);
+      assert.equal(result.resourceLimits.max_global_timeout_sec, 3600);
+      assert.equal(result.resourceLimits.chunk_read_timeout_sec, undefined);
+      assert.equal(result.resourceLimits.c2pa_max_graph_size, 10000);
     });
 
     it("rejects invalid discriminator", () => {

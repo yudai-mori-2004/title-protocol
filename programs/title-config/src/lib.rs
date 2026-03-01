@@ -19,6 +19,7 @@
 //! - `update_collections`: コレクションMintの更新
 //! - `add_wasm_module`: WASMモジュールの追加
 //! - `remove_wasm_module`: WASMモジュールの削除
+//! - `set_resource_limits`: リソース制限の設定
 //! - `add_tsa_key`: TSA鍵の追加
 //! - `remove_tsa_key`: TSA鍵の削除
 //! - `delegate_collection_authority`: Collection AuthorityをTEEに委譲
@@ -43,6 +44,7 @@ pub mod title_config {
         config.authority = ctx.accounts.authority.key();
         config.core_collection_mint = core_collection_mint;
         config.ext_collection_mint = ext_collection_mint;
+        config.resource_limits = ResourceLimitsOnChain::default();
         Ok(())
     }
 
@@ -214,6 +216,17 @@ pub mod title_config {
         Ok(())
     }
 
+    /// リソース制限をオンチェーンに設定する。
+    /// 仕様書 §6.2: Gatewayが読み取るResourceLimitsの上限値。
+    pub fn set_resource_limits(
+        ctx: Context<UpdateConfig>,
+        limits: ResourceLimitsOnChain,
+    ) -> Result<()> {
+        let config = &mut ctx.accounts.global_config;
+        config.resource_limits = limits;
+        Ok(())
+    }
+
     /// 信頼するTSA鍵を追加する。
     /// 仕様書 §8.3
     pub fn add_tsa_key(ctx: Context<UpdateConfig>, key: [u8; 32]) -> Result<()> {
@@ -351,17 +364,42 @@ pub struct GlobalConfigAccount {
     pub trusted_tsa_keys: Vec<[u8; 32]>,
     /// 信頼されたWASMモジュールのリスト
     pub trusted_wasm_modules: Vec<WasmModuleEntry>,
+    /// リソース制限（オンチェーン上限）
+    pub resource_limits: ResourceLimitsOnChain,
 }
 
 impl GlobalConfigAccount {
-    /// 固定フィールドのサイズ（discriminator + Pubkey×3 + Vec prefix×3）
-    const BASE_SIZE: usize = 8 + 32 + 32 + 32 + 4 + 4 + 4;
+    /// 固定フィールドのサイズ（discriminator + Pubkey×3 + Vec prefix×3 + ResourceLimitsOnChain）
+    const BASE_SIZE: usize = 8 + 32 + 32 + 32 + 4 + 4 + 4 + 63;
 
     /// 初期割当サイズ。
     /// Solana CPI制限（MAX_PERMITTED_DATA_INCREASE = 10,240バイト）に収める。
     /// 可変領域 10,124B: ノードID(32B)×100 + TSA鍵(32B)×30 + WASMモジュール(≈98B)×30 ≈ 6.1KB。
     /// 将来的にrealloc命令追加で拡張可能。
     pub const INIT_SPACE: usize = 10240;
+}
+
+/// オンチェーン リソース制限。
+/// 仕様書 §6.2: GatewayのResourceLimitsの上限をオンチェーンで管理する。
+///
+/// 各フィールドはOption<u64>で、Noneの場合はGatewayのデフォルト値を使用する。
+/// Someの場合はGatewayのデフォルト値とのminを取る（オンチェーン値が上限となる）。
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct ResourceLimitsOnChain {
+    /// 1コンテンツの最大バイト数
+    pub max_single_content_bytes: Option<u64>,
+    /// 同時処理中の合計最大バイト数
+    pub max_concurrent_bytes: Option<u64>,
+    /// 最低アップロード速度（バイト/秒）
+    pub min_upload_speed_bytes: Option<u64>,
+    /// 基本処理時間（秒）
+    pub base_processing_time_sec: Option<u64>,
+    /// グローバルタイムアウト上限（秒）
+    pub max_global_timeout_sec: Option<u64>,
+    /// チャンク読み取りタイムアウト（秒）
+    pub chunk_read_timeout_sec: Option<u64>,
+    /// C2PAグラフノード数上限
+    pub c2pa_max_graph_size: Option<u64>,
 }
 
 /// 信頼されたWASMモジュール情報。

@@ -23,6 +23,7 @@ mod auth;
 mod config;
 mod endpoints;
 pub mod error;
+mod onchain;
 pub mod storage;
 
 use std::sync::Arc;
@@ -95,22 +96,50 @@ async fn main() -> anyhow::Result<()> {
         solana_sdk::signer::keypair::Keypair::from_base58_string(&s)
     });
 
+    let hardcoded_limits = ResourceLimits {
+        max_single_content_bytes: Some(2 * 1024 * 1024 * 1024),
+        max_concurrent_bytes: Some(8 * 1024 * 1024 * 1024),
+        min_upload_speed_bytes: Some(1024 * 1024),
+        base_processing_time_sec: Some(30),
+        max_global_timeout_sec: Some(3600),
+        chunk_read_timeout_sec: Some(30),
+        c2pa_max_graph_size: Some(10000),
+    };
+
+    // オンチェーン ResourceLimits の取得とクランプ
+    let http_client = reqwest::Client::new();
+    let global_config_pda = std::env::var("GLOBAL_CONFIG_PDA").ok();
+    let on_chain_resource_limits = match (&solana_rpc_url, &global_config_pda) {
+        (Some(rpc_url), Some(pda)) => {
+            tracing::info!("オンチェーンResourceLimitsを取得中 (PDA: {pda})");
+            onchain::fetch_on_chain_resource_limits(&http_client, rpc_url, pda).await
+        }
+        _ => {
+            tracing::info!(
+                "GLOBAL_CONFIG_PDA または SOLANA_RPC_URL が未設定。ハードコード値を使用"
+            );
+            None
+        }
+    };
+
+    let effective_limits = match &on_chain_resource_limits {
+        Some(on_chain) => {
+            let clamped = onchain::clamp_limits(&hardcoded_limits, on_chain);
+            tracing::info!("オンチェーン制限でクランプ済み: {:?}", clamped);
+            clamped
+        }
+        None => hardcoded_limits,
+    };
+
     let state = Arc::new(GatewayState {
         tee_endpoint,
-        http_client: reqwest::Client::new(),
+        http_client,
         signing_key,
         temp_storage,
         solana_rpc_url,
         solana_keypair,
-        default_resource_limits: ResourceLimits {
-            max_single_content_bytes: Some(2 * 1024 * 1024 * 1024),
-            max_concurrent_bytes: Some(8 * 1024 * 1024 * 1024),
-            min_upload_speed_bytes: Some(1024 * 1024),
-            base_processing_time_sec: Some(30),
-            max_global_timeout_sec: Some(3600),
-            chunk_read_timeout_sec: Some(30),
-            c2pa_max_graph_size: Some(10000),
-        },
+        default_resource_limits: effective_limits,
+        on_chain_resource_limits,
         max_upload_size: 2 * 1024 * 1024 * 1024, // 2GB
         presign_expiry_secs: 3600,
     });
@@ -182,6 +211,7 @@ mod tests {
                 chunk_read_timeout_sec: None,
                 c2pa_max_graph_size: None,
             },
+            on_chain_resource_limits: None,
             max_upload_size: 1024,
             presign_expiry_secs: 3600,
         })
@@ -482,6 +512,7 @@ mod tests {
                 chunk_read_timeout_sec: None,
                 c2pa_max_graph_size: None,
             },
+            on_chain_resource_limits: None,
             max_upload_size: 1024,
             presign_expiry_secs: 3600,
         });

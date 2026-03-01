@@ -14,6 +14,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import type {
   GlobalConfig,
+  ResourceLimits,
   TrustedTeeNode,
   TrustedWasmModule,
   ExpectedMeasurements,
@@ -134,6 +135,19 @@ class BorshReader {
     return this.readFixedBytes(32);
   }
 
+  readU64LE(): bigint {
+    const low = this.buf.readUInt32LE(this.offset);
+    const high = this.buf.readUInt32LE(this.offset + 4);
+    this.offset += 8;
+    return BigInt(low) + (BigInt(high) << 32n);
+  }
+
+  readOptionU64(): number | undefined {
+    const tag = this.readU8();
+    if (tag === 0) return undefined;
+    return Number(this.readU64LE());
+  }
+
   readString(): string {
     const len = this.readU32LE();
     const bytes = this.readBytes(len);
@@ -152,6 +166,7 @@ interface RawGlobalConfig {
   trustedNodeKeys: Buffer[];
   trustedTsaKeys: Buffer[];
   trustedWasmModules: RawWasmModuleEntry[];
+  resourceLimits: ResourceLimits;
 }
 
 interface RawWasmModuleEntry {
@@ -215,6 +230,17 @@ function deserializeGlobalConfig(data: Buffer): RawGlobalConfig {
     trustedWasmModules.push({ extensionId, wasmHash, wasmSource });
   }
 
+  // ResourceLimitsOnChain: 7 × Option<u64>
+  const resourceLimits: ResourceLimits = {
+    max_single_content_bytes: r.readOptionU64(),
+    max_concurrent_bytes: r.readOptionU64(),
+    min_upload_speed_bytes: r.readOptionU64(),
+    base_processing_time_sec: r.readOptionU64(),
+    max_global_timeout_sec: r.readOptionU64(),
+    chunk_read_timeout_sec: r.readOptionU64(),
+    c2pa_max_graph_size: r.readOptionU64(),
+  };
+
   return {
     authority,
     coreCollectionMint,
@@ -222,6 +248,7 @@ function deserializeGlobalConfig(data: Buffer): RawGlobalConfig {
     trustedNodeKeys,
     trustedTsaKeys,
     trustedWasmModules,
+    resourceLimits,
   };
 }
 
@@ -384,6 +411,7 @@ export async function fetchGlobalConfig(
     trusted_tee_nodes: trustedTeeNodes,
     trusted_tsa_keys: raw.trustedTsaKeys.map(pubkeyToBase58),
     trusted_wasm_modules: raw.trustedWasmModules.map(rawToTrustedWasmModule),
+    resource_limits: raw.resourceLimits,
   };
 }
 

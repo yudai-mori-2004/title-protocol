@@ -204,9 +204,46 @@ pub async fn run(
     }
 
     // =====================================================================
-    // Step 6: network.json 書き出し
+    // Step 6: ResourceLimits をオンチェーンに設定
     // =====================================================================
-    println!("\n[Step 6] network.json 書き出し");
+    println!("\n[Step 6] ResourceLimits をオンチェーンに設定");
+
+    let default_limits = title_types::ResourceLimits {
+        max_single_content_bytes: Some(2 * 1024 * 1024 * 1024),     // 2GB
+        max_concurrent_bytes: Some(8 * 1024 * 1024 * 1024),         // 8GB
+        min_upload_speed_bytes: Some(1024 * 1024),                   // 1MB/s
+        base_processing_time_sec: Some(30),
+        max_global_timeout_sec: Some(3600),                          // 1時間
+        chunk_read_timeout_sec: Some(30),
+        c2pa_max_graph_size: Some(10000),
+    };
+
+    let ix = anchor::build_set_resource_limits_ix(
+        &program_id,
+        &global_config_pda,
+        &authority_pubkey,
+        &default_limits,
+    );
+
+    let blockhash = rpc.get_latest_blockhash().await?;
+    let message =
+        Message::new_with_blockhash(&[ix], Some(&authority_pubkey), &blockhash);
+    let mut tx = Transaction::new_unsigned(message);
+    tx.try_sign(&[&authority], blockhash)
+        .map_err(|e| CliError::Transaction(format!("署名に失敗: {e}")))?;
+
+    let tx_bytes = bincode::serialize(&tx)
+        .map_err(|e| CliError::Transaction(format!("シリアライズに失敗: {e}")))?;
+
+    match rpc.send_and_confirm(&tx_bytes).await {
+        Ok(sig) => println!("  ResourceLimits 設定完了: {sig}"),
+        Err(e) => println!("  ResourceLimits 設定失敗: {e}"),
+    }
+
+    // =====================================================================
+    // Step 7: network.json 書き出し
+    // =====================================================================
+    println!("\n[Step 7] network.json 書き出し");
 
     let network_config = NetworkConfig {
         cluster: cluster.to_string(),

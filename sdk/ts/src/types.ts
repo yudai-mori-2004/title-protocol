@@ -76,6 +76,17 @@ export interface GraphLink {
 // Global Config (Spec §5.2 Step 1)
 // ---------------------------------------------------------------------------
 
+/** Resource limits stored on-chain. Spec §6.2 */
+export interface ResourceLimits {
+  max_single_content_bytes?: number;
+  max_concurrent_bytes?: number;
+  min_upload_speed_bytes?: number;
+  base_processing_time_sec?: number;
+  max_global_timeout_sec?: number;
+  chunk_read_timeout_sec?: number;
+  c2pa_max_graph_size?: number;
+}
+
 /** Global Config PDA. Spec §5.2 Step 1 */
 export interface GlobalConfig {
   authority: string;
@@ -84,6 +95,7 @@ export interface GlobalConfig {
   trusted_tee_nodes: TrustedTeeNode[];
   trusted_tsa_keys: string[];
   trusted_wasm_modules: TrustedWasmModule[];
+  resource_limits: ResourceLimits;
 }
 
 /** Trusted TEE node. Spec §5.2 Step 1 */

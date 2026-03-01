@@ -11,6 +11,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     system_program,
 };
+use title_types::ResourceLimits;
 
 /// Anchor instruction discriminator: sha256("global:<method>")[..8]
 pub fn anchor_discriminator(method: &str) -> [u8; 8] {
@@ -190,6 +191,53 @@ pub fn build_create_collection_ix(
     }
 }
 
+/// Borsh Option<u64> encode: 0x00 for None, 0x01 + 8-byte LE for Some
+fn borsh_option_u64(val: Option<u64>) -> Vec<u8> {
+    match val {
+        None => vec![0x00],
+        Some(v) => {
+            let mut buf = vec![0x01];
+            buf.extend_from_slice(&v.to_le_bytes());
+            buf
+        }
+    }
+}
+
+/// ResourceLimitsをBorshシリアライズする（7つのOption<u64>フィールド）。
+fn borsh_resource_limits(limits: &ResourceLimits) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend(borsh_option_u64(limits.max_single_content_bytes));
+    buf.extend(borsh_option_u64(limits.max_concurrent_bytes));
+    buf.extend(borsh_option_u64(limits.min_upload_speed_bytes));
+    buf.extend(borsh_option_u64(limits.base_processing_time_sec));
+    buf.extend(borsh_option_u64(limits.max_global_timeout_sec));
+    buf.extend(borsh_option_u64(limits.chunk_read_timeout_sec));
+    buf.extend(borsh_option_u64(limits.c2pa_max_graph_size));
+    buf
+}
+
+/// `set_resource_limits` 命令を構築する。
+/// 仕様書 §6.2: リソース制限のオンチェーン設定。
+pub fn build_set_resource_limits_ix(
+    program_id: &Pubkey,
+    global_config_pda: &Pubkey,
+    authority: &Pubkey,
+    limits: &ResourceLimits,
+) -> Instruction {
+    let mut data = Vec::new();
+    data.extend_from_slice(&anchor_discriminator("set_resource_limits"));
+    data.extend(borsh_resource_limits(limits));
+
+    Instruction {
+        program_id: *program_id,
+        accounts: vec![
+            AccountMeta::new(*global_config_pda, false),
+            AccountMeta::new_readonly(*authority, true),
+        ],
+        data,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +292,58 @@ mod tests {
         let long = "a".repeat(32);
         let bytes = extension_id_bytes(&long);
         assert!(bytes.iter().all(|&b| b == b'a'));
+    }
+
+    #[test]
+    fn test_borsh_option_u64_none() {
+        let result = borsh_option_u64(None);
+        assert_eq!(result, vec![0x00]);
+    }
+
+    #[test]
+    fn test_borsh_option_u64_some() {
+        let result = borsh_option_u64(Some(42));
+        assert_eq!(result.len(), 9);
+        assert_eq!(result[0], 0x01);
+        assert_eq!(&result[1..], &42u64.to_le_bytes());
+    }
+
+    #[test]
+    fn test_borsh_resource_limits() {
+        let limits = ResourceLimits {
+            max_single_content_bytes: Some(1024),
+            max_concurrent_bytes: None,
+            min_upload_speed_bytes: Some(512),
+            base_processing_time_sec: None,
+            max_global_timeout_sec: None,
+            chunk_read_timeout_sec: None,
+            c2pa_max_graph_size: Some(100),
+        };
+        let data = borsh_resource_limits(&limits);
+        // Some(1024): 9B, None: 1B, Some(512): 9B, None×4: 4B, Some(100): 9B = 32B
+        assert_eq!(data.len(), 9 + 1 + 9 + 1 + 1 + 1 + 9);
+    }
+
+    #[test]
+    fn test_build_set_resource_limits_ix() {
+        let program_id: Pubkey = "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq"
+            .parse()
+            .unwrap();
+        let (pda, _) = find_global_config_pda(&program_id);
+        let authority = Pubkey::new_unique();
+        let limits = ResourceLimits {
+            max_single_content_bytes: Some(2 * 1024 * 1024 * 1024),
+            max_concurrent_bytes: Some(8 * 1024 * 1024 * 1024),
+            min_upload_speed_bytes: Some(1024 * 1024),
+            base_processing_time_sec: Some(30),
+            max_global_timeout_sec: Some(3600),
+            chunk_read_timeout_sec: Some(30),
+            c2pa_max_graph_size: Some(10000),
+        };
+        let ix = build_set_resource_limits_ix(&program_id, &pda, &authority, &limits);
+        assert_eq!(ix.program_id, program_id);
+        assert_eq!(ix.accounts.len(), 2);
+        // discriminator(8) + 7 × Some(u64)(9) = 8 + 63 = 71
+        assert_eq!(ix.data.len(), 8 + 7 * 9);
     }
 }

@@ -29,7 +29,11 @@ pub struct GatewayState {
     /// Solana Gateway ウォレットキーペア（sign-and-mint用）
     pub solana_keypair: Option<solana_sdk::signer::keypair::Keypair>,
     /// デフォルトリソース制限（リクエストごと）
+    /// オンチェーン値でクランプ済み。
     pub default_resource_limits: ResourceLimits,
+    /// オンチェーンから取得したリソース制限（参照用・ログ出力用）
+    #[allow(dead_code)]
+    pub on_chain_resource_limits: Option<ResourceLimits>,
     /// アップロード最大サイズ（バイト）
     pub max_upload_size: u64,
     /// 署名付きURLの有効期限（秒）

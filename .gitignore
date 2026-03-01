@@ -39,6 +39,7 @@ CLAUDE.md
 keys/
 !keys/README.md
 programs/title-config/keys/
+programs/title-config/Cargo.lock
 deploy/aws/keys/
 *.pem
 

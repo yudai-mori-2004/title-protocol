@@ -64,6 +64,7 @@ extern "C" {
 #[no_mangle]
 pub extern "C" fn alloc(size: u32) -> u32 {
     let layout = core::alloc::Layout::from_size_align(size as usize, 1).unwrap();
+    // SAFETY: Layout は size > 0, align = 1 で有効。返却値はWASMリニアメモリ上のポインタ。
     unsafe { alloc::alloc::alloc(layout) as u32 }
 }
 
@@ -81,6 +82,8 @@ fn write_result(json: &str) -> u32 {
         return 0;
     }
     let len_bytes = (json_bytes.len() as u32).to_le_bytes();
+    // SAFETY: ptr は直前の alloc(total) で確保した領域。len_bytes(4B) + json_bytes は
+    // total バイト以内。コピー元・先は重複しない。
     unsafe {
         let p = ptr as *mut u8;
         core::ptr::copy_nonoverlapping(len_bytes.as_ptr(), p, 4);
@@ -102,6 +105,7 @@ fn write_result(json: &str) -> u32 {
 pub extern "C" fn process() -> u32 {
     let _ = (read_content_chunk, get_extension_input);
 
+    // SAFETY: ホスト関数はwasm-hostが提供し、WASMリニアメモリの範囲内で安全に動作する。
     let content_len = unsafe { get_content_length() };
     if content_len == 0 {
         return 0;
@@ -115,12 +119,14 @@ pub extern "C" fn process() -> u32 {
 
     // SHA-256(コンテンツ全体)をホスト関数で計算
     // 仕様書 §7.1: hash_content でネイティブ速度のハッシュ計算
+    // SAFETY: hash_buf は alloc(32) で確保済み。hash_content はホスト提供関数。
     let hash_size = unsafe { hash_content(0, 0, content_len, hash_buf) };
     if hash_size != 32 {
         return 0;
     }
 
     // ハッシュをhex文字列に変換
+    // SAFETY: hash_buf は alloc(32) で確保済み、hash_size == 32 を検証済み。
     let hash_slice = unsafe { core::slice::from_raw_parts(hash_buf as *const u8, 32) };
     let mut hex = String::with_capacity(64);
     for &b in hash_slice {

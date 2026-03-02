@@ -54,6 +54,7 @@ extern "C" {
 #[no_mangle]
 pub extern "C" fn alloc(size: u32) -> u32 {
     let layout = core::alloc::Layout::from_size_align(size as usize, 1).unwrap();
+    // SAFETY: Layout は size > 0, align = 1 で有効。返却値はWASMリニアメモリ上のポインタ。
     unsafe { alloc::alloc::alloc(layout) as u32 }
 }
 
@@ -70,6 +71,8 @@ fn write_result(json: &str) -> u32 {
         return 0;
     }
     let len_bytes = (json_bytes.len() as u32).to_le_bytes();
+    // SAFETY: ptr は直前の alloc(total) で確保した領域。len_bytes(4B) + json_bytes は
+    // total バイト以内。コピー元・先は重複しない。
     unsafe {
         let p = ptr as *mut u8;
         core::ptr::copy_nonoverlapping(len_bytes.as_ptr(), p, 4);
@@ -82,6 +85,7 @@ fn write_result(json: &str) -> u32 {
 fn find_pattern(pattern: &[u8]) -> bool {
     let _ = (hash_content, get_extension_input);
 
+    // SAFETY: ホスト関数はwasm-hostが提供し、WASMリニアメモリの範囲内で安全に動作する。
     let content_len = unsafe { get_content_length() } as usize;
     if content_len == 0 || pattern.is_empty() {
         return false;
@@ -96,6 +100,7 @@ fn find_pattern(pattern: &[u8]) -> bool {
     let mut offset: usize = 0;
     while offset < content_len {
         let to_read = core::cmp::min(CHUNK_SIZE, content_len - offset);
+        // SAFETY: buf は alloc(CHUNK_SIZE) で確保済み。read_content_chunk はホスト提供関数。
         let raw_read =
             unsafe { read_content_chunk(offset as u32, to_read as u32, buf) } as usize;
         if raw_read == 0 {
@@ -104,6 +109,7 @@ fn find_pattern(pattern: &[u8]) -> bool {
         // ホスト返値を要求サイズで上限クランプ（バッファ外読取防止）
         let read = core::cmp::min(raw_read, to_read);
 
+        // SAFETY: buf は alloc(CHUNK_SIZE) で確保済み、read は min(raw_read, to_read) ≤ CHUNK_SIZE。
         let chunk = unsafe { core::slice::from_raw_parts(buf as *const u8, read) };
 
         if read >= pattern.len() {

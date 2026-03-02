@@ -50,7 +50,7 @@ rm -f Cargo.lock && cargo generate-lockfile
   --manifest-path Cargo.toml --tools-version v1.52
 ```
 
-**罠まとめ** (詳細: `docs/v1/tasks/12-e2e-local-dev/solana-build-notes.md`):
+**罠まとめ** (詳細: `docs/v0.1.0/tasks/12-e2e-local-dev/solana-build-notes.md`):
 - `anchor build` でなく `cargo-build-sbf` を直接使う（tools-version指定のため）
 - Platform Tools は **v1.52** が最も安定。v1.53はsbpfv3移行中で問題あり
 - Rust Edition 2024 に対応するには v1.52 以上が必須

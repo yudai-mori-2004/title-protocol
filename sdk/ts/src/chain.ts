@@ -110,6 +110,11 @@ class BorshReader {
   }
 
   readBytes(n: number): Buffer {
+    if (this.offset + n > this.buf.length) {
+      throw new Error(
+        `BorshReader: buffer overrun (offset=${this.offset}, need=${n}, have=${this.buf.length - this.offset})`
+      );
+    }
     const slice = this.buf.subarray(this.offset, this.offset + n);
     this.offset += n;
     return slice;

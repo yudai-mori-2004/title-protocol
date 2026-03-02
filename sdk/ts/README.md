@@ -24,8 +24,8 @@ const client = new TitleClient({
   globalConfig: { /* fetched from on-chain GlobalConfig PDA */ },
 });
 
-// 2. Select a TEE node (sync — resolved from on-chain GlobalConfig)
-const session = client.selectNode();
+// 2. Select a TEE node (resolved from on-chain GlobalConfig)
+const session = await client.selectNode();
 
 // 3. Encrypt content with TEE's public key (E2EE)
 const teePubkeyBytes = Buffer.from(session.encryptionPubkey, "base64");
@@ -73,7 +73,7 @@ const signResponse = await client.sign(session.gatewayUrl, {
 
 | Method | Description |
 |--------|-------------|
-| `selectNode()` | Select a random TEE node and start a session (sync, from on-chain GlobalConfig) |
+| `selectNode()` | Select a random TEE node and start a session (async, validates node availability) |
 | `getUploadUrl(url, size, type)` | Get a signed upload URL for temporary storage |
 | `upload(url, payload)` | Upload an encrypted payload and get a download URL |
 | `verify(url, request)` | Call `/verify` — C2PA verification + provenance graph |

@@ -93,8 +93,8 @@ scripts/               ← ベンダー中立
 
 - `README.md`: デプロイ手順のパス
 - `CLAUDE.md`: タスク定義のファイルパス参照（もしあれば）
-- `docs/v1/tasks/17-devnet-deploy/README.md`: setup-ec2.sh のパス参照
-- `docs/v1/tasks/19-nitro-test/README.md`: 各スクリプトのパス参照
+- `docs/v0.1.0/tasks/17-devnet-deploy/README.md`: setup-ec2.sh のパス参照
+- `docs/v0.1.0/tasks/19-nitro-test/README.md`: 各スクリプトのパス参照
 
 ### 5. .gitignore の確認
 

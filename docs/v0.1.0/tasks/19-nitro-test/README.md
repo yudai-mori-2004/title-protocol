@@ -61,7 +61,7 @@ Client (local) ──HTTP──→ Gateway (:3000)
 | `crates/proxy/src/protocol.rs` | Length-prefixed プロトコル |
 | `docker/tee.Dockerfile` | Enclave用Dockerイメージ |
 | `deploy/setup-ec2.sh` | EIFビルド + Enclave起動（Step 2-4） |
-| `docs/v1/tasks/18-vendor-neutrality/NODE-SETUP-AND-REGISTRATION.md` | Mock構成の手順書（比較用） |
+| `docs/v0.1.0/tasks/18-vendor-neutrality/NODE-SETUP-AND-REGISTRATION.md` | Mock構成の手順書（比較用） |
 
 ## 作業内容
 

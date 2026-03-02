@@ -2,172 +2,132 @@
 
 **The Identity Layer for Digital Content**
 
-Title Protocol is a decentralized infrastructure that provides **Attribution** for digital content. By combining with **C2PA** (Coalition for Content Provenance and Authenticity), it grants digital content a complete, verifiable identity.
+[C2PA](https://c2pa.org/) standardized how to **verify** digital content — who created it, with what tool, and that it hasn't been tampered with. But C2PA did not standardize how to **record** verification results. Each verification is performed locally and the result is consumed on the spot. Even if a service stores the result in its own database, that record can be altered or fabricated by the operator, and no third party can independently confirm it was done correctly.
 
-## 0. The Missing Piece in Digital Identity
+Title Protocol closes this gap by making both the verification and the record trustless. A TEE (Trusted Execution Environment) performs C2PA verification in hardware-isolated memory — the node operator cannot see or tamper with the process. The TEE signs the results with its enclave-bound key, and the signed record is stored permanently on the Solana blockchain as a cNFT. Anyone can follow the on-chain trust chain to independently confirm that a given record was produced by an authorized TEE.
 
-For digital content to have a true "Identity," three conditions must be met:
+## How It Works
 
-1. **Provenance:** The origin and creation process are cryptographically verifiable.
-2. **Integrity:** It is possible to detect if the content has been tampered with.
-3. **Attribution:** The rights ownership can be resolved trustlessly.
-
-**C2PA** solves Provenance and Integrity. **Title Protocol** solves Attribution.
-
-### The Web Infrastructure Analogy
-
-The relationship between C2PA and Title Protocol is analogous to the infrastructure that secures the Web:
-
-| Role | Web Infrastructure (TLS/DNS) | Digital Content (C2PA/Title) |
-| --- | --- | --- |
-| **Certificate** | **SSL/TLS Certificate**<br>
-
-<br>Proves the server is who it claims to be. | **C2PA Manifest**<br>
-
-<br>Proves the content's origin and integrity. |
-| **Audit Log** | **Certificate Transparency (CT) Logs**<br>
-
-<br>Publicly records issuance to prevent fraud. | **Title Protocol (Core)**<br>
-
-<br>Records TEE-verified facts to a blockchain ledger. |
-| **Resolution** | **DNS**<br>
-
-<br>Resolves a domain name to an IP address. | **Title Protocol (Resolve)**<br>
-
-<br>Resolves a content ID to a Wallet Address. |
-
-Just as the Web relies on DNS and CT Logs, digital content requires an infrastructure to resolve rights and audit existence. Title Protocol is that infrastructure.
-
-## 1. Design Principles
-
-Title Protocol is designed as a neutral, permissionless public utility.
-
-* **Content-Agnostic & Neutral:**
-The protocol operates as neutral infrastructure, much like TCP/IP. It acts as a **registry, not a regulator**. It does not judge, filter, or censor content based on its nature. If the cryptographic proofs are valid, the protocol records the attribution without bias.
-* **Stateless:**
-The protocol runs inside **TEEs (Trusted Execution Environments)**. These nodes hold no state between requests; they simply accept input, perform computation, and return a result.
-* **Permissionless:**
-Anyone can build applications on top of the protocol, and anyone can deploy their own instance of the program. Node operation on the canonical network is managed by a DAO, preventing dependence on any single centralized entity. The DAO-controlled GlobalConfig on mainnet is the single source of truth — only cNFTs in the official collections it designates are recognized as protocol-canonical content records.
-* **Privacy-First (E2EE):**
-Data sent to the protocol is End-to-End Encrypted. Even the node operator cannot view the raw content, ensuring privacy and minimizing liability for operators.
-
-## 2. Protocol Architecture
-
-The protocol consists of two distinct layers that share a common registration and verification flow.
-
-### Layer 1: Core (The Provenance Graph)
-
-The Core layer establishes the **Rights Structure** of the content.
-
-* **Input:** C2PA-signed content.
-* **Process:** The TEE verifies the C2PA signature chain and recursively extracts "ingredient" data (assets used to create the content).
-* **Output:** A **Provenance DAG (Directed Acyclic Graph)** recorded as a **Solana cNFT**.
-* **Function:** It answers the question: *"Who is involved in this content?"* (e.g., identifying the wallet addresses of the creator and all ingredient owners for revenue distribution).
-
-### Layer 2: Extension (The Attribute Layer)
-
-The Extension layer attaches **Objective Attributes** to the content.
-
-* **Input:** Content + Optional auxiliary inputs (e.g., ZK proofs).
-* **Process:** The TEE executes deterministic **WASM modules**.
-* **Output:** Key-Value attributes recorded as a **Solana cNFT**.
-* **Function:** It answers the question: *"What are the properties of this content?"*
-* *Example:* `phash-v1` calculates a perceptual hash for similarity search.
-* *Example:* `ai-training-v1` extracts "Do Not Train" flags from metadata.
-* *Example:* `hardware-proof` verifies if the content was captured by specific hardware (e.g., Sony, Canon, Google Pixel).
-
-
-
-## 3. How It Works (Node Perspective)
-
-The registration process is designed to be secure, scalable, and operator-friendly.
-
-```mermaid
-graph LR
-    User[Client] -->|Encrypted Payload| Gateway[Node Gateway]
-    Gateway -->|Relay| TEE[Trusted Execution Environment]
-    TEE -->|Verify & Sign| Solana[Solana Blockchain]
-    TEE -->|Store JSON| Arweave[Arweave Storage]
+The client encrypts content and the destination wallet address with the TEE's public key (ECDH + AES-GCM), uploads the encrypted payload to temporary storage, and sends the URL to the Gateway. The Gateway relays to the TEE, which fetches and decrypts the payload, verifies C2PA signatures, and returns the results encrypted back to the client. The node operator cannot see the content or the destination wallet at any point.
 
 ```
+Client (SDK)       Temp Storage       Gateway            TEE                 Solana
+     |                  |                |                 |                    |
+     |  encrypt payload |                |                 |                    |
+     |  (ECDH+AES-GCM) |                |                 |                    |
+     |-- upload ------->|                |                 |                    |
+     |                  |                |                 |                    |
+     |-- URL + verifiers --------------->|--- relay ------>|                    |
+     |                  |                |                 |-- fetch & decrypt  |
+     |                  |<------- fetch encrypted ---------|                    |
+     |                  |-------- ciphertext ------------->|                    |
+     |                  |                |                 |-- verify C2PA      |
+     |                  |                |                 |-- build DAG        |
+     |                  |                |                 |-- run WASM         |
+     |                  |                |                 |-- sign results     |
+     |<-- encrypted results ------------|<----------------|                    |
+     |                                                                         |
+     |  decrypt, upload signed_json to Arweave                                 |
+     |  POST /sign → TEE builds partial TX → client co-signs and broadcasts    |
+     |------------------------------------------------------------------------>|
+```
 
-1. **Encryption:** The client encrypts the content and the destination wallet address using the TEE's public key (E2EE).
-2. **Blind Processing:** The Node Operator (Gateway) relays the encrypted payload to the TEE. The operator **cannot** see the content or the wallet address.
-3. **Verification:** The TEE decrypts the payload in a secure environment, verifies the C2PA signatures, and executes WASM modules.
-4. **Signing:** The TEE signs the result with its private key.
-5. **Minting:** The result is stored on Arweave, and a **Compressed NFT (cNFT)** is minted on Solana, linking the content hash to the user's wallet.
+Registration is split into two phases — **Verify** and **Sign**. In Verify, the TEE processes the content and signs the results. The client then uploads the signed result to permanent storage (Arweave). In Sign, the TEE builds a cNFT mint transaction and partially signs it; the client co-signs with their wallet and broadcasts to Solana. This split keeps the TEE stateless and avoids giving it a Solana wallet or dependency on external state.
 
-## 4. Operational Model
+## Two Layers
 
-### Registry, Not Police
+The protocol has two layers that share the same registration flow:
 
-Title Protocol serves as a "Deed Office." It records objective facts (who claimed this content at what time with what proof). It does not police the content. Logic for filtering illegal content or handling disputes belongs to the **Application Layer**, not the Protocol Layer.
+| | Core | Extension |
+|---|---|---|
+| Question | *What content was used to create this?* | *What are the properties of this content?* |
+| Shared steps | C2PA signature verification → content_hash derivation | *(same)* |
+| Divergence | Extract ingredient relationships → provenance DAG | Run WASM module → key-value attributes |
+| Output | Content family tree (who-used-what graph) | Objective attributes (phash, license, etc.) |
+| cNFT Collection | Core Collection | Extension Collection |
 
-### Trusted Execution Environments (TEE)
+Both layers start from the same C2PA verification. They diverge at step 3: Core extracts ingredient relationships from the C2PA manifest to build a provenance DAG, while Extension runs a WASM module to compute attributes.
 
-Nodes must run on hardware that supports Remote Attestation (e.g., AWS Nitro Enclaves). This guarantees to the network that the node is running the exact, unmodified open-source code of the protocol, ensuring that the verification results are trustworthy without needing to trust the node operator.
+**Core** builds a provenance graph — a DAG where nodes are content_hash values (SHA-256 of each Active Manifest's signature) and edges represent "used as ingredient" relationships. The graph records content relationships; the current owner of each node is resolved separately at query time by looking up cNFTs on-chain.
 
-### Scalability via Solana cNFTs
+**Extension** runs deterministic WASM modules against the raw content to produce objective attributes. Any WASM binary can be registered — the DAO maintains an on-chain allowlist (`trusted_wasm_modules` in GlobalConfig) of approved module URIs and their SHA-256 hashes. The TEE fetches the binary from the registered URI, verifies its hash, and executes it in a sandboxed wasmtime runtime.
 
-By utilizing Solana's Compressed NFTs (Bubblegum), the protocol can handle millions of registrations at a fraction of the cost of traditional NFTs, making it viable for high-volume content ecosystems like social media or AI generation.
+This repository includes four reference modules:
 
-## 5. Technical Stack
+| Module | Output |
+|--------|--------|
+| `phash-v1` | Perceptual hash for similarity search |
+| `hardware-google` | Hardware capture proof (Titan M2 chip detection) |
+| `c2pa-training-v1` | AI training consent flag (`c2pa.training-mining`) |
+| `c2pa-license-v1` | License information (Creative Commons, rights) |
 
-* **Core Logic:** Rust
-* **TEE Runtime:** Abstracted via `TeeRuntime` trait (reference implementation: AWS Nitro Enclaves)
-* **Temporary Storage:** Abstracted via `TempStorage` trait (reference implementation: S3-compatible)
-* **Blockchain:** Solana (Compressed NFTs)
-* **Off-chain Storage:** Arweave (via Irys)
-* **Standards:** C2PA (Coalition for Content Provenance and Authenticity)
+## Trust Model
 
-## 6. Vendor Separation
+The protocol's sole trust assumption is a single on-chain account — the **GlobalConfig PDA** — controlled by a DAO multi-sig. It designates the official cNFT collections and the authorized TEE nodes. The DAO delegates Collection Authority to trusted TEE nodes, so any cNFT minted into the official collections was necessarily issued by an authorized TEE.
 
-The protocol core is **vendor-neutral**. All vendor-specific code is isolated behind Cargo feature flags and can be cleanly excluded.
+```
+GlobalConfig (DAO)           ← Trust root
+  → Official Collections     ← Collection Authority delegated to trusted TEEs
+    → cNFT                   ← On-chain record (minted by authorized TEE)
+      → Off-chain Data       ← TEE-signed, tamper-evident
+        → Verified Content     Attribution
+```
 
-### Protocol Core (vendor-neutral)
+Anyone can verify any record by following this chain. No trust in the protocol operator is required — only trust in the DAO's governance, which is fully transparent on-chain.
 
-| Component | Path | Description |
-|-----------|------|-------------|
-| Type definitions | `crates/types/` | Shared data structures |
-| Cryptography | `crates/crypto/` | ECDH, HKDF, AES-GCM, Ed25519, attestation verification |
-| C2PA verification | `crates/core/` | Provenance graph construction |
-| WASM host | `crates/wasm-host/` | Deterministic extension execution (wasmtime) |
-| TEE server | `crates/tee/` | Endpoint logic, mock runtime |
-| Gateway server | `crates/gateway/` | HTTP API, `TempStorage` trait |
-| Proxy | `crates/proxy/` | HTTP proxy (TCP fallback) |
-| WASM modules | `wasm/` | phash, hardware-proof, training, license |
-| Solana program | `programs/title-config/` | On-chain Global Config |
-| TypeScript SDK | `sdk/ts/` | Client library |
-| Indexer | `indexer/` | cNFT event indexer |
+## Design Principles
 
-### Vendor Implementation: AWS (`vendor-aws` feature)
+- **Content-Agnostic** — The protocol is a registry, not a regulator. Node operators cannot see the raw content (E2EE).
+- **Stateless** — TEE nodes hold no state between requests. Keys are ephemeral and lost on restart.
+- **Permissionless** — Anyone can build on the protocol or run a node. The canonical network is DAO-governed.
+- **Smart-Contract-Less** — No custom mint logic. Uses Metaplex standards (Bubblegum cNFT + MPL Core Collections) directly.
 
-| Component | Path | What it adds |
-|-----------|------|-------------|
-| Nitro TEE runtime | `crates/tee/src/runtime/nitro.rs` | `TeeRuntime` impl using NSM API |
-| Nitro attestation | `crates/crypto/src/attestation/nitro.rs` | AWS attestation document verification |
-| S3 storage | `crates/gateway/src/storage/s3.rs` | `TempStorage` impl using S3-compatible API |
-| vsock transport | `crates/proxy/` | vsock listener (Linux/Nitro only) |
-| Deployment | `deploy/aws/` | Terraform, Docker, setup scripts |
-| Docker images | `docker/` | Container images (debian-based) |
+## Vendor Separation
 
-### Building without vendor features
+The protocol core is **vendor-neutral**. All vendor-specific code is isolated behind Cargo feature flags.
+
+| | Protocol Core | AWS Vendor (`vendor-aws`) | Local Dev (`vendor-local`) |
+|---|---|---|---|
+| TEE Runtime | `TeeRuntime` trait | Nitro Enclaves (NSM API) | MockRuntime |
+| Temp Storage | `TempStorage` trait | S3-compatible | Local HTTP file server |
+| Transport | — | vsock (Nitro) | TCP |
+| Deploy | — | `deploy/aws/` | `deploy/local/` |
 
 ```bash
-# Protocol core only (no AWS dependencies)
+# Protocol core only (no vendor dependencies)
 cargo check --workspace --no-default-features
 
 # With AWS vendor implementation (default)
 cargo check --workspace
 ```
 
-To create a vendor-neutral distribution, exclude: `deploy/`, `docker/`, and build with `--no-default-features`. The `TeeRuntime` and `TempStorage` traits provide the extension points for alternative vendor implementations.
+To add a new vendor, implement the `TeeRuntime` and `TempStorage` traits and create a `deploy/<vendor>/` directory.
 
----
+## Repository Structure
+
+```
+crates/
+  types/          — Shared type definitions
+  crypto/         — ECDH, HKDF, AES-GCM, Ed25519, attestation verification
+  core/           — C2PA verification & provenance graph construction
+  wasm-host/      — WASM execution engine (wasmtime, fuel/memory limits)
+  tee/            — TEE server: /verify, /sign, /register-node
+  gateway/        — Gateway HTTP server: upload, relay, sign-and-mint
+  proxy/          — HTTP proxy for TEE network isolation
+  cli/            — CLI: init-global, register-node, create-tree, remove-node
+wasm/             — WASM modules (no_std): phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1
+programs/
+  title-config/   — Anchor program: GlobalConfig + TeeNodeAccount PDA management
+sdk/ts/           — TypeScript client SDK: E2EE, register, resolve
+indexer/          — cNFT indexer: webhook + poller + DAS API → PostgreSQL
+docker/           — Container images (Gateway, TEE, Proxy, Indexer)
+deploy/           — Vendor-specific deployment (local, AWS Nitro)
+integration-tests/ — E2E tests with real C2PA-signed fixtures
+```
 
 ## Quick Start
 
-**[QUICKSTART.md](QUICKSTART.md)** — Run a local node against the devnet reference environment, or deploy your own GlobalConfig to experiment with the full protocol stack.
+**[QUICKSTART.md](QUICKSTART.md)** — Full walkthrough: deploy your own GlobalConfig on devnet, run a local node, and register C2PA-signed content on-chain.
 
 ```bash
 # Build and test the Rust workspace
@@ -176,7 +136,7 @@ cargo test --workspace
 
 # Build WASM modules
 for dir in wasm/*/; do
-  cargo build --manifest-path "${dir}Cargo.toml" --target wasm32-unknown-unknown --release
+  (cd "$dir" && cargo build --target wasm32-unknown-unknown --release)
 done
 
 # Build TypeScript SDK & Indexer
@@ -184,51 +144,9 @@ cd sdk/ts && npm install && npm run build && cd ../..
 cd indexer && npm install && npm run build && cd ..
 ```
 
-## Repository Structure
-
-```
-crates/
-  types/          — Shared type definitions
-  crypto/         — Cryptographic primitives: ECDH, HKDF, AES-GCM, Ed25519
-  core/           — C2PA verification & provenance graph construction
-  wasm-host/      — WASM execution engine using wasmtime
-  tee/            — TEE server: /verify, /sign, /create-tree
-  gateway/        — Gateway HTTP server: upload-url, relay, sign-and-mint
-  proxy/          — HTTP proxy for TEE network isolation
-wasm/             — WASM modules: phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1
-programs/
-  title-config/   — Anchor Solana program for Global Config PDA
-sdk/ts/           — TypeScript client SDK: register, crypto (E2EE), storage
-indexer/          — TypeScript cNFT indexer: webhook, poller, DAS API
-docker/           — Container images (Gateway, TEE, Proxy, Indexer)
-deploy/           — Vendor-specific deployment (e.g., deploy/aws/ for Nitro Enclaves)
-scripts/          — Operational scripts: Devnet initialization, content registration
-integration-tests/ — Integration tests and stress tests (not published)
-docs/             — Versioned development documentation
-```
-
-## Running a Node
-
-Running a Title Protocol node requires a TEE-backed deployment pipeline. You can either:
-
-1. **Use an existing deployment example** — see [deploy/aws/](deploy/aws/) for the AWS Nitro reference implementation.
-2. **Create your own pipeline** — implement the `TeeRuntime` and `TempStorage` traits for your TEE platform, and create a `deploy/<vendor>/` directory following the same pattern.
-
-The only requirement is that the deployment pipeline is **open-source and reproducible** — anyone must be able to verify that a given TEE node runs the same code. As long as this is provable, any TEE platform is valid for the protocol.
-
-See `.env.example` for configuration options.
-
-## For Developers
-
-This project uses an AI-driven development workflow:
-
-- **`CLAUDE.md`** — Instructions for AI coding assistants (project conventions, architecture)
-- **`docs/`** — Versioned documentation: each version contains SPECS (what to build) → COVERAGE (what's built) → tasks (how to build it + notes)
-- **`docs/v1/`** — Initial implementation phase (2026-02-21, all tasks complete)
-
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and pull request guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites, coding standards, and pull request guidelines.
 
 ## Security
 
@@ -236,4 +154,4 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE) for details.
+Apache-2.0 — see [LICENSE](LICENSE).

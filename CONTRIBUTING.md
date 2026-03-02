@@ -50,7 +50,7 @@ See `.env.example` for all configuration options.
 ## Project Structure
 
 ```
-crates/           — Rust workspace (types, crypto, core, wasm-host, tee, gateway, proxy)
+crates/           — Rust workspace (types, crypto, core, wasm-host, tee, gateway, proxy, cli)
 wasm/             — WASM modules (phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1)
 programs/         — Solana Anchor program (title-config)
 sdk/ts/           — TypeScript client SDK
@@ -72,7 +72,7 @@ cargo check --workspace --no-default-features
 cargo check --workspace
 ```
 
-The `vendor-aws` feature includes: S3-based `TempStorage` implementation, AWS Nitro `TeeRuntime` implementation, and vsock transport. The `TeeRuntime` trait (`crates/tee/src/runtime/`) and `TempStorage` trait (`crates/gateway/src/storage/`) define the vendor-neutral interfaces — alternative implementations (other cloud TEEs, MinIO, etc.) can be added by implementing these traits.
+The `vendor-aws` feature (default) includes: S3-based `TempStorage`, AWS Nitro `TeeRuntime`, and vsock transport. The `vendor-local` feature provides local filesystem storage for development. The `TeeRuntime` trait (`crates/tee/src/runtime/`) and `TempStorage` trait (`crates/gateway/src/storage/`) define the vendor-neutral interfaces — alternative implementations (other cloud TEEs, MinIO, etc.) can be added by implementing these traits.
 
 ## Coding Standards
 
@@ -93,7 +93,7 @@ The `vendor-aws` feature includes: S3-based `TempStorage` implementation, AWS Ni
 ### General
 
 - Keep changes focused and minimal
-- Do not modify completed version docs (`docs/v1/` etc.) unless fixing errors
+- Do not modify completed version docs (`docs/v0.1.0/` etc.) unless fixing errors
 
 ## Building the Solana Program
 

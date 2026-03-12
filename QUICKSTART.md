@@ -540,6 +540,7 @@ npx tsx register-photo.ts localhost ./fixtures/pixel_photo_ramen.jpg \
 | `EXT_COLLECTION_MINT` | TEE | Extension Collection Mint address (auto-read from `network.json`) |
 | `GATEWAY_PUBKEY` | TEE | Gateway's Ed25519 pubkey for request authentication |
 | `GLOBAL_CONFIG_PDA` | Gateway | GlobalConfig PDA address. If set, Gateway fetches on-chain ResourceLimits at startup (auto-read from `network.json`) |
+| `GATEWAY_SOLANA_KEYPAIR` | Gateway | Solana keypair (Base58) for `/sign-and-mint` (delegateMint). Operator pays TX fees on behalf of clients. Optional — only needed when clients use `delegateMint: true` |
 | `TEE_ENDPOINT` | Gateway | TEE server URL (e.g., `http://localhost:4000`) |
 | `S3_ENDPOINT` | Gateway | S3-compatible storage endpoint (vendor-aws only) |
 | `S3_ACCESS_KEY` | Gateway | Storage access key (vendor-aws only) |

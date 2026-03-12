@@ -35,7 +35,36 @@ pub async fn handle_sign_and_mint(
         GatewayError::Internal("GATEWAY_SOLANA_KEYPAIRが設定されていません".to_string())
     })?;
 
-    // Step 1: TEEの/signに中継
+    // Step 1: recent_blockhashが空の場合、Solana RPCから最新のblockhashを取得
+    let mut body = body;
+    if body.recent_blockhash.is_empty() {
+        let rpc_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLatestBlockhash",
+            "params": [{"commitment": "confirmed"}]
+        });
+        let rpc_response = state
+            .http_client
+            .post(solana_rpc_url)
+            .json(&rpc_request)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Solana(format!("blockhash取得失敗: {e}")))?;
+        let rpc_body: serde_json::Value = rpc_response
+            .json()
+            .await
+            .map_err(|e| GatewayError::Solana(format!("blockhashレスポンスのパースに失敗: {e}")))?;
+        let blockhash = rpc_body
+            .pointer("/result/value/blockhash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                GatewayError::Solana("blockhashの取得に失敗しました".to_string())
+            })?;
+        body.recent_blockhash = blockhash.to_string();
+    }
+
+    // Step 2: TEEの/signに中継
     let body_value = serde_json::to_value(&body)
         .map_err(|e| GatewayError::Internal(format!("リクエストのシリアライズに失敗: {e}")))?;
 
@@ -43,7 +72,7 @@ pub async fn handle_sign_and_mint(
     let sign_response: SignResponse = serde_json::from_value(result)
         .map_err(|e| GatewayError::TeeRelay(format!("SignResponseのパースに失敗: {e}")))?;
 
-    // Step 2: 各partial_txにGatewayウォレットで署名+ブロードキャスト
+    // Step 3: 各partial_txにGatewayウォレットで署名+ブロードキャスト
     let mut tx_signatures = Vec::new();
 
     for partial_tx_b64 in &sign_response.partial_txs {

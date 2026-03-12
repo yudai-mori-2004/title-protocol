@@ -268,11 +268,7 @@ async function main() {
   // ---------------------------------------------------------------------------
   // TitleClient 構築 + ノード選択（ヘルスチェック付き）
   // ---------------------------------------------------------------------------
-  const client = new TitleClient({
-    teeNodes: [gatewayUrl],
-    solanaRpcUrl: args.solanaRpc,
-    globalConfig,
-  });
+  const client = new TitleClient(globalConfig);
 
   const session = await client.selectNode();
   log("STEP 1", `signing_pubkey: ${session.signingPubkey}`);
@@ -331,7 +327,7 @@ async function main() {
   );
   const t0 = Date.now();
 
-  const encryptedResponse = await client.verify(session.gatewayUrl, {
+  const encryptedResponse = await client.verifyRaw(session.gatewayUrl, {
     download_url: downloadUrl,
     processor_ids: args.processorIds,
   });
@@ -430,7 +426,7 @@ async function main() {
   log("STEP 6", `/sign を呼び出し中...`);
   const t1 = Date.now();
 
-  const signResponse = await client.sign(session.gatewayUrl, {
+  const signResponse = await client.signRaw(session.gatewayUrl, {
     recent_blockhash: blockhash,
     requests: signRequests,
   });

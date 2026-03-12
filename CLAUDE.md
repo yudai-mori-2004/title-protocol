@@ -8,10 +8,10 @@ Title Protocol: Records digital content attribution on Solana blockchain.
 Combines C2PA (provenance) x TEE (Trusted Execution Environment) x cNFT (compressed NFT) to trustlessly resolve content ownership.
 
 - Documentation: `docs/README.md` (versioned: SPECS -> COVERAGE -> tasks)
-- Current version: `docs/v1/` (2026-02-21, initial implementation)
-  - Technical spec: `docs/v1/SPECS_JA.md` (ver.9, Japanese)
-  - Coverage: `docs/v1/COVERAGE.md`
-  - Tasks: `docs/v1/tasks/NN-name/`
+- Current version: `docs/v0.1.0/` (2026-02-21, initial implementation)
+  - Technical spec: `docs/v0.1.0/SPECS_JA.md` (ver.9, Japanese)
+  - Coverage: `docs/v0.1.0/COVERAGE.md`
+  - Tasks: `docs/v0.1.0/tasks/NN-name/`
 - Environment variables: `.env.example`
 
 ## Build
@@ -44,7 +44,7 @@ cd programs/title-config && rm -f Cargo.lock && cargo generate-lockfile && cargo
 - Struct field names match spec JSON structures (snake_case)
 - WASM modules: `#![no_std]` + `dlmalloc` global allocator + `core::arch::wasm32::unreachable()` panic handler
 - Tests in `#[cfg(test)] mod tests` within each crate
-- Completed versions (`docs/v1/` etc.) are read-only archives
+- Completed versions (`docs/v0.1.0/` etc.) are read-only archives
 
 ## Architecture
 

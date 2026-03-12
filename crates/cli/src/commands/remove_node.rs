@@ -66,7 +66,7 @@ pub async fn run(
     }
 
     // Authority keypair の読み込み（必須）
-    let authority_key_path = config::resolve_key_path(keys_dir, project_root, "authority.json");
+    let authority_key_path = config::resolve_key_path(keys_dir, "authority.json");
     if !authority_key_path.exists() {
         return Err(CliError::Config(
             "authority.json が見つかりません。remove-node には authority keypair が必要です。\n  \

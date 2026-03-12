@@ -96,7 +96,7 @@ pub async fn run(
     helpers::fund_tee_wallet(&rpc, keys_dir, &tee_pk, 100_000_000).await?;
 
     // Authority keypair の存在で分岐
-    let authority_key_path = config::resolve_key_path(keys_dir, project_root, "authority.json");
+    let authority_key_path = config::resolve_key_path(keys_dir, "authority.json");
     let tx_bytes = b64()
         .decode(&result.partial_tx)
         .map_err(|e| CliError::Config(format!("partial_txのデコードに失敗: {e}")))?;

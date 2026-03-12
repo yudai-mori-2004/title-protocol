@@ -152,15 +152,8 @@ export GATEWAY_SIGNING_KEY
 KEYS_DIR="$PROJECT_ROOT/keys"
 mkdir -p "$KEYS_DIR"
 
-# Authority keypair の存在チェック（レガシーパスからの自動マイグレーション）
+# Authority keypair の存在チェック
 AUTHORITY_KEY_PATH="$KEYS_DIR/authority.json"
-LEGACY_AUTHORITY="$PROJECT_ROOT/programs/title-config/keys/authority.json"
-if [ ! -f "$AUTHORITY_KEY_PATH" ] && [ -f "$LEGACY_AUTHORITY" ]; then
-  warn "レガシーパスから authority.json を keys/ に移行します..."
-  cp "$LEGACY_AUTHORITY" "$AUTHORITY_KEY_PATH"
-  ok "authority.json を keys/ に移行"
-fi
-
 if [ -f "$AUTHORITY_KEY_PATH" ]; then
   ok "Authority keypair (keys/authority.json): 検出 → 自動署名モード"
   AUTO_SIGN=true

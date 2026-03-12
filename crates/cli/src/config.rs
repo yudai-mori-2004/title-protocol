@@ -113,33 +113,11 @@ pub fn save_tee_info(path: &Path, info: &TeeInfo) -> Result<(), CliError> {
 }
 
 /// キーファイルのパスを解決する。
-///
-/// 新しい `keys/` ディレクトリを優先し、レガシーパス
-/// (`programs/title-config/keys/`) にフォールバックする（警告付き）。
 pub fn resolve_key_path(
     keys_dir: &Path,
-    project_root: &Path,
     filename: &str,
 ) -> std::path::PathBuf {
-    let new_path = keys_dir.join(filename);
-    if new_path.exists() {
-        return new_path;
-    }
-    let legacy_path = project_root
-        .join("programs")
-        .join("title-config")
-        .join("keys")
-        .join(filename);
-    if legacy_path.exists() {
-        eprintln!(
-            "  WARNING: レガシーパス {} を使用中。keys/ への移行を推奨:",
-            legacy_path.display()
-        );
-        eprintln!("    cp {} {}", legacy_path.display(), new_path.display());
-        return legacy_path;
-    }
-    // どちらにも存在しない場合は新しいパスを返す
-    new_path
+    keys_dir.join(filename)
 }
 
 /// cluster名からデフォルトRPC URLを解決する。

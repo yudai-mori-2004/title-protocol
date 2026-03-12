@@ -4,11 +4,6 @@
  * TitleClient — Main SDK class.
  *
  * Spec §6.7
- *
- * TEE nodes are managed as a flat URL array.
- * Each URL follows the format `https://<gateway-host>?apikey=<key>`.
- * The SDK randomly selects a node from the array, but once an encrypted
- * upload is performed, the session is pinned to that node (affinity).
  */
 
 import type {
@@ -16,52 +11,67 @@ import type {
   TrustedTeeNode,
   TrustedWasmModule,
   VerifyRequest,
+  VerifyResponse,
   SignRequest,
   SignResponse,
   EncryptedPayload,
+  ExtensionPayload,
 } from "./types";
+import { encryptPayload, decryptResponse } from "./crypto";
 
 // ---------------------------------------------------------------------------
-// Configuration
+// Types
 // ---------------------------------------------------------------------------
 
-/** TitleClient initialization options. */
-export interface TitleClientConfig {
-  /**
-   * Flat array of TEE node Gateway URLs.
-   * Each URL may include an API key: `https://gateway.example.com?apikey=xxx`.
-   * The SDK randomly selects one node from this array.
-   */
-  teeNodes: string[];
-
-  /** Solana RPC URL. */
-  solanaRpcUrl: string;
-
-  /**
-   * GlobalConfig data (injected).
-   * In production, this should be fetched from the on-chain GlobalConfig PDA
-   * via Solana RPC. The SDK currently accepts it as a constructor parameter
-   * for flexibility.
-   */
-  globalConfig: GlobalConfig;
+/** Session with a specific TEE node. */
+export interface TeeSession {
+  gatewayUrl: string;
+  encryptionPubkey: string;
+  signingPubkey: string;
 }
 
-// ---------------------------------------------------------------------------
-// Node Session (affinity management)
-// ---------------------------------------------------------------------------
-
 /**
- * Session with a specific TEE node.
- * After encrypted upload, use the same session for verify/sign calls
- * to maintain node affinity.
+ * Callback to persist a signed_json to permanent storage.
+ * Receives the JSON string, returns a retrievable URI (e.g. ar://...).
  */
-export interface TeeSession {
-  /** Gateway URL for this session. */
-  gatewayUrl: string;
-  /** TEE X25519 encryption public key (Base64). */
-  encryptionPubkey: string;
-  /** TEE Ed25519 signing public key (Base58). */
-  signingPubkey: string;
+export type StoreSignedJsonFn = (json: string) => Promise<string>;
+
+/** Options for `client.register()`. */
+export interface RegisterOptions {
+  /** Content binary data. */
+  content: Uint8Array;
+  /** Owner wallet address (Base58). */
+  ownerWallet: string;
+  /** Processor IDs to execute. Default: `["core-c2pa"]`. */
+  processorIds?: string[];
+  /** Optional extension auxiliary inputs. Key = extension_id. */
+  extensionInputs?: Record<string, unknown>;
+  /** Callback to persist each signed_json. Returns a URI. */
+  storeSignedJson: StoreSignedJsonFn;
+  /** Use a specific node instead of auto-selecting. */
+  node?: TeeSession;
+  /** If true, Gateway broadcasts the TX. Default: false. */
+  delegateMint?: boolean;
+  /** Solana recent blockhash (required when delegateMint is false). */
+  recentBlockhash?: string;
+}
+
+/** Single content entry in the register result. */
+export interface RegisterContentResult {
+  processorId: string;
+  contentHash: string;
+  storageUri: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  signedJson: any;
+}
+
+/** Result of `client.register()`. */
+export interface RegisterResult {
+  contents: RegisterContentResult[];
+  /** Base64-encoded partial TXs (delegateMint: false). */
+  partialTxs?: string[];
+  /** On-chain TX signatures (delegateMint: true). */
+  txSignatures?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -69,26 +79,23 @@ export interface TeeSession {
 // ---------------------------------------------------------------------------
 
 export class TitleClient {
-  readonly config: TitleClientConfig;
-  /** Mutable candidate list — dead nodes are removed on health-check failure. */
+  readonly globalConfig: GlobalConfig;
   private availableNodes: TrustedTeeNode[];
 
-  constructor(config: TitleClientConfig) {
-    this.config = config;
-    this.availableNodes = [...config.globalConfig.trusted_tee_nodes];
+  constructor(globalConfig: GlobalConfig) {
+    this.globalConfig = globalConfig;
+    this.availableNodes = [...globalConfig.trusted_tee_nodes];
   }
 
   /**
-   * Select a live TEE node and start a session.
-   * Picks a random candidate, health-checks its gateway, and removes
-   * unreachable nodes from the candidate list. Spec §6.7
+   * Select a live TEE node via health-check.
+   * Deduplicates by gateway_endpoint (keeps newest entry).
    */
   async selectNode(): Promise<TeeSession> {
-    // Deduplicate by gateway_endpoint — keep only the last (newest) entry per endpoint
     const byEndpoint = new Map<string, TrustedTeeNode>();
     for (const node of this.availableNodes) {
       const ep = node.gateway_endpoint.replace(/\/$/, "");
-      byEndpoint.set(ep, node); // later entries overwrite earlier ones
+      byEndpoint.set(ep, node);
     }
 
     const candidates = [...byEndpoint.values()];
@@ -119,9 +126,111 @@ export class TitleClient {
   }
 
   /**
-   * Get a signed upload URL for temporary storage.
-   * Spec §6.2 POST /upload-url
+   * Register content: encrypt → upload → verify → store → sign.
+   * Spec §6.7
    */
+  async register(options: RegisterOptions): Promise<RegisterResult> {
+    const {
+      content,
+      ownerWallet,
+      processorIds = ["core-c2pa"],
+      extensionInputs,
+      storeSignedJson,
+      delegateMint = false,
+      recentBlockhash,
+    } = options;
+
+    // 1. Node selection
+    const node = options.node ?? (await this.selectNode());
+
+    // 2-3. Encrypt + upload
+    const contentB64 = Buffer.from(content).toString("base64");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientPayload: any = {
+      owner_wallet: ownerWallet,
+      content: contentB64,
+    };
+    if (extensionInputs) {
+      clientPayload.extension_inputs = extensionInputs;
+    }
+
+    const payloadJson = new TextEncoder().encode(
+      JSON.stringify(clientPayload)
+    );
+    const teeEncPubkey = Buffer.from(node.encryptionPubkey, "base64");
+    const { symmetricKey, encryptedPayload } = await encryptPayload(
+      new Uint8Array(teeEncPubkey),
+      payloadJson
+    );
+
+    const { downloadUrl } = await this.upload(
+      node.gatewayUrl,
+      encryptedPayload
+    );
+
+    // 4-5. Verify + decrypt
+    const encryptedResponse = await this.verifyRaw(node.gatewayUrl, {
+      download_url: downloadUrl,
+      processor_ids: processorIds,
+    });
+
+    const responsePlaintext = await decryptResponse(
+      symmetricKey,
+      encryptedResponse.nonce,
+      encryptedResponse.ciphertext
+    );
+    const verifyResponse: VerifyResponse = JSON.parse(
+      new TextDecoder().decode(responsePlaintext)
+    );
+
+    // 6. wasm_hash validation
+    this.validateWasmHashes(verifyResponse);
+
+    // 7. Store signed_json via callback
+    const contents: RegisterContentResult[] = [];
+    const signRequests: { signed_json_uri: string }[] = [];
+
+    for (const result of verifyResponse.results) {
+      const sj = result.signed_json;
+      const jsonStr = JSON.stringify(sj);
+      const uri = await storeSignedJson(jsonStr);
+
+      const payload = sj.payload as { content_hash?: string };
+      contents.push({
+        processorId: result.processor_id,
+        contentHash: payload.content_hash ?? "",
+        storageUri: uri,
+        signedJson: sj,
+      });
+      signRequests.push({ signed_json_uri: uri });
+    }
+
+    // 8. Sign or sign-and-mint
+    if (delegateMint) {
+      const res = await this.signAndMintRaw(node.gatewayUrl, {
+        recent_blockhash: recentBlockhash ?? "",
+        requests: signRequests,
+      });
+      return { contents, txSignatures: res.tx_signatures };
+    } else {
+      if (!recentBlockhash) {
+        throw new Error(
+          "recentBlockhash is required when delegateMint is false"
+        );
+      }
+      const res = await this.signRaw(node.gatewayUrl, {
+        recent_blockhash: recentBlockhash,
+        requests: signRequests,
+      });
+      return { contents, partialTxs: res.partial_txs };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Low-level Gateway methods (kept public for advanced use)
+  // ---------------------------------------------------------------------------
+
+  /** Get a presigned upload URL. */
   async getUploadUrl(
     gatewayUrl: string,
     contentSize: number,
@@ -138,12 +247,7 @@ export class TitleClient {
     };
   }
 
-  /**
-   * Upload an encrypted payload to temporary storage.
-   * Spec §6.7
-   *
-   * @returns Download URL for the TEE to fetch the payload.
-   */
+  /** Upload an encrypted payload to temporary storage. */
   async upload(
     gatewayUrl: string,
     encryptedPayload: EncryptedPayload
@@ -172,14 +276,8 @@ export class TitleClient {
     return { downloadUrl, sizeBytes: payloadBytes.length };
   }
 
-  /**
-   * Call the `/verify` endpoint.
-   * Spec §6.2
-   *
-   * The response body is AES-GCM encrypted. Use `decryptResponse()` from
-   * the crypto module with the symmetric key from the encryption step.
-   */
-  async verify(
+  /** Call /verify (returns encrypted response). */
+  async verifyRaw(
     gatewayUrl: string,
     request: VerifyRequest
   ): Promise<{ nonce: string; ciphertext: string }> {
@@ -187,66 +285,73 @@ export class TitleClient {
     return { nonce: res.nonce, ciphertext: res.ciphertext };
   }
 
-  /**
-   * Call the `/sign` endpoint.
-   * Spec §6.2
-   */
-  async sign(
+  /** Call /sign. */
+  async signRaw(
     gatewayUrl: string,
     request: SignRequest
   ): Promise<SignResponse> {
     return await this.gatewayPost(gatewayUrl, "/sign", request);
   }
 
-  /**
-   * Call the `/sign-and-mint` endpoint (Gateway-assisted minting).
-   * Spec §6.2
-   */
-  async signAndMint(
+  /** Call /sign-and-mint. */
+  async signAndMintRaw(
     gatewayUrl: string,
     request: SignRequest
-  ): Promise<{ txSignatures: string[] }> {
-    const res = await this.gatewayPost(gatewayUrl, "/sign-and-mint", request);
-    return { txSignatures: res.tx_signatures };
+  ): Promise<{ tx_signatures: string[] }> {
+    return await this.gatewayPost(gatewayUrl, "/sign-and-mint", request);
   }
 
-  // --- GlobalConfig accessors ---
+  // ---------------------------------------------------------------------------
+  // GlobalConfig accessors
+  // ---------------------------------------------------------------------------
 
-  /**
-   * Get trusted WASM modules from GlobalConfig.
-   * Spec §5.2 Step 1
-   */
   getTrustedWasmModules(): TrustedWasmModule[] {
-    return this.config.globalConfig.trusted_wasm_modules;
+    return this.globalConfig.trusted_wasm_modules;
   }
 
-  /**
-   * Get Core collection mint address from GlobalConfig.
-   * Spec §5.2 Step 1
-   */
   getCoreCollectionMint(): string {
-    return this.config.globalConfig.core_collection_mint;
+    return this.globalConfig.core_collection_mint;
   }
 
-  /**
-   * Get Extension collection mint address from GlobalConfig.
-   * Spec §5.2 Step 1
-   */
   getExtCollectionMint(): string {
-    return this.config.globalConfig.ext_collection_mint;
+    return this.globalConfig.ext_collection_mint;
   }
+
+  getTrustedTeeNodes(): TrustedTeeNode[] {
+    return this.globalConfig.trusted_tee_nodes;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Validation
+  // ---------------------------------------------------------------------------
 
   /**
-   * Get trusted TEE nodes from GlobalConfig.
-   * Spec §5.2 Step 1
+   * Validate wasm_hash in extension signed_json against GlobalConfig.
+   * Throws if any extension's wasm_hash is not in trusted_wasm_modules.
    */
-  getTrustedTeeNodes(): TrustedTeeNode[] {
-    return this.config.globalConfig.trusted_tee_nodes;
+  private validateWasmHashes(response: VerifyResponse): void {
+    const trustedHashes = new Set(
+      this.globalConfig.trusted_wasm_modules.map((m) => m.wasm_hash)
+    );
+
+    for (const result of response.results) {
+      const payload = result.signed_json.payload;
+      if ("wasm_hash" in payload) {
+        const extPayload = payload as ExtensionPayload;
+        if (!trustedHashes.has(extPayload.wasm_hash)) {
+          throw new Error(
+            `Untrusted wasm_hash for extension "${extPayload.extension_id}": ` +
+              `${extPayload.wasm_hash}. Not found in GlobalConfig trusted_wasm_modules.`
+          );
+        }
+      }
+    }
   }
 
-  // --- Internal helpers ---
+  // ---------------------------------------------------------------------------
+  // Internal
+  // ---------------------------------------------------------------------------
 
-  /** Send a POST request to a Gateway endpoint. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async gatewayPost(gatewayUrl: string, path: string, body: unknown): Promise<any> {
     const base = stripQuery(gatewayUrl);
@@ -275,14 +380,12 @@ export class TitleClient {
 // Utilities
 // ---------------------------------------------------------------------------
 
-/** Strip query parameters from a URL and return the base URL. */
 function stripQuery(url: string): string {
   const u = new URL(url);
   u.search = "";
   return u.toString().replace(/\/$/, "");
 }
 
-/** Extract the `apikey` query parameter from a URL. */
 function extractApiKey(url: string): string | null {
   try {
     const u = new URL(url);
@@ -291,5 +394,3 @@ function extractApiKey(url: string): string | null {
     return null;
   }
 }
-
-

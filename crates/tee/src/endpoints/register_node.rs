@@ -249,7 +249,7 @@ mod tests {
             gateway_pubkey: Pubkey::new_unique().to_string(),
             recent_blockhash: "11111111111111111111111111111111".to_string(),
             authority: Pubkey::new_unique().to_string(),
-            program_id: "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq".to_string(),
+            program_id: "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ".to_string(),
             measurements: Default::default(),
         };
 
@@ -291,7 +291,7 @@ mod tests {
             gateway_pubkey: Pubkey::new_unique().to_string(),
             recent_blockhash: "11111111111111111111111111111111".to_string(),
             authority: Pubkey::new_unique().to_string(),
-            program_id: "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq".to_string(),
+            program_id: "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ".to_string(),
             measurements: Default::default(),
         };
 

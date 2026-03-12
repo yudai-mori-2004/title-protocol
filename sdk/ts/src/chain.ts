@@ -24,10 +24,35 @@ import type {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Default Title Config program ID (devnet). */
-export const TITLE_CONFIG_PROGRAM_ID = new PublicKey(
-  "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq"
-);
+/** Supported cluster names. */
+export type TitleCluster = "devnet" | "mainnet";
+
+/** Known Title Config program IDs per cluster. */
+export const TITLE_CONFIG_PROGRAM_IDS: Record<TitleCluster, PublicKey | null> = {
+  devnet: new PublicKey("8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ"),
+  mainnet: null, // TBD — DAO deployment
+};
+
+/** Default RPC URLs per cluster. */
+export const DEFAULT_RPC_URLS: Record<TitleCluster, string> = {
+  devnet: "https://api.devnet.solana.com",
+  mainnet: "https://api.mainnet-beta.solana.com",
+};
+
+/** Default program ID (devnet). */
+export const TITLE_CONFIG_PROGRAM_ID = TITLE_CONFIG_PROGRAM_IDS.devnet!;
+
+/**
+ * Resolve program ID for a cluster.
+ * Throws if the cluster's program is not yet deployed.
+ */
+export function getProgramId(cluster: TitleCluster): PublicKey {
+  const id = TITLE_CONFIG_PROGRAM_IDS[cluster];
+  if (!id) {
+    throw new Error(`Title Protocol is not yet deployed on ${cluster}`);
+  }
+  return id;
+}
 
 /** Anchor account discriminator for GlobalConfigAccount. */
 const GLOBAL_CONFIG_DISC = Buffer.from("58c97d0fc786e147", "hex");
@@ -385,11 +410,45 @@ export async function fetchTeeNodeAccount(
  *
  * 仕様書 §5.2 Step 1
  */
+/** Fetch GlobalConfig using default RPC for the given cluster. */
+export async function fetchGlobalConfig(
+  cluster: TitleCluster
+): Promise<GlobalConfig>;
+
+/** Fetch GlobalConfig with a custom RPC Connection + cluster. */
 export async function fetchGlobalConfig(
   connection: Connection,
-  programId: PublicKey = TITLE_CONFIG_PROGRAM_ID
+  cluster: TitleCluster
+): Promise<GlobalConfig>;
+
+/** Fetch GlobalConfig with a custom RPC Connection + custom program ID (node operators only). */
+export async function fetchGlobalConfig(
+  connection: Connection,
+  programId: PublicKey
+): Promise<GlobalConfig>;
+
+export async function fetchGlobalConfig(
+  connectionOrCluster: Connection | TitleCluster,
+  clusterOrProgramId?: TitleCluster | PublicKey
 ): Promise<GlobalConfig> {
-  const [pda] = findGlobalConfigPDA(programId);
+  let connection: Connection;
+  let resolvedProgramId: PublicKey;
+
+  if (typeof connectionOrCluster === "string") {
+    // fetchGlobalConfig("devnet")
+    const cluster = connectionOrCluster;
+    resolvedProgramId = getProgramId(cluster);
+    connection = new Connection(DEFAULT_RPC_URLS[cluster]);
+  } else if (typeof clusterOrProgramId === "string") {
+    // fetchGlobalConfig(connection, "devnet")
+    connection = connectionOrCluster;
+    resolvedProgramId = getProgramId(clusterOrProgramId);
+  } else {
+    // fetchGlobalConfig(connection, programId)
+    connection = connectionOrCluster;
+    resolvedProgramId = clusterOrProgramId ?? TITLE_CONFIG_PROGRAM_ID;
+  }
+  const [pda] = findGlobalConfigPDA(resolvedProgramId);
   const accountInfo = await connection.getAccountInfo(pda);
   if (!accountInfo) {
     throw new Error(
@@ -402,7 +461,7 @@ export async function fetchGlobalConfig(
 
   // Fetch all TeeNodeAccount PDAs in parallel
   const nodePromises = raw.trustedNodeKeys.map((keyBuf) =>
-    fetchTeeNodeAccount(connection, keyBuf, programId)
+    fetchTeeNodeAccount(connection, keyBuf, resolvedProgramId)
   );
   const nodeResults = await Promise.all(nodePromises);
   const trustedTeeNodes = nodeResults.filter(

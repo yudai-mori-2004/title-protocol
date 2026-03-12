@@ -24,7 +24,7 @@ use crate::error::CliError;
 use crate::rpc::SolanaRpc;
 
 /// デフォルトプログラムID。
-const DEFAULT_PROGRAM_ID: &str = "CD3KZe1NWppgkYSPJTq9g2JVYFBnm6ysGD1af8vJQMJq";
+const DEFAULT_PROGRAM_ID: &str = "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ";
 
 /// WASM モジュールID一覧。
 const WASM_MODULES: &[&str] = &[
@@ -60,7 +60,7 @@ pub async fn run(
     // Step 1: Authority Keypair
     // =====================================================================
     println!("[Step 1] Authority Keypair");
-    let authority_path = config::resolve_key_path(keys_dir, project_root, "authority.json");
+    let authority_path = config::resolve_key_path(keys_dir, "authority.json");
     let authority = config::load_or_create_authority(&authority_path)?;
     let authority_pubkey = authority.pubkey();
     println!("  Authority: {authority_pubkey}");

@@ -119,7 +119,7 @@ pub async fn handle_sign_and_mint(
             "jsonrpc": "2.0",
             "id": 1,
             "method": "sendTransaction",
-            "params": [tx_b64, {"encoding": "base64"}]
+            "params": [tx_b64, {"encoding": "base64", "skipPreflight": true, "preflightCommitment": "confirmed"}]
         });
 
         let rpc_response = state

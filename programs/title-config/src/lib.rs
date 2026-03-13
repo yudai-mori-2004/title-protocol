@@ -13,21 +13,151 @@
 //!
 //! ## 命令
 //! - `initialize`: Global Configの初期化
-//! - `register_tee_node`: TEEノードの登録（PDA作成 + リスト追加）
+//! - `register_tee_node`: TEEノードの登録（PDA作成 + リスト追加 + Collection Authority委譲）
 //! - `update_tee_node`: TEEノード情報の更新
 //! - `deactivate_tee_node`: TEEノードの無効化
+//! - `remove_tee_node`: TEEノードの削除（リスト除去 + Collection Authority取り消し + PDAクローズ）
 //! - `update_collections`: コレクションMintの更新
 //! - `add_wasm_module`: WASMモジュールの追加
 //! - `remove_wasm_module`: WASMモジュールの削除
 //! - `set_resource_limits`: リソース制限の設定
 //! - `add_tsa_key`: TSA鍵の追加
 //! - `remove_tsa_key`: TSA鍵の削除
-//! - `delegate_collection_authority`: Collection AuthorityをTEEに委譲
-//! - `revoke_collection_authority`: Collection Authority委譲の取り消し
 
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    instruction::{AccountMeta, Instruction},
+    program::invoke,
+};
 
-declare_id!("8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ");
+declare_id!("9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn");
+
+/// MPL Core プログラムID: CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d
+fn mpl_core_program_id() -> Pubkey {
+    "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+        .parse()
+        .unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// MPL Core CPI ヘルパー
+// ---------------------------------------------------------------------------
+
+/// MPL Core AddCollectionPluginV1 CPIを実行する。
+/// UpdateDelegateプラグインを新規作成し、指定されたキーリストをadditional_delegatesに設定する。
+/// コレクションに初めてUpdateDelegateプラグインを追加する場合に使用する。
+///
+/// MPL Core のアカウント順序:
+///   0: collection (writable)
+///   1: payer (writable, signer) — authority が兼任
+///   2: authority (signer) — 同じキー
+///   3: system_program
+///   4: log_wrapper (optional → MPL Core ID をsentinel)
+fn cpi_add_update_delegate<'a>(
+    mpl_core_program: &AccountInfo<'a>,
+    collection: &AccountInfo<'a>,
+    authority: &AccountInfo<'a>,
+    system_program: &AccountInfo<'a>,
+    delegates: &[[u8; 32]],
+) -> Result<()> {
+    let mut ix_data = Vec::with_capacity(6 + delegates.len() * 32);
+    ix_data.push(3); // MplAssetInstruction::AddCollectionPluginV1
+    ix_data.push(4); // Plugin::UpdateDelegate
+    ix_data.extend_from_slice(&(delegates.len() as u32).to_le_bytes());
+    for key in delegates {
+        ix_data.extend_from_slice(key);
+    }
+    ix_data.push(0); // init_authority: Option<PluginAuthority>::None
+
+    let ix = Instruction {
+        program_id: mpl_core_program.key(),
+        accounts: vec![
+            AccountMeta::new(collection.key(), false),               // collection
+            AccountMeta::new(authority.key(), true),                  // payer
+            AccountMeta::new_readonly(authority.key(), true),         // authority (same key)
+            AccountMeta::new_readonly(system_program.key(), false),   // system_program
+            AccountMeta::new_readonly(mpl_core_program.key(), false), // log_wrapper (None sentinel)
+        ],
+        data: ix_data,
+    };
+
+    invoke(
+        &ix,
+        &[collection.clone(), authority.clone(), system_program.clone(), mpl_core_program.clone()],
+    )?;
+
+    Ok(())
+}
+
+/// MPL Core UpdateCollectionPluginV1 CPIを実行する。
+/// 既存のUpdateDelegateプラグインのadditional_delegatesリストを全置換する。
+/// 2つ目以降のTEEノード追加/削除時に使用する。
+fn cpi_update_delegate<'a>(
+    mpl_core_program: &AccountInfo<'a>,
+    collection: &AccountInfo<'a>,
+    authority: &AccountInfo<'a>,
+    system_program: &AccountInfo<'a>,
+    delegates: &[[u8; 32]],
+) -> Result<()> {
+    let mut ix_data = Vec::with_capacity(6 + delegates.len() * 32);
+    ix_data.push(7); // MplAssetInstruction::UpdateCollectionPluginV1
+    ix_data.push(4); // Plugin::UpdateDelegate
+    ix_data.extend_from_slice(&(delegates.len() as u32).to_le_bytes());
+    for key in delegates {
+        ix_data.extend_from_slice(key);
+    }
+
+    let ix = Instruction {
+        program_id: mpl_core_program.key(),
+        accounts: vec![
+            AccountMeta::new(collection.key(), false),               // collection
+            AccountMeta::new(authority.key(), true),                  // payer
+            AccountMeta::new_readonly(authority.key(), true),         // authority (same key)
+            AccountMeta::new_readonly(system_program.key(), false),   // system_program
+            AccountMeta::new_readonly(mpl_core_program.key(), false), // log_wrapper (None sentinel)
+        ],
+        data: ix_data,
+    };
+
+    invoke(
+        &ix,
+        &[collection.clone(), authority.clone(), system_program.clone(), mpl_core_program.clone()],
+    )?;
+
+    Ok(())
+}
+
+/// MPL Core RemoveCollectionPluginV1 CPIを実行する。
+/// UpdateDelegateプラグインを完全に削除する。
+/// 最後のTEEノード削除時に使用する。
+fn cpi_remove_delegate_plugin<'a>(
+    mpl_core_program: &AccountInfo<'a>,
+    collection: &AccountInfo<'a>,
+    authority: &AccountInfo<'a>,
+    system_program: &AccountInfo<'a>,
+) -> Result<()> {
+    // instruction variant 5 (RemoveCollectionPluginV1) + PluginType::UpdateDelegate (4)
+    let ix_data = vec![5, 4];
+
+    let ix = Instruction {
+        program_id: mpl_core_program.key(),
+        accounts: vec![
+            AccountMeta::new(collection.key(), false),               // collection
+            AccountMeta::new(authority.key(), true),                  // payer
+            AccountMeta::new_readonly(authority.key(), true),         // authority (same key)
+            AccountMeta::new_readonly(system_program.key(), false),   // system_program
+            AccountMeta::new_readonly(mpl_core_program.key(), false), // log_wrapper (None sentinel)
+        ],
+        data: ix_data,
+    };
+
+    invoke(
+        &ix,
+        &[collection.clone(), authority.clone(), system_program.clone(), mpl_core_program.clone()],
+    )?;
+
+    Ok(())
+}
 
 #[program]
 pub mod title_config {
@@ -52,6 +182,11 @@ pub mod title_config {
     /// 仕様書 §8.2 TEEノードの追加
     ///
     /// TeeNodeAccount PDAを作成し、GlobalConfigのtrusted_node_keysに追加する。
+    /// 同時にMPL Coreコレクション（Core + Extension）にUpdateDelegateプラグインCPIを実行し、
+    /// TEEのsigning_pubkeyにコレクション操作権限を付与する。
+    ///
+    /// **不変条件**: GlobalConfigのtrusted_node_keys == コレクションのadditional_delegates。
+    /// 登録と権限委譲は1トランザクションで不可分に実行される。
     pub fn register_tee_node(
         ctx: Context<RegisterTeeNode>,
         signing_pubkey: [u8; 32],
@@ -67,6 +202,7 @@ pub mod title_config {
         );
         require!(measurements.len() <= 8, ErrorCode::TooManyMeasurements);
 
+        // TeeNodeAccount 初期化
         let node = &mut ctx.accounts.tee_node;
         node.signing_pubkey = signing_pubkey;
         node.encryption_pubkey = encryption_pubkey;
@@ -77,8 +213,40 @@ pub mod title_config {
         node.measurements = measurements;
         node.bump = ctx.bumps.tee_node;
 
+        // GlobalConfig にノード追加
         let config = &mut ctx.accounts.global_config;
         config.trusted_node_keys.push(signing_pubkey);
+        let is_first_node = config.trusted_node_keys.len() == 1;
+        let all_keys = config.trusted_node_keys.clone();
+        // NLL: config の mutable borrow はここで終了
+
+        // MPL Core CPI: 両コレクションにUpdateDelegateプラグインを設定
+        let mpl_info = ctx.accounts.mpl_core_program.to_account_info();
+        let auth_info = ctx.accounts.authority.to_account_info();
+        let sys_info = ctx.accounts.system_program.to_account_info();
+
+        for collection_info in [
+            ctx.accounts.core_collection.to_account_info(),
+            ctx.accounts.ext_collection.to_account_info(),
+        ] {
+            if is_first_node {
+                cpi_add_update_delegate(
+                    &mpl_info,
+                    &collection_info,
+                    &auth_info,
+                    &sys_info,
+                    &all_keys,
+                )?;
+            } else {
+                cpi_update_delegate(
+                    &mpl_info,
+                    &collection_info,
+                    &auth_info,
+                    &sys_info,
+                    &all_keys,
+                )?;
+            }
+        }
 
         emit!(TeeNodeRegistered {
             signing_pubkey: Pubkey::new_from_array(signing_pubkey),
@@ -129,10 +297,45 @@ pub mod title_config {
     /// 仕様書 §8.2 TEEノードの削除
     ///
     /// trusted_node_keysリストから削除し、TeeNodeAccountをクローズする。
+    /// 同時にMPL CoreコレクションのUpdateDelegateプラグインを更新（残ノードあり）
+    /// または削除（最後のノード）し、該当TEEのコレクション操作権限を取り消す。
+    ///
+    /// **不変条件**: GlobalConfigのtrusted_node_keys == コレクションのadditional_delegates。
     pub fn remove_tee_node(ctx: Context<RemoveTeeNode>) -> Result<()> {
         let signing_pubkey = ctx.accounts.tee_node.signing_pubkey;
+
+        // GlobalConfig からノード削除
         let config = &mut ctx.accounts.global_config;
         config.trusted_node_keys.retain(|k| k != &signing_pubkey);
+        let remaining_keys = config.trusted_node_keys.clone();
+        // NLL: config の mutable borrow はここで終了
+
+        // MPL Core CPI: 両コレクションのUpdateDelegateプラグインを更新/削除
+        let mpl_info = ctx.accounts.mpl_core_program.to_account_info();
+        let auth_info = ctx.accounts.authority.to_account_info();
+        let sys_info = ctx.accounts.system_program.to_account_info();
+
+        for collection_info in [
+            ctx.accounts.core_collection.to_account_info(),
+            ctx.accounts.ext_collection.to_account_info(),
+        ] {
+            if remaining_keys.is_empty() {
+                cpi_remove_delegate_plugin(
+                    &mpl_info,
+                    &collection_info,
+                    &auth_info,
+                    &sys_info,
+                )?;
+            } else {
+                cpi_update_delegate(
+                    &mpl_info,
+                    &collection_info,
+                    &auth_info,
+                    &sys_info,
+                    &remaining_keys,
+                )?;
+            }
+        }
 
         emit!(TeeNodeDeactivated {
             signing_pubkey: Pubkey::new_from_array(signing_pubkey),
@@ -247,91 +450,6 @@ pub mod title_config {
             .position(|k| k == &key)
             .ok_or(ErrorCode::TsaKeyNotFound)?;
         config.trusted_tsa_keys.remove(pos);
-        Ok(())
-    }
-
-    /// Collection AuthorityをTEEの署名鍵に委譲する。
-    /// 仕様書 §8.2 TEEノードの追加時
-    ///
-    /// DAOの管理者（authority）がMPL CoreコレクションのUpdate Authority権限を
-    /// TEEのsigning_pubkeyにDelegateする。実際のCPI呼び出しはMPL Core SDKの
-    /// 依存が必要なため、イベントを発行し、クライアントサイドでMPL Core命令と
-    /// 合成するトランザクションを構築する設計とする。
-    ///
-    /// collection_typeで対象コレクションを指定する:
-    /// - 0 = core_collection_mint
-    /// - 1 = ext_collection_mint
-    pub fn delegate_collection_authority(
-        ctx: Context<CollectionAuthority>,
-        collection_type: u8,
-    ) -> Result<()> {
-        let config = &ctx.accounts.global_config;
-        let node = &ctx.accounts.tee_node;
-
-        require!(node.status == 1, ErrorCode::UntrustedTeeNode);
-
-        let expected_collection = match collection_type {
-            0 => config.core_collection_mint,
-            1 => config.ext_collection_mint,
-            _ => return Err(ErrorCode::InvalidCollectionType.into()),
-        };
-
-        require_keys_eq!(
-            ctx.accounts.collection.key(),
-            expected_collection,
-            ErrorCode::CollectionMismatch
-        );
-
-        let tee_signing_pubkey = Pubkey::new_from_array(node.signing_pubkey);
-
-        emit!(CollectionAuthorityDelegated {
-            collection: expected_collection,
-            collection_type,
-            tee_signing_pubkey,
-        });
-
-        msg!(
-            "Collection Authority委譲を承認: collection={}, tee={}",
-            expected_collection,
-            tee_signing_pubkey
-        );
-        Ok(())
-    }
-
-    /// Collection Authority委譲を取り消す。
-    /// 仕様書 §8.2 TEEノードの削除時（不正発覚時）
-    pub fn revoke_collection_authority(
-        ctx: Context<CollectionAuthority>,
-        collection_type: u8,
-    ) -> Result<()> {
-        let config = &ctx.accounts.global_config;
-        let node = &ctx.accounts.tee_node;
-
-        let expected_collection = match collection_type {
-            0 => config.core_collection_mint,
-            1 => config.ext_collection_mint,
-            _ => return Err(ErrorCode::InvalidCollectionType.into()),
-        };
-
-        require_keys_eq!(
-            ctx.accounts.collection.key(),
-            expected_collection,
-            ErrorCode::CollectionMismatch
-        );
-
-        let tee_signing_pubkey = Pubkey::new_from_array(node.signing_pubkey);
-
-        emit!(CollectionAuthorityRevoked {
-            collection: expected_collection,
-            collection_type,
-            tee_signing_pubkey,
-        });
-
-        msg!(
-            "Collection Authority委譲を取り消し: collection={}, tee={}",
-            expected_collection,
-            tee_signing_pubkey
-        );
         Ok(())
     }
 }
@@ -501,7 +619,10 @@ pub struct Initialize<'info> {
 /// `payer`（TEE署名鍵の所有者）がrent費用を支払い、`authority`（DAO）が承認する。
 /// `payer.key() == signing_pubkey` 制約により、TEEが自身の鍵で署名することを強制し、
 /// スペック（encryption_pubkey, gateway_endpoint等）の偽造を防止する。
-/// `/create-tree` と同様、TEEの内部鍵で支払いを行うフローに統一。
+///
+/// 同時にMPL Core CPIでコレクションにUpdateDelegateプラグインを設定し、
+/// TEEにcNFTミント権限を付与する。authorityはコレクションのupdate_authorityとして
+/// MPL Core CPIのpayerも兼ねる（プラグイン追加/更新のrent費用）。
 #[derive(Accounts)]
 #[instruction(signing_pubkey: [u8; 32])]
 pub struct RegisterTeeNode<'info> {
@@ -520,7 +641,8 @@ pub struct RegisterTeeNode<'info> {
         bump
     )]
     pub tee_node: Account<'info, TeeNodeAccount>,
-    /// DAO承認（署名のみ、支払い不要）
+    /// DAO承認（署名 + MPL Core CPI authority/payer）
+    #[account(mut)]
     pub authority: Signer<'info>,
     /// TEEノードの署名鍵所有者（rent支払い + 鍵所有証明）
     #[account(
@@ -528,11 +650,29 @@ pub struct RegisterTeeNode<'info> {
         constraint = payer.key() == Pubkey::new_from_array(signing_pubkey) @ ErrorCode::PayerSigningKeyMismatch
     )]
     pub payer: Signer<'info>,
+    /// CHECK: Core cNFTコレクション。GlobalConfigの値と一致を検証する。
+    #[account(
+        mut,
+        constraint = core_collection.key() == global_config.core_collection_mint @ ErrorCode::CollectionMismatch
+    )]
+    pub core_collection: UncheckedAccount<'info>,
+    /// CHECK: Extension cNFTコレクション。GlobalConfigの値と一致を検証する。
+    #[account(
+        mut,
+        constraint = ext_collection.key() == global_config.ext_collection_mint @ ErrorCode::CollectionMismatch
+    )]
+    pub ext_collection: UncheckedAccount<'info>,
+    /// CHECK: MPL Core プログラム。アドレスで検証する。
+    #[account(address = mpl_core_program_id())]
+    pub mpl_core_program: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
 /// TEEノード削除命令のアカウント。
 /// 仕様書 §8.2
+///
+/// GlobalConfigからノードを除去し、TeeNodeAccount PDAをクローズすると同時に、
+/// MPL Core CPIでコレクションのUpdateDelegateプラグインを更新/削除する。
 #[derive(Accounts)]
 pub struct RemoveTeeNode<'info> {
     #[account(
@@ -549,11 +689,29 @@ pub struct RemoveTeeNode<'info> {
         bump = tee_node.bump
     )]
     pub tee_node: Account<'info, TeeNodeAccount>,
+    /// DAO承認（署名 + MPL Core CPI authority/payer）
+    #[account(mut)]
     pub authority: Signer<'info>,
     /// rent返還先
     /// CHECK: rent lamportsの受取先。任意のアカウント。
     #[account(mut)]
     pub rent_recipient: UncheckedAccount<'info>,
+    /// CHECK: Core cNFTコレクション。GlobalConfigの値と一致を検証する。
+    #[account(
+        mut,
+        constraint = core_collection.key() == global_config.core_collection_mint @ ErrorCode::CollectionMismatch
+    )]
+    pub core_collection: UncheckedAccount<'info>,
+    /// CHECK: Extension cNFTコレクション。GlobalConfigの値と一致を検証する。
+    #[account(
+        mut,
+        constraint = ext_collection.key() == global_config.ext_collection_mint @ ErrorCode::CollectionMismatch
+    )]
+    pub ext_collection: UncheckedAccount<'info>,
+    /// CHECK: MPL Core プログラム。アドレスで検証する。
+    #[account(address = mpl_core_program_id())]
+    pub mpl_core_program: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 /// TEEノード更新命令のアカウント。
@@ -588,26 +746,6 @@ pub struct UpdateConfig<'info> {
     pub authority: Signer<'info>,
 }
 
-/// Collection Authority委譲/取り消し命令のアカウント。
-/// 仕様書 §8.2
-#[derive(Accounts)]
-pub struct CollectionAuthority<'info> {
-    #[account(
-        seeds = [b"global-config"],
-        bump,
-        has_one = authority
-    )]
-    pub global_config: Account<'info, GlobalConfigAccount>,
-    #[account(
-        seeds = [b"tee-node", tee_node.signing_pubkey.as_ref()],
-        bump = tee_node.bump
-    )]
-    pub tee_node: Account<'info, TeeNodeAccount>,
-    pub authority: Signer<'info>,
-    /// CHECK: collection mintの一致はプログラム内で検証する。
-    pub collection: UncheckedAccount<'info>,
-}
-
 // ---------------------------------------------------------------------------
 // イベント
 // ---------------------------------------------------------------------------
@@ -619,29 +757,11 @@ pub struct TeeNodeRegistered {
     pub signing_pubkey: Pubkey,
 }
 
-/// TEEノード無効化イベント。
+/// TEEノード無効化/削除イベント。
 /// 仕様書 §8.2
 #[event]
 pub struct TeeNodeDeactivated {
     pub signing_pubkey: Pubkey,
-}
-
-/// Collection Authority委譲イベント。
-/// 仕様書 §8.2
-#[event]
-pub struct CollectionAuthorityDelegated {
-    pub collection: Pubkey,
-    pub collection_type: u8,
-    pub tee_signing_pubkey: Pubkey,
-}
-
-/// Collection Authority取り消しイベント。
-/// 仕様書 §8.2
-#[event]
-pub struct CollectionAuthorityRevoked {
-    pub collection: Pubkey,
-    pub collection_type: u8,
-    pub tee_signing_pubkey: Pubkey,
 }
 
 // ---------------------------------------------------------------------------
@@ -651,15 +771,9 @@ pub struct CollectionAuthorityRevoked {
 /// プログラム固有のエラーコード。
 #[error_code]
 pub enum ErrorCode {
-    /// 不正なcollection_type値（0または1のみ有効）
-    #[msg("collection_typeは0(Core)または1(Extension)のみ有効です")]
-    InvalidCollectionType,
     /// コレクションアカウントがGlobal Configの値と一致しない
     #[msg("コレクションアカウントがGlobal Configの値と一致しません")]
     CollectionMismatch,
-    /// TEEノードがActiveでない
-    #[msg("TEEノードがActiveではありません")]
-    UntrustedTeeNode,
     /// WASMモジュールが既に登録されている
     #[msg("同じextension_idのWASMモジュールが既に登録されています")]
     DuplicateWasmModule,

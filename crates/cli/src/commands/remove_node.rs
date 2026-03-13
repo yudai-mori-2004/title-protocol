@@ -82,6 +82,16 @@ pub async fn run(
     // GlobalConfig PDA 導出
     let (global_config_pda, _) = anchor::find_global_config_pda(&program_id);
 
+    // コレクションMintアドレス
+    let core_collection: Pubkey = network
+        .core_collection_mint
+        .parse()
+        .map_err(|e| CliError::Config(format!("core_collection_mintのパースに失敗: {e}")))?;
+    let ext_collection: Pubkey = network
+        .ext_collection_mint
+        .parse()
+        .map_err(|e| CliError::Config(format!("ext_collection_mintのパースに失敗: {e}")))?;
+
     // remove_tee_node 命令を構築
     let ix = anchor::build_remove_tee_node_ix(
         &program_id,
@@ -89,6 +99,8 @@ pub async fn run(
         &tee_node_pda,
         &authority_pubkey,
         &authority_pubkey, // rent返還先 = authority
+        &core_collection,
+        &ext_collection,
     );
 
     // 署名+ブロードキャスト

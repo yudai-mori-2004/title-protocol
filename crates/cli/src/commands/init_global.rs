@@ -24,7 +24,7 @@ use crate::error::CliError;
 use crate::rpc::SolanaRpc;
 
 /// デフォルトプログラムID。
-const DEFAULT_PROGRAM_ID: &str = "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ";
+const DEFAULT_PROGRAM_ID: &str = "9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn";
 
 /// WASM モジュールID一覧。
 const WASM_MODULES: &[&str] = &[
@@ -318,10 +318,20 @@ async fn handle_existing_config(
     let ext_acct = rpc.get_account_data(&ext_mint).await?;
 
     if core_acct.is_some() && ext_acct.is_some() {
-        println!("  既存のコレクションを使用:");
-        println!("    Core:      {core_mint}");
-        println!("    Extension: {ext_mint}");
-        return Ok((core_mint.to_string(), ext_mint.to_string()));
+        // BubblegumV2プラグインの有無を確認。
+        // BubblegumV2はコレクション作成時にのみ追加可能（permanent plugin）なため、
+        // 不足している場合は新コレクションを作成しupdate_collectionsで更新する。
+        let core_has = has_bubblegum_v2_plugin(core_acct.as_ref().unwrap());
+        let ext_has = has_bubblegum_v2_plugin(ext_acct.as_ref().unwrap());
+
+        if core_has && ext_has {
+            println!("  既存のコレクションを使用:");
+            println!("    Core:      {core_mint}");
+            println!("    Extension: {ext_mint}");
+            return Ok((core_mint.to_string(), ext_mint.to_string()));
+        }
+
+        println!("  既存コレクションにBubblegumV2プラグインがありません。新規作成します。");
     }
 
     // コレクションが無効 → 新規作成 + update_collections
@@ -469,4 +479,74 @@ async fn create_one_collection(
     );
 
     Ok(collection_pubkey.to_string())
+}
+
+/// MPL Core コレクションアカウントデータにBubblegumV2プラグイン（type=15）が含まれるか確認する。
+///
+/// MPL Core CollectionV1 のデータレイアウト:
+///   Key(1) + UpdateAuthority(32) + name(4+len) + uri(4+len) + num_minted(4) + current_size(4)
+///   + PluginHeaderV1(1+8) + plugin_data... + PluginRegistryV1 at registry_offset
+fn has_bubblegum_v2_plugin(data: &[u8]) -> bool {
+    // CollectionV1 (Key=5) の最低サイズ: 1+32+4+0+4+0+4+4 = 49 bytes
+    if data.len() < 49 || data[0] != 5 {
+        return false;
+    }
+
+    // 可変長フィールドをスキップして base_end を算出
+    let name_len_offset = 33; // Key(1) + UpdateAuthority(32)
+    if name_len_offset + 4 > data.len() {
+        return false;
+    }
+    let name_len = u32::from_le_bytes(
+        data[name_len_offset..name_len_offset + 4].try_into().unwrap(),
+    ) as usize;
+    let uri_len_offset = name_len_offset + 4 + name_len;
+    if uri_len_offset + 4 > data.len() {
+        return false;
+    }
+    let uri_len = u32::from_le_bytes(
+        data[uri_len_offset..uri_len_offset + 4].try_into().unwrap(),
+    ) as usize;
+    let base_end = uri_len_offset + 4 + uri_len + 4 + 4; // uri + num_minted + current_size
+
+    // PluginHeaderV1 (Key=3) が base_end にあるか
+    if base_end + 9 > data.len() || data[base_end] != 3 {
+        return false;
+    }
+    let reg_offset = u64::from_le_bytes(
+        data[base_end + 1..base_end + 9].try_into().unwrap(),
+    ) as usize;
+
+    // PluginRegistryV1 (Key=4) をレジストリオフセットで読む
+    if reg_offset + 5 > data.len() || data[reg_offset] != 4 {
+        return false;
+    }
+    let num_records = u32::from_le_bytes(
+        data[reg_offset + 1..reg_offset + 5].try_into().unwrap(),
+    ) as usize;
+
+    // レジストリレコードを走査してBubblegumV2 (plugin_type=15) を探す
+    let mut roff = reg_offset + 5;
+    for _ in 0..num_records {
+        if roff >= data.len() {
+            break;
+        }
+        let plugin_type = data[roff];
+        if plugin_type == 15 {
+            return true; // BubblegumV2 found
+        }
+        // RegistryRecord: plugin_type(1) + Authority(variant(1) + optional 32B) + offset(8)
+        roff += 1; // plugin_type
+        if roff >= data.len() {
+            break;
+        }
+        let auth_variant = data[roff];
+        roff += 1;
+        if auth_variant == 3 {
+            roff += 32; // Authority::Address { address: Pubkey }
+        }
+        roff += 8; // offset: u64
+    }
+
+    false
 }

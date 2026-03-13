@@ -481,6 +481,10 @@ pub struct RegisterNodeRequest {
     pub authority: String,
     /// Base58エンコードされたtitle-configプログラムID
     pub program_id: String,
+    /// Base58エンコードされたCore cNFTコレクションMintアドレス
+    pub core_collection_mint: String,
+    /// Base58エンコードされたExtension cNFTコレクションMintアドレス
+    pub ext_collection_mint: String,
     /// TEE測定値。キー名→Hex値のマップ。
     /// 仕様書 §5.2 Step 4 — オンチェーンに記録され第三者がTEEの正当性を独立検証する。
     /// キー名と値の解釈は `tee_type` に依存する。省略時は空。

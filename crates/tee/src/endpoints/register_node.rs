@@ -119,6 +119,15 @@ pub async fn handle_register_node(
         _ => 0, // mock等はaws_nitroとして扱う
     };
 
+    // コレクションMint
+    let core_collection_mint = Pubkey::from_str(&request.core_collection_mint)
+        .map_err(|e| TeeError::BadRequest(format!("core_collection_mintのパースに失敗: {e}")))?;
+    let ext_collection_mint = Pubkey::from_str(&request.ext_collection_mint)
+        .map_err(|e| TeeError::BadRequest(format!("ext_collection_mintのパースに失敗: {e}")))?;
+
+    // MPL Core プログラムID
+    let mpl_core_program = Pubkey::from_str("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d").unwrap();
+
     // PDA導出
     let (global_config_pda, _) = find_global_config_pda(&program_id);
     let (tee_node_pda, _) = find_tee_node_pda(&signing_pubkey_bytes, &program_id);
@@ -166,10 +175,13 @@ pub async fn handle_register_node(
     let ix = Instruction {
         program_id,
         accounts: vec![
-            AccountMeta::new(global_config_pda, false), // global_config (mut)
-            AccountMeta::new(tee_node_pda, false),      // tee_node (mut, init)
-            AccountMeta::new_readonly(authority, true),  // authority (signer)
-            AccountMeta::new(tee_signing_pubkey, true),  // payer/TEE (mut, signer)
+            AccountMeta::new(global_config_pda, false),         // global_config (mut)
+            AccountMeta::new(tee_node_pda, false),              // tee_node (mut, init)
+            AccountMeta::new(authority, true),                   // authority (mut, signer) — MPL Core CPI payer
+            AccountMeta::new(tee_signing_pubkey, true),          // payer/TEE (mut, signer)
+            AccountMeta::new(core_collection_mint, false),       // core_collection (mut)
+            AccountMeta::new(ext_collection_mint, false),        // ext_collection (mut)
+            AccountMeta::new_readonly(mpl_core_program, false),  // mpl_core_program
             AccountMeta::new_readonly(system_program::id(), false), // system_program
         ],
         data: ix_data,
@@ -249,7 +261,9 @@ mod tests {
             gateway_pubkey: Pubkey::new_unique().to_string(),
             recent_blockhash: "11111111111111111111111111111111".to_string(),
             authority: Pubkey::new_unique().to_string(),
-            program_id: "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ".to_string(),
+            program_id: "9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn".to_string(),
+            core_collection_mint: Pubkey::new_unique().to_string(),
+            ext_collection_mint: Pubkey::new_unique().to_string(),
             measurements: Default::default(),
         };
 
@@ -291,7 +305,9 @@ mod tests {
             gateway_pubkey: Pubkey::new_unique().to_string(),
             recent_blockhash: "11111111111111111111111111111111".to_string(),
             authority: Pubkey::new_unique().to_string(),
-            program_id: "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ".to_string(),
+            program_id: "9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn".to_string(),
+            core_collection_mint: Pubkey::new_unique().to_string(),
+            ext_collection_mint: Pubkey::new_unique().to_string(),
             measurements: Default::default(),
         };
 

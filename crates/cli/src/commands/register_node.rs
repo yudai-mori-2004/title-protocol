@@ -63,6 +63,8 @@ pub async fn run(
         recent_blockhash: blockhash.to_string(),
         authority: network.authority.clone(),
         program_id: network.program_id.clone(),
+        core_collection_mint: network.core_collection_mint.clone(),
+        ext_collection_mint: network.ext_collection_mint.clone(),
         measurements,
     };
 
@@ -74,13 +76,14 @@ pub async fn run(
                 return Ok(());
             }
             helpers::TeeCallResult::HttpError { status, body } => {
-                println!("  TEEノード登録に失敗: HTTP {status}: {}", &body[..body.len().min(100)]);
-                return Ok(());
+                return Err(CliError::Config(format!(
+                    "TEEノード登録に失敗: HTTP {status}: {}", &body[..body.len().min(100)]
+                )));
             }
             helpers::TeeCallResult::ConnectionFailed(msg) => {
-                println!("  TEEに接続できません: {}", &msg[..msg.len().min(60)]);
-                println!("  TEE起動後に再実行してください。");
-                return Ok(());
+                return Err(CliError::Config(format!(
+                    "TEEに接続できません: {}。TEE起動後に再実行してください。", &msg[..msg.len().min(60)]
+                )));
             }
         };
 
@@ -130,7 +133,7 @@ pub async fn run(
                 {
                     println!("  TEEノード: 既に登録済み（スキップ）");
                 } else {
-                    println!("  TEEノード登録失敗: {e}");
+                    return Err(CliError::Transaction(format!("TEEノード登録失敗: {e}")));
                 }
             }
         }

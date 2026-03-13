@@ -130,14 +130,21 @@ pub fn build_add_wasm_module_ix(
 /// 仕様書 §8.2 TEEノードの削除
 ///
 /// TeeNodeAccount PDA をクローズし、trusted_node_keys から signing_pubkey を除去する。
+/// 同時にMPL CoreコレクションのUpdateDelegateプラグインを更新/削除する。
 /// rent lamports は rent_recipient に返還される。
+#[allow(deprecated)]
 pub fn build_remove_tee_node_ix(
     program_id: &Pubkey,
     global_config_pda: &Pubkey,
     tee_node_pda: &Pubkey,
     authority: &Pubkey,
     rent_recipient: &Pubkey,
+    core_collection_mint: &Pubkey,
+    ext_collection_mint: &Pubkey,
 ) -> Instruction {
+    let mpl_core_program =
+        Pubkey::try_from("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d").unwrap();
+
     let data = anchor_discriminator("remove_tee_node").to_vec();
 
     Instruction {
@@ -145,8 +152,12 @@ pub fn build_remove_tee_node_ix(
         accounts: vec![
             AccountMeta::new(*global_config_pda, false),
             AccountMeta::new(*tee_node_pda, false),
-            AccountMeta::new_readonly(*authority, true),
+            AccountMeta::new(*authority, true),
             AccountMeta::new(*rent_recipient, false),
+            AccountMeta::new(*core_collection_mint, false),
+            AccountMeta::new(*ext_collection_mint, false),
+            AccountMeta::new_readonly(mpl_core_program, false),
+            AccountMeta::new_readonly(system_program::id(), false),
         ],
         data,
     }
@@ -170,12 +181,24 @@ pub fn build_create_collection_ix(
 
     // CreateCollectionV2: Borsh enum variant index 21
     // (MPL Core uses BorshDeserialize for instruction dispatch, not Anchor-style 8-byte discriminator)
+    //
+    // Bubblegum V2 はコレクションに BubblegumV2 プラグイン（permanent）を要求する。
+    // このプラグインはコレクション作成時にのみ追加可能（後から AddCollectionPlugin では不可）。
+    let bubblegum_program =
+        Pubkey::try_from("BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY").unwrap();
+
     let mut data = Vec::new();
     data.push(21);
     data.extend_from_slice(&borsh_string(name));
     data.extend_from_slice(&borsh_string(uri));
-    // plugins: Option<Vec<_>> = None
-    data.push(0);
+    // plugins: Option<Vec<PluginAuthorityPair>> = Some(vec![BubblegumV2])
+    data.push(1); // Option::Some
+    data.extend_from_slice(&1u32.to_le_bytes()); // Vec len = 1
+    // PluginAuthorityPair { plugin: Plugin::BubblegumV2(BubblegumV2 {}), authority: Some(Authority::Address { address }) }
+    data.push(15); // Plugin::BubblegumV2 variant index (empty struct, no data)
+    data.push(1);  // Option::Some for authority
+    data.push(3);  // Authority::Address variant
+    data.extend_from_slice(&bubblegum_program.to_bytes()); // 32 bytes
     // external_plugins: Option<Vec<_>> = None
     data.push(0);
 
@@ -254,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_find_global_config_pda() {
-        let program_id: Pubkey = "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ"
+        let program_id: Pubkey = "9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn"
             .parse()
             .unwrap();
         let (pda, bump) = find_global_config_pda(&program_id);
@@ -265,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_find_tee_node_pda() {
-        let program_id: Pubkey = "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ"
+        let program_id: Pubkey = "9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn"
             .parse()
             .unwrap();
         let key = [42u8; 32];
@@ -326,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_build_set_resource_limits_ix() {
-        let program_id: Pubkey = "8Reo5GW2bY6NxF8YX4r2t89nSz6btovFGQP3PnpCSukZ"
+        let program_id: Pubkey = "9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn"
             .parse()
             .unwrap();
         let (pda, _) = find_global_config_pda(&program_id);

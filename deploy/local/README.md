@@ -1,112 +1,110 @@
-# deploy/local — Local Node Deployment
+# Local Node Deployment
 
-ローカル開発環境で Title Protocol ノードを起動する完全手順。
+Get a Title Protocol node running locally on Solana devnet and verify a C2PA-signed photo.
 
-すべてのプロセスがホスト上で直接動作する（Docker は PostgreSQL のみ）。
-
-> AWS 本番デプロイは [`deploy/aws/README.md`](../aws/README.md) を参照。
-
----
-
-## Architecture
-
-```
-Client --> Gateway (:3000) --> TempStorage (:3001) --> TEE (:4000) --> Solana
-                                                       |
-                                                  WASM Modules
-                                                  (phash, etc.)
-
-PostgreSQL (:5432) <-- Indexer (:5001)
-```
-
-| Process | Port | Role |
-|---------|------|------|
-| `title-tee` | 4000 | TEE（MockRuntime — C2PA 検証、WASM 実行） |
-| `title-temp-storage` | 3001 | 一時ファイルストレージ |
-| `title-gateway` | 3000 | クライアント向け HTTP API |
-| `indexer` | 5001 | cNFT インデクサ（オプション） |
-| `postgres` | 5432 | インデクサ用 DB（Docker） |
+> For architecture, trust model, and wallet roles, see [docs/architecture.md](../../docs/architecture.md).
 
 ---
 
 ## Prerequisites
 
-| Tool | Required | Notes |
-|------|----------|-------|
-| [Rust](https://rustup.rs/) + `wasm32-unknown-unknown` target | Yes | `rustup target add wasm32-unknown-unknown` |
-| [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) v2.0+ | Yes | |
-| [Docker](https://docs.docker.com/get-docker/) (with Compose V2) | Yes | PostgreSQL 用 |
-| [Python 3](https://www.python.org/) | Yes | `setup.sh` が `network.json` の解析に使用 |
-| [Node.js](https://nodejs.org/) 20+ | Optional | Indexer 用。未インストール時はスキップされる |
-| ~0.6 SOL on devnet | Yes | ノード登録 + Merkle Tree 作成に必要 |
-| `network.json` | Yes | Phase 1 で作成。→ [`programs/title-config/README.md`](../../programs/title-config/README.md) |
+| Tool | Install |
+|------|---------|
+| [Rust](https://rustup.rs/) + wasm32 target | `rustup target add wasm32-unknown-unknown` |
+| [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) v2.0+ | Includes `cargo-build-sbf` and `solana-keygen` |
+| [Docker](https://docs.docker.com/get-docker/) (with Compose V2) | |
+| ~5 SOL on devnet | [faucet.solana.com](https://faucet.solana.com) or `solana airdrop 2 --url devnet` |
 
 ---
 
-## Setup
+## Phase 1: Network Setup (one-time)
+
+Build the on-chain program, deploy it, and initialize GlobalConfig. This produces `network.json`, which Phase 2 needs.
 
 ```bash
-# 1. .env を作成
-cp .env.example .env
-# SOLANA_RPC_URL は .env.example にデフォルト値あり。通常はそのままでOK。
+# 1. Generate a new program keypair
+mkdir -p programs/title-config/target/deploy
+solana-keygen new -o programs/title-config/target/deploy/title_config-keypair.json \
+  --no-bip39-passphrase
 
-# 2. 起動（全自動）
+# 2. Get the program ID from the keypair
+solana-keygen pubkey programs/title-config/target/deploy/title_config-keypair.json
+#    Copy the output and replace the program ID in all 6 files listed in
+#    programs/title-config/README.md (declare_id!, Anchor.toml, SDK, CLI, TEE).
+
+# 3. Build the on-chain program
+cd programs/title-config && rm -f Cargo.lock && cargo generate-lockfile
+cargo-build-sbf --manifest-path Cargo.toml --tools-version v1.52
+cd ../..
+
+# 4. Deploy to devnet
+solana program deploy programs/title-config/target/deploy/title_config.so \
+  --program-id programs/title-config/target/deploy/title_config-keypair.json \
+  --url devnet
+
+# 5. Build WASM modules + CLI
+for dir in wasm/*/; do (cd "$dir" && cargo build --target wasm32-unknown-unknown --release); done
+cargo build --release -p title-cli
+
+# 6. Initialize GlobalConfig (creates keys/authority.json + network.json)
+./target/release/title-cli init-global --cluster devnet
+```
+
+> **Full details:** [`programs/title-config/README.md`](../../programs/title-config/README.md) — program ID update locations, network.json schema, and what init-global does.
+
+---
+
+## Phase 2: Node Deployment
+
+Start a local TEE node using `network.json` from Phase 1.
+
+```bash
+# 1. Create .env (defaults work for local devnet)
+cp .env.example .env
+
+# 2. Start everything
 ./deploy/local/setup.sh
 ```
 
-> **初回ビルドには 10〜20 分かかる。** 2回目以降はキャッシュが効く。
+`setup.sh` is fully automated. It builds binaries, starts all services, registers the TEE node on-chain, and creates Merkle Trees. If `keys/operator.json` doesn't exist, it creates one and pauses for SOL funding.
 
-### What `setup.sh` Does
+What `setup.sh` does:
 
-| Step | What | Details |
-|------|------|---------|
-| 0 | Prerequisite check | Rust, Solana CLI, Docker, .env, network.json, SOL balance を検証 |
-| 1 | Build WASM modules | 4 modules → `wasm-modules/` |
-| 2 | Build host binaries | TEE, Gateway, TempStorage, CLI |
-| 3 | Start TEE | MockRuntime, port 4000 |
-| 4 | Start services | TempStorage (:3001), Gateway (:3000), PostgreSQL (:5432), Indexer (:5001) |
-| 5 | Register TEE node | オンチェーンノード登録（`keys/authority.json` 存在時は自動署名） |
-| 6 | Create Merkle Trees | Core + Extension trees for cNFT minting |
-| 7 | Health check | 全サービスの応答確認 |
+| Step | Action |
+|------|--------|
+| 0 | Check prerequisites (Rust, Solana CLI, Docker, .env, network.json, SOL balance) |
+| 1 | Build 4 WASM modules |
+| 2 | Build host binaries (TEE, Gateway, TempStorage, CLI) |
+| 3 | Start TEE (MockRuntime, port 4000) |
+| 4 | Start services (TempStorage :3001, Gateway :3000, PostgreSQL :5432, Indexer :5001) |
+| 5 | Register TEE node on-chain (auto-signs if `keys/authority.json` exists) |
+| 6 | Create Merkle Trees (Core + Extension, for cNFT minting) |
+| 7 | Health check all services |
 
-### Auto-configured Values
-
-以下の値は `setup.sh` が自動設定する（手動設定不要）:
-
-| Value | Source |
-|-------|--------|
-| `GATEWAY_SIGNING_KEY` | `openssl rand -hex 32` で自動生成 |
-| `CORE_COLLECTION_MINT` | `network.json` → `core_collection_mint` |
-| `EXT_COLLECTION_MINT` | `network.json` → `ext_collection_mint` |
-| `GLOBAL_CONFIG_PDA` | `network.json` → `global_config_pda` |
-| `keys/operator.json` | `~/.config/solana/id.json` からコピー、または自動生成 |
-
-> `.env` で明示設定した場合はそちらが優先される。全環境変数の詳細は [docs/reference.md](../../docs/reference.md) を参照。
+> **AWS deployment:** [`deploy/aws/README.md`](../aws/README.md) — Terraform, Nitro Enclaves, mainnet.
 
 ---
 
-## Verify the Node
-
-ノード起動後、テスト写真で動作確認:
+## Verify a Photo
 
 ```bash
-# SDK をビルド（integration-tests が依存）
+# Build the SDK (integration-tests depend on it)
 cd sdk/ts && npm install && npm run build && cd ../..
 
-# integration-tests から verify
+# Run verification only
 cd integration-tests && npm install
 npx tsx register-photo.ts localhost ./fixtures/pixel_photo_ramen.jpg \
   --wallet ../keys/operator.json --skip-sign
+```
 
-# Full flow: verify + Arweave upload + cNFT mint
+You should see `protocol: "Title-v1"`, a `content_hash`, and the provenance graph.
+
+For the full flow (verify + Arweave upload + cNFT mint):
+
+```bash
 npx tsx register-photo.ts localhost ./fixtures/pixel_photo_ramen.jpg \
   --wallet ../keys/operator.json --broadcast
 ```
-
-See also:
-
-- `integration-tests/stress-test.ts` — Concurrent registration under load
-- `integration-tests/fixtures/` — Sample C2PA-signed images for testing
 
 ---
 
@@ -121,31 +119,7 @@ tail -f /tmp/title-indexer.log
 
 ---
 
-## Restart Individual Processes
-
-```bash
-# 例: Gateway だけ再起動
-kill $(cat /tmp/title-local/gateway.pid)
-TEE_ENDPOINT=http://localhost:4000 \
-  LOCAL_STORAGE_ENDPOINT=http://localhost:3001 \
-  GATEWAY_SIGNING_KEY=<hex from setup.sh output> \
-  SOLANA_RPC_URL=https://api.devnet.solana.com \
-  GLOBAL_CONFIG_PDA=<from network.json> \
-  ./target/release/title-gateway
-```
-
-PID ファイルは `/tmp/title-local/` に保存される:
-
-| PID File | Process |
-|----------|---------|
-| `tee.pid` | `title-tee` |
-| `temp-storage.pid` | `title-temp-storage` |
-| `gateway.pid` | `title-gateway` |
-| `indexer.pid` | `indexer` |
-
----
-
-## Stop Everything
+## Stop
 
 ```bash
 ./deploy/local/teardown.sh
@@ -153,6 +127,14 @@ PID ファイルは `/tmp/title-local/` に保存される:
 
 ---
 
-## Troubleshooting
+## What's Next
 
-See [docs/troubleshooting.md](../../docs/troubleshooting.md).
+| Goal | Guide |
+|------|-------|
+| Understand the architecture | [docs/architecture.md](../../docs/architecture.md) |
+| Deploy on AWS with Nitro Enclaves | [deploy/aws/README.md](../aws/README.md) |
+| Run a mainnet node | [deploy/aws/README.md — Mainnet](../aws/README.md#running-a-mainnet-node) |
+| Build an app with the SDK | [sdk/ts/README.md](../../sdk/ts/README.md) |
+| Query indexed cNFTs | [indexer/README.md](../../indexer/README.md) |
+| Environment variables & CLI reference | [docs/reference.md](../../docs/reference.md) |
+| Troubleshooting | [docs/troubleshooting.md](../../docs/troubleshooting.md) |

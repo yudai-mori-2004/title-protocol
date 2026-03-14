@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_find_global_config_pda() {
-        let program_id: Pubkey = "9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn"
+        let program_id: Pubkey = "5p5Tf93fEbCPZxA1NG48rH9ozDALsVmVVf52QW3VDNoN"
             .parse()
             .unwrap();
         let (pda, bump) = find_global_config_pda(&program_id);
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_find_tee_node_pda() {
-        let program_id: Pubkey = "9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn"
+        let program_id: Pubkey = "5p5Tf93fEbCPZxA1NG48rH9ozDALsVmVVf52QW3VDNoN"
             .parse()
             .unwrap();
         let key = [42u8; 32];
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_build_set_resource_limits_ix() {
-        let program_id: Pubkey = "9wodSEfsAzTGEJKMezCuDGpmrJGzb4wNM5TwvmphGoLn"
+        let program_id: Pubkey = "5p5Tf93fEbCPZxA1NG48rH9ozDALsVmVVf52QW3VDNoN"
             .parse()
             .unwrap();
         let (pda, _) = find_global_config_pda(&program_id);

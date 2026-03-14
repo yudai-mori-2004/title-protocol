@@ -11,13 +11,14 @@
 //!
 //! ## ホスト関数 (仕様書 §7.1)
 //! - `read_content_chunk`: コンテンツのチャンク読み取り
-//! - `get_extension_input`: Extension補助入力の取得
-//! - `hash_content`: コンテンツのハッシュ計算
-//! - `hmac_content`: コンテンツのHMAC計算
 //! - `get_content_length`: コンテンツの全長取得
+//! - `get_extension_input`: Extension補助入力の取得
+//! - `get_content_feature`: コンテンツの特徴量計算（JSON spec指定: sha256/sha384/sha512）
+//! - `hmac_content`: コンテンツのHMAC計算
 //! - `decode_content`: コンテンツのデコード（画像→ピクセル等）
 //! - `read_decoded_chunk`: デコード済みデータのチャンク読み取り
 //! - `get_decoded_length`: デコード済みデータの全長取得
+//! - `get_decoded_feature`: デコード済みデータの特徴量計算（JSON spec指定: grayscale_resize等）
 //!
 //! ## WASM結果フォーマット
 //! WASMエクスポート関数は結果バッファへのポインタ(u32)を返す。
@@ -67,11 +68,18 @@ pub struct ExtensionResult {
 
 /// デコード済みコンテンツ。
 /// decode_content ホスト関数の結果として InnerHostState に格納される。
-/// メタデータ（画像: width/height/channels 等）はデコード時にWASMリニアメモリに書き込まれる。
+/// メタデータ（画像: width/height/channels 等）はデコード時にWASMリニアメモリに書き込まれ、
+/// 同時に本構造体にも保存される（get_decoded_feature で参照するため）。
 /// 仕様書 §7.1
 struct DecodedContent {
     /// デコード済み生データ（コンテンツ種別に依存しない）
     data: Vec<u8>,
+    /// 画像幅（ピクセル）
+    width: u32,
+    /// 画像高さ（ピクセル）
+    height: u32,
+    /// チャネル数（1=Luma, 3=RGB, 4=RGBA）
+    channels: u32,
 }
 
 /// wasmtime Store内部の状態。
@@ -349,53 +357,82 @@ impl WasmRunner {
                 WasmError::ExecutionError(format!("read_content_chunkの登録に失敗: {e}"))
             })?;
 
-        // hash_content(algorithm: u32, offset: u32, length: u32, out_ptr: u32) -> u32
-        // コンテンツの指定範囲に対するハッシュを計算する。
-        // algorithm: 0=sha256(32B), 1=sha384(48B), 2=sha512(64B)
+        // get_content_feature(spec_ptr: u32, spec_len: u32, output_ptr: u32) -> i32
+        // JSON specに基づいてコンテンツの特徴量を計算する。
+        // spec: {"op":"sha256"}, {"op":"sha256","offset":0,"length":1024}, {"op":"sha384"}, {"op":"sha512"}
+        // 戻り値: 出力バイト数（正値）またはエラーコード（負値）
+        // -1=specパースエラー/未知op, -2=コンテンツ範囲外, -3=出力バッファ境界外
         // 仕様書 §7.1
         linker
             .func_wrap(
                 "env",
-                "hash_content",
+                "get_content_feature",
                 |mut caller: Caller<'_, InnerHostState>,
-                 algorithm: u32,
-                 offset: u32,
-                 length: u32,
-                 out_ptr: u32|
-                 -> u32 {
+                 spec_ptr: u32,
+                 spec_len: u32,
+                 output_ptr: u32|
+                 -> i32 {
                     let memory = match caller.get_export("memory") {
                         Some(ext) => match ext.into_memory() {
                             Some(m) => m,
-                            None => return 0,
+                            None => return -3,
                         },
-                        None => return 0,
+                        None => return -3,
                     };
                     let (mem_data, state) = memory.data_and_store_mut(&mut caller);
 
-                    let start = offset as usize;
-                    if start >= state.content.len() {
-                        return 0;
+                    // specをWASMメモリから読み取り
+                    let sp = spec_ptr as usize;
+                    let sl = spec_len as usize;
+                    if sp + sl > mem_data.len() {
+                        return -1;
                     }
-                    let end = (start + length as usize).min(state.content.len());
-                    let data_slice = &state.content[start..end];
+                    let spec_bytes = &mem_data[sp..sp + sl];
 
-                    // ハッシュ計算（仕様書 §7.1）
-                    let hash_bytes: Vec<u8> = match algorithm {
-                        0 => Sha256::digest(data_slice).to_vec(),
-                        1 => Sha384::digest(data_slice).to_vec(),
-                        2 => Sha512::digest(data_slice).to_vec(),
-                        _ => return 0, // 未サポートアルゴリズム
+                    // JSONパース
+                    let spec: serde_json::Value = match serde_json::from_slice(spec_bytes) {
+                        Ok(v) => v,
+                        Err(_) => return -1,
+                    };
+                    let op = match spec["op"].as_str() {
+                        Some(s) => s,
+                        None => return -1,
                     };
 
-                    let dest = out_ptr as usize;
+                    // offset/lengthの取得（オプショナル）
+                    let offset = spec.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let length = spec.get("length").and_then(|v| v.as_u64());
+
+                    // コンテンツ範囲の検証
+                    if offset > state.content.len() {
+                        return -2;
+                    }
+                    let end = match length {
+                        Some(l) => (offset + l as usize).min(state.content.len()),
+                        None => state.content.len(),
+                    };
+                    let data_slice = &state.content[offset..end];
+
+                    // ハッシュ計算（仕様書 §7.1）
+                    let hash_bytes: Vec<u8> = match op {
+                        "sha256" => Sha256::digest(data_slice).to_vec(),
+                        "sha384" => Sha384::digest(data_slice).to_vec(),
+                        "sha512" => Sha512::digest(data_slice).to_vec(),
+                        _ => return -1, // 未知のop
+                    };
+
+                    // 出力バッファへの書き込み
+                    let dest = output_ptr as usize;
                     if dest + hash_bytes.len() > mem_data.len() {
-                        return 0;
+                        return -3;
                     }
                     mem_data[dest..dest + hash_bytes.len()].copy_from_slice(&hash_bytes);
-                    hash_bytes.len() as u32
+                    hash_bytes.len() as i32
                 },
             )
-            .map_err(|e| WasmError::ExecutionError(format!("hash_contentの登録に失敗: {e}")))?;
+            .map_err(|e| {
+                WasmError::ExecutionError(format!("get_content_featureの登録に失敗: {e}"))
+            })?;
 
         // hmac_content(algorithm: u32, key_ptr: u32, key_len: u32, offset: u32, length: u32, out_ptr: u32) -> u32
         // コンテンツの指定範囲に対するHMACを計算する。
@@ -609,10 +646,16 @@ impl WasmRunner {
                     mem_data[mp..mp + result.metadata.len()]
                         .copy_from_slice(&result.metadata);
 
-                    // 7. デコード済みデータを格納
+                    // 7. デコード済みデータを格納（メタデータも保持）
+                    let w = u32::from_le_bytes([result.metadata[0], result.metadata[1], result.metadata[2], result.metadata[3]]);
+                    let h = u32::from_le_bytes([result.metadata[4], result.metadata[5], result.metadata[6], result.metadata[7]]);
+                    let ch = u32::from_le_bytes([result.metadata[8], result.metadata[9], result.metadata[10], result.metadata[11]]);
                     let state = caller.data_mut();
                     state.decoded = Some(DecodedContent {
                         data: result.data,
+                        width: w,
+                        height: h,
+                        channels: ch,
                     });
 
                     0 // 成功
@@ -687,6 +730,115 @@ impl WasmRunner {
                 WasmError::ExecutionError(format!("get_decoded_lengthの登録に失敗: {e}"))
             })?;
 
+        // get_decoded_feature(spec_ptr: u32, spec_len: u32, output_ptr: u32) -> i32
+        // JSON specに基づいてデコード済みデータの特徴量を計算する。
+        // spec: {"op":"grayscale_resize","width":32,"height":32}
+        // 戻り値: 出力バイト数（正値）またはエラーコード（負値）
+        // -1=specパースエラー/未知op, -3=出力バッファ境界外, -4=デコード未実行, -5=チャネル数不正
+        // 仕様書 §7.1
+        linker
+            .func_wrap(
+                "env",
+                "get_decoded_feature",
+                |mut caller: Caller<'_, InnerHostState>,
+                 spec_ptr: u32,
+                 spec_len: u32,
+                 output_ptr: u32|
+                 -> i32 {
+                    let memory = match caller.get_export("memory") {
+                        Some(ext) => match ext.into_memory() {
+                            Some(m) => m,
+                            None => return -3,
+                        },
+                        None => return -3,
+                    };
+                    let (mem_data, state) = memory.data_and_store_mut(&mut caller);
+
+                    // specをWASMメモリから読み取り
+                    let sp = spec_ptr as usize;
+                    let sl = spec_len as usize;
+                    if sp + sl > mem_data.len() {
+                        return -1;
+                    }
+                    let spec_bytes = &mem_data[sp..sp + sl];
+
+                    // JSONパース
+                    let spec: serde_json::Value = match serde_json::from_slice(spec_bytes) {
+                        Ok(v) => v,
+                        Err(_) => return -1,
+                    };
+                    let op = match spec["op"].as_str() {
+                        Some(s) => s,
+                        None => return -1,
+                    };
+
+                    // デコード済みデータの存在確認
+                    let decoded = match &state.decoded {
+                        Some(d) => d,
+                        None => return -4,
+                    };
+
+                    match op {
+                        "grayscale_resize" => {
+                            let target_w = match spec.get("width").and_then(|v| v.as_u64()) {
+                                Some(w) => w as u32,
+                                None => return -1,
+                            };
+                            let target_h = match spec.get("height").and_then(|v| v.as_u64()) {
+                                Some(h) => h as u32,
+                                None => return -1,
+                            };
+
+                            // グレースケール変換（ITU-R BT.601）+ リサイズ
+                            use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};
+
+                            let gray_img = match decoded.channels {
+                                1 => match GrayImage::from_raw(decoded.width, decoded.height, decoded.data.clone()) {
+                                    Some(img) => img,
+                                    None => return -5,
+                                },
+                                3 => {
+                                    let rgb = match RgbImage::from_raw(decoded.width, decoded.height, decoded.data.clone()) {
+                                        Some(img) => img,
+                                        None => return -5,
+                                    };
+                                    DynamicImage::ImageRgb8(rgb).to_luma8()
+                                }
+                                4 => {
+                                    let rgba = match RgbaImage::from_raw(decoded.width, decoded.height, decoded.data.clone()) {
+                                        Some(img) => img,
+                                        None => return -5,
+                                    };
+                                    DynamicImage::ImageRgba8(rgba).to_luma8()
+                                }
+                                _ => return -5,
+                            };
+
+                            // バイリニア補間リサイズ
+                            let resized = image::imageops::resize(
+                                &gray_img,
+                                target_w,
+                                target_h,
+                                image::imageops::FilterType::Triangle,
+                            );
+                            let output = resized.into_raw();
+
+                            // WASMメモリに出力
+                            let dest = output_ptr as usize;
+                            if dest + output.len() > mem_data.len() {
+                                return -3;
+                            }
+                            mem_data[dest..dest + output.len()].copy_from_slice(&output);
+                            output.len() as i32
+                        }
+                        _ => -1, // 未知のop
+                    }
+                },
+            )
+            .map_err(|e| {
+                WasmError::ExecutionError(format!("get_decoded_featureの登録に失敗: {e}"))
+            })?;
+
         Ok(())
     }
 }
@@ -703,7 +855,7 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
@@ -714,7 +866,7 @@ mod tests {
                 ;; ホスト関数を呼び出してデータ受け渡しをテスト
                 (drop (call $len))
                 (drop (call $read (i32.const 0) (i32.const 256) (i32.const 4096)))
-                (drop (call $hash (i32.const 0) (i32.const 0) (i32.const 256) (i32.const 8192)))
+                (drop (call $gcf (i32.const 0) (i32.const 0) (i32.const 8192)))
                 (drop (call $ext (i32.const 12288) (i32.const 1024)))
                 ;; 事前初期化された結果を返す
                 (i32.const 1024)
@@ -742,7 +894,7 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
@@ -775,7 +927,7 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
@@ -807,7 +959,7 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
@@ -839,17 +991,20 @@ mod tests {
         assert_eq!(result.output["len"], 42);
     }
 
-    /// テスト: hash_contentがSHA-256を正しく計算する
+    /// テスト: get_content_featureがSHA-256を正しく計算する
+    /// 仕様書 §7.1
     #[test]
-    fn test_hash_content_sha256() {
+    fn test_get_content_feature_sha256() {
         let wasm = wat::parse_str(
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
+            ;; JSON spec: {"op":"sha256"} (15 bytes) at offset 256
+            (data (i32.const 256) "{\"op\":\"sha256\"}")
             ;; 成功時の結果: {"hash_size":32} = 16バイト
             (data (i32.const 1024) "\10\00\00\00{\"hash_size\":32}")
             ;; 失敗時の結果: {"hash_size":0}  = 15バイト
@@ -857,11 +1012,10 @@ mod tests {
             (func (export "alloc") (param i32) (result i32) (i32.const 4096))
             (func (export "compute_phash") (result i32)
                 (local $hash_size i32)
-                ;; SHA-256(コンテンツ全体)をオフセット8192に書き込む
-                (local.set $hash_size (call $hash
-                    (i32.const 0)
-                    (i32.const 0)
-                    (i32.const 65535)
+                ;; get_content_feature(spec_ptr=256, spec_len=15, output_ptr=8192)
+                (local.set $hash_size (call $gcf
+                    (i32.const 256)
+                    (i32.const 15)
                     (i32.const 8192)
                 ))
                 ;; hash_sizeが32であれば成功結果、そうでなければ失敗結果を返す
@@ -890,7 +1044,7 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
@@ -946,7 +1100,7 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
@@ -967,7 +1121,7 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
@@ -991,7 +1145,7 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
@@ -1017,12 +1171,13 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (import "env" "decode_content" (func $decode (param i32 i32 i32) (result i32)))
             (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
             (import "env" "get_decoded_length" (func $dec_len (result i32)))
+            (import "env" "get_decoded_feature" (func $gdf (param i32 i32 i32) (result i32)))
             (memory (export "memory") 2)
             ;; {"ok":1} = 8 bytes
             (data (i32.const 1024) "\08\00\00\00{\"ok\":1}")
@@ -1106,12 +1261,13 @@ mod tests {
             r#"(module
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
             (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (import "env" "decode_content" (func $decode (param i32 i32 i32) (result i32)))
             (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
             (import "env" "get_decoded_length" (func $dec_len (result i32)))
+            (import "env" "get_decoded_feature" (func $gdf (param i32 i32 i32) (result i32)))
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) (i32.const 4096))
             ;; 成功: {"pre":0} = 9 bytes
@@ -1190,6 +1346,109 @@ mod tests {
             result.output["ok"], 1,
             "C2PA署名済みJPEGがデコードできませんでした"
         );
+    }
+
+    /// テスト: get_decoded_featureがgrayscale_resizeを正しく計算する
+    /// 仕様書 §7.1
+    #[test]
+    fn test_get_decoded_feature_grayscale_resize() {
+        // decode_content後にget_decoded_featureを呼び出し、出力サイズが32*32=1024であることを確認
+        let wasm = wat::parse_str(
+            r#"(module
+            (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
+            (import "env" "get_content_length" (func $len (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
+            (import "env" "decode_content" (func $decode (param i32 i32 i32) (result i32)))
+            (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
+            (import "env" "get_decoded_length" (func $dec_len (result i32)))
+            (import "env" "get_decoded_feature" (func $gdf (param i32 i32 i32) (result i32)))
+            (memory (export "memory") 2)
+            ;; JSON spec: {"op":"grayscale_resize","width":32,"height":32} (48 bytes) at offset 256
+            (data (i32.const 256) "{\"op\":\"grayscale_resize\",\"width\":32,\"height\":32}")
+            ;; {"size":1024} = 13 bytes
+            (data (i32.const 1024) "\0d\00\00\00{\"size\":1024}")
+            ;; {"size":0} = 10 bytes
+            (data (i32.const 2048) "\0a\00\00\00{\"size\":0}")
+            (func (export "alloc") (param i32) (result i32) (i32.const 32768))
+
+            (func (export "process") (result i32)
+                (local $rc i32)
+                (local $feat_size i32)
+                ;; 1. decode
+                (local.set $rc (call $decode (i32.const 0) (i32.const 0) (i32.const 8192)))
+                (if (i32.ne (local.get $rc) (i32.const 0))
+                    (then (return (i32.const 2048)))
+                )
+                ;; 2. get_decoded_feature(spec_ptr=256, spec_len=49, output_ptr=16384)
+                (local.set $feat_size (call $gdf
+                    (i32.const 256)
+                    (i32.const 48)
+                    (i32.const 16384)
+                ))
+                ;; feat_size==1024 なら成功
+                (if (result i32) (i32.eq (local.get $feat_size) (i32.const 1024))
+                    (then (i32.const 1024))
+                    (else (i32.const 2048))
+                )
+            )
+        )"#,
+        )
+        .unwrap();
+
+        let content = include_bytes!("../../../tests/fixtures/test_2x2.png");
+        let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
+        let result = runner
+            .execute(&wasm, content, None, "process")
+            .expect("WASM実行に成功するべき");
+
+        assert_eq!(result.output["size"], 1024);
+    }
+
+    /// テスト: decode前のget_decoded_featureが-4を返す
+    /// 仕様書 §7.1
+    #[test]
+    fn test_get_decoded_feature_before_decode() {
+        let wasm = wat::parse_str(
+            r#"(module
+            (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
+            (import "env" "get_content_length" (func $len (result i32)))
+            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
+            (import "env" "decode_content" (func $decode (param i32 i32 i32) (result i32)))
+            (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
+            (import "env" "get_decoded_length" (func $dec_len (result i32)))
+            (import "env" "get_decoded_feature" (func $gdf (param i32 i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            ;; JSON spec at offset 256
+            (data (i32.const 256) "{\"op\":\"grayscale_resize\",\"width\":32,\"height\":32}")
+            ;; {"rc":-4} = 9 bytes
+            (data (i32.const 1024) "\09\00\00\00{\"rc\":-4}")
+            ;; {"rc":0} = 8 bytes
+            (data (i32.const 2048) "\08\00\00\00{\"rc\":0}")
+            (func (export "alloc") (param i32) (result i32) (i32.const 4096))
+            (func (export "process") (result i32)
+                (local $rc i32)
+                ;; decodeせずにget_decoded_featureを呼ぶ
+                (local.set $rc (call $gdf (i32.const 256) (i32.const 48) (i32.const 8192)))
+                ;; rc==-4 なら成功（デコード未実行エラー）
+                (if (result i32) (i32.eq (local.get $rc) (i32.const -4))
+                    (then (i32.const 1024))
+                    (else (i32.const 2048))
+                )
+            )
+        )"#,
+        )
+        .unwrap();
+
+        let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
+        let result = runner
+            .execute(&wasm, b"some content", None, "process")
+            .expect("WASM実行に成功するべき");
+
+        assert_eq!(result.output["rc"], -4);
     }
 
     /// テスト: ResourcePoolのDrop時にTicketが解放される

@@ -34,8 +34,8 @@ extern "C" {
     /// コンテンツの指定範囲をチャンク単位で読み取る。
     fn read_content_chunk(offset: u32, length: u32, buf_ptr: u32) -> u32;
 
-    /// コンテンツの指定範囲に対するハッシュを計算する。
-    fn hash_content(algorithm: u32, offset: u32, length: u32, out_ptr: u32) -> u32;
+    /// コンテンツの特徴量を計算する（JSON spec指定）。
+    fn get_content_feature(spec_ptr: u32, spec_len: u32, output_ptr: u32) -> i32;
 
     /// コンテンツの全長を返す。
     fn get_content_length() -> u32;
@@ -82,7 +82,7 @@ fn write_result(json: &str) -> u32 {
 /// コンテンツ内でバイトパターンを検索する。
 /// チャンク読み取りで大容量コンテンツにも対応。
 fn find_pattern(pattern: &[u8]) -> bool {
-    let _ = (hash_content, get_extension_input);
+    let _ = (get_content_feature, get_extension_input);
 
     // SAFETY: ホスト関数はwasm-hostが提供し、WASMリニアメモリの範囲内で安全に動作する。
     let content_len = unsafe { get_content_length() } as usize;

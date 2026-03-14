@@ -215,7 +215,7 @@ async fn test_verify_with_extension() {
         r#"(module
         (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
         (import "env" "get_content_length" (func $len (result i32)))
-        (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+        (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
         (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
         (memory (export "memory") 1)
         ;; 結果: {"phash":"test"} = 16バイト
@@ -395,7 +395,7 @@ async fn test_verify_rejects_untrusted_extension() {
         r#"(module
         (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
         (import "env" "get_content_length" (func $len (result i32)))
-        (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+        (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
         (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
         (memory (export "memory") 1)
         (data (i32.const 1024) "\10\00\00\00{\"phash\":\"test\"}")

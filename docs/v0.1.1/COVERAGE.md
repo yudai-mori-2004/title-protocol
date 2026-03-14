@@ -11,9 +11,9 @@ v0.1.0 を基準とし、v0.1.1 での変更のみを追跡する。
 | TEE エンドポイント | `/register-node` リクエストにコレクションアドレスを追加 |
 | CLI | `register-node` / `remove-node` がコレクションアドレスを送信 |
 | デプロイスクリプト | `setup-ec2.sh` の環境変数書き込み修正 |
-| WASM 実行環境 | ホスト側コンテンツデコード関数 + ResourcePool（統合セマフォ） |
-| WASM Extension | phash-v1 を dHash → pHash (DCT) に移行、ホスト側デコード活用、WASM側grayscale変換 |
-| 仕様書 | §7.1 ホスト関数追加・ResourcePool仕様、§6.4 三層防御更新、§7.4 pHash アルゴリズム更新 |
+| WASM 実行環境 | ホスト側コンテンツデコード関数 + ResourcePool（統合セマフォ）+ Feature Host Functions |
+| WASM Extension | phash-v1 を dHash → pHash (DCT) に移行、ホスト側デコード活用、get_decoded_feature で grayscale_resize をホスト委譲 |
+| 仕様書 | §7.1 ホスト関数追加・ResourcePool仕様・Feature Host Functions、§6.4 三層防御更新、§7.4 pHash アルゴリズム更新 |
 
 ---
 
@@ -103,6 +103,33 @@ v0.1.1 Task 02 で導入した `MemoryPool`（セマフォB）と既存の `toki
 
 ---
 
+## §7.1 — Feature Host Functions（特徴量計算ホスト関数）
+
+`hash_content` を汎用的な `get_content_feature`（JSON spec指定）に置き換え、新規 `get_decoded_feature` を追加。pHash計算のfuel消費を劇的に削減。
+
+### 変更内容
+
+| 変更 | 旧 | 新 |
+|------|-----|-----|
+| コンテンツハッシュ | `hash_content(algorithm, offset, length, out_ptr) -> u32` | `get_content_feature(spec_ptr, spec_len, output_ptr) -> i32` — JSON specで op/offset/length を指定 |
+| デコード済み特徴量 | なし（WASM側で全ピクセル転送+処理） | `get_decoded_feature(spec_ptr, spec_len, output_ptr) -> i32` — grayscale_resize等をホスト側で実行 |
+| pHash処理フロー | decode → read全ピクセル → WASM側grayscale → WASM側resize → DCT | decode → get_decoded_feature(grayscale_resize 32x32) → DCTのみ |
+| DecodedContent | `data` のみ | `data` + `width` + `height` + `channels` |
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `crates/wasm-host/src/lib.rs` | `DecodedContent` に w/h/ch 追加、`hash_content` → `get_content_feature`、`get_decoded_feature` 追加、全WATテスト更新 |
+| `wasm/phash-v1/src/lib.rs` | `get_decoded_feature` 使用、`read_all_decoded`/`rgb_to_grayscale`/`resize_bilinear` 削除、`compute_phash_dct` 簡素化 |
+| `wasm/hardware-google/src/lib.rs` | extern宣言: `hash_content` → `get_content_feature` |
+| `wasm/c2pa-training-v1/src/lib.rs` | 同上 |
+| `wasm/c2pa-license-v1/src/lib.rs` | 同上 |
+| `crates/tee/src/endpoints/verify/tests.rs` | WATテスト: `hash_content` → `get_content_feature` |
+| `docs/v0.1.1/SPECS_JA.md` | §7.1 ホスト関数ABIテーブル・特徴量計算セクション更新 |
+
+---
+
 ## タスク一覧
 
 | タスク | 内容 | 状態 |
@@ -110,3 +137,4 @@ v0.1.1 Task 02 で導入した `MemoryPool`（セマフォB）と既存の `toki
 | [01-node-operator-docs](tasks/01-node-operator-docs/README.md) | ドキュメント体系再設計 + コレクション権限委譲統合 + 環境変数修正 | ドキュメント再現性テスト以外完了 |
 | [02-wasm-decode-host](tasks/02-wasm-decode-host/README.md) | WASM ホスト側デコード + メモリプール + pHash (DCT) | 完了 |
 | [03-resource-pool-unification](tasks/03-resource-pool-unification/README.md) | ResourcePool統合 — セマフォアーキテクチャ統一 | 完了 |
+| [04-feature-host-functions](tasks/04-feature-host-functions/README.md) | Feature Host Functions — get_content_feature / get_decoded_feature | 完了 |

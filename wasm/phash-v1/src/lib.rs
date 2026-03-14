@@ -7,11 +7,10 @@
 //!
 //! ## アルゴリズム: pHash (DCT)
 //! 1. ホスト側で画像をネイティブフォーマットにデコード（`decode_content`）
-//! 2. WASM側でgrayscale変換
-//! 3. 32×32にバイリニア補間リサイズ
-//! 4. 分離型2D DCT（行方向→列方向、O(N³)）
-//! 5. 左上8×8低周波ブロックを抽出
-//! 6. DC成分を除く63値の平均と比較 → 64bit ハッシュ
+//! 2. ホスト側でgrayscale変換 + 32×32リサイズ（`get_decoded_feature`）
+//! 3. WASM側で分離型2D DCT（行方向→列方向、O(N³)）
+//! 4. 左上8×8低周波ブロックを抽出
+//! 5. DC成分を除く63値の平均と比較 → 64bit ハッシュ
 //!
 //! pHashは画像変換（リサイズ、圧縮、色調補正）に対してロバストなハッシュを返す。
 //! ハミング距離が小さいほど類似度が高い。
@@ -27,8 +26,6 @@
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
 use core::fmt::Write;
 
 #[global_allocator]
@@ -59,11 +56,9 @@ extern "C" {
     /// 戻り値: 0=成功, -1=非対応, -2=メモリ超過, -3=デコードエラー
     fn decode_content(params_ptr: u32, params_len: u32, metadata_ptr: u32) -> i32;
 
-    /// デコード済みデータの指定範囲を読み取る。
-    fn read_decoded_chunk(offset: u32, length: u32, buf_ptr: u32) -> u32;
-
-    /// デコード済みデータの全長を返す。
-    fn get_decoded_length() -> u32;
+    /// デコード済みデータの特徴量を計算する（JSON spec指定）。
+    /// 戻り値: 出力バイト数（正値）またはエラーコード（負値）
+    fn get_decoded_feature(spec_ptr: u32, spec_len: u32, output_ptr: u32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,110 +92,6 @@ fn write_result(json: &str) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// デコード済みピクセル読み取り
-// ---------------------------------------------------------------------------
-
-/// ホスト関数経由でデコード済みピクセルデータ全体を読み取る。
-fn read_all_decoded() -> Vec<u8> {
-    let total = unsafe { get_decoded_length() } as usize;
-    if total == 0 {
-        return Vec::new();
-    }
-    let mut buf = vec![0u8; total];
-    let chunk_size: usize = 64 * 1024; // 64KB chunks
-    let mut offset: usize = 0;
-    while offset < total {
-        let remaining = total - offset;
-        let len = if remaining < chunk_size {
-            remaining
-        } else {
-            chunk_size
-        };
-        let buf_ptr = buf.as_mut_ptr() as u32 + offset as u32;
-        unsafe {
-            read_decoded_chunk(offset as u32, len as u32, buf_ptr);
-        }
-        offset += len;
-    }
-    buf
-}
-
-// ---------------------------------------------------------------------------
-// RGB→グレースケール変換
-// ---------------------------------------------------------------------------
-
-/// RGBまたはRGBAピクセルデータをグレースケールに変換する。
-/// ITU-R BT.601: Y = 0.299*R + 0.587*G + 0.114*B
-fn rgb_to_grayscale(pixels: &[u8], channels: usize) -> Vec<u8> {
-    let pixel_count = pixels.len() / channels;
-    let mut gray = vec![0u8; pixel_count];
-    for i in 0..pixel_count {
-        let r = pixels[i * channels] as f32;
-        let g = pixels[i * channels + 1] as f32;
-        let b = pixels[i * channels + 2] as f32;
-        gray[i] = libm::roundf(r * 0.299 + g * 0.587 + b * 0.114) as u8;
-    }
-    gray
-}
-
-// ---------------------------------------------------------------------------
-// リサイズ（バイリニア補間）
-// ---------------------------------------------------------------------------
-
-/// グレースケール画像を指定サイズにリサイズする。
-fn resize_bilinear(
-    pixels: &[u8],
-    src_w: usize,
-    src_h: usize,
-    dst_w: usize,
-    dst_h: usize,
-) -> Vec<u8> {
-    let mut out = vec![0u8; dst_w * dst_h];
-
-    for y in 0..dst_h {
-        for x in 0..dst_w {
-            let src_x = (x as f32 + 0.5) * (src_w as f32 / dst_w as f32) - 0.5;
-            let src_y = (y as f32 + 0.5) * (src_h as f32 / dst_h as f32) - 0.5;
-
-            let x0 = libm::floorf(src_x) as i32;
-            let y0 = libm::floorf(src_y) as i32;
-            let x1 = x0 + 1;
-            let y1 = y0 + 1;
-
-            let fx = src_x - x0 as f32;
-            let fy = src_y - y0 as f32;
-
-            let get = |px: i32, py: i32| -> f32 {
-                let px = if px < 0 {
-                    0
-                } else if px >= src_w as i32 {
-                    src_w - 1
-                } else {
-                    px as usize
-                };
-                let py = if py < 0 {
-                    0
-                } else if py >= src_h as i32 {
-                    src_h - 1
-                } else {
-                    py as usize
-                };
-                pixels[py * src_w + px] as f32
-            };
-
-            let v = get(x0, y0) * (1.0 - fx) * (1.0 - fy)
-                + get(x1, y0) * fx * (1.0 - fy)
-                + get(x0, y1) * (1.0 - fx) * fy
-                + get(x1, y1) * fx * fy;
-
-            out[y * dst_w + x] = libm::roundf(v) as u8;
-        }
-    }
-
-    out
-}
-
-// ---------------------------------------------------------------------------
 // pHash (DCT) — 64bit
 // ---------------------------------------------------------------------------
 
@@ -209,21 +100,20 @@ const DCT_SIZE: usize = 32;
 /// 低周波ブロックサイズ
 const LOW_FREQ: usize = 8;
 
-/// pHash: 32×32にリサイズ → 分離型2D DCT → 8×8低周波ブロック → 平均比較 → 64bitハッシュ
+/// pHash: 32×32グレースケール入力 → 分離型2D DCT → 8×8低周波ブロック → 平均比較 → 64bitハッシュ
 /// 仕様書 §7.4
-fn compute_phash_dct(pixels: &[u8], width: u32, height: u32) -> u64 {
-    // 1. 32×32にバイリニア補間リサイズ
-    let resized = resize_bilinear(pixels, width as usize, height as usize, DCT_SIZE, DCT_SIZE);
-
+///
+/// 入力 `gray_32x32` は 1024バイト (32×32×1ch) のグレースケールデータ。
+fn compute_phash_dct(gray_32x32: &[u8]) -> u64 {
     // f32に変換
     let mut matrix = [[0.0f32; DCT_SIZE]; DCT_SIZE];
     for y in 0..DCT_SIZE {
         for x in 0..DCT_SIZE {
-            matrix[y][x] = resized[y * DCT_SIZE + x] as f32;
+            matrix[y][x] = gray_32x32[y * DCT_SIZE + x] as f32;
         }
     }
 
-    // 2. 分離型2D DCT: 行方向1D DCT → 列方向1D DCT
+    // 分離型2D DCT: 行方向1D DCT → 列方向1D DCT
     let n = DCT_SIZE as f32;
     let scale = libm::sqrtf(2.0 / n);
     let inv_sqrt2 = 1.0 / libm::sqrtf(2.0);
@@ -260,7 +150,7 @@ fn compute_phash_dct(pixels: &[u8], width: u32, height: u32) -> u64 {
         }
     }
 
-    // 3. 左上8×8低周波ブロックを抽出
+    // 左上8×8低周波ブロックを抽出
     let mut values = [0.0f32; LOW_FREQ * LOW_FREQ];
     for v in 0..LOW_FREQ {
         for u in 0..LOW_FREQ {
@@ -268,11 +158,11 @@ fn compute_phash_dct(pixels: &[u8], width: u32, height: u32) -> u64 {
         }
     }
 
-    // 4. DC成分（values[0]）を除く63値の平均を計算
+    // DC成分（values[0]）を除く63値の平均を計算
     let sum: f32 = values[1..].iter().copied().sum();
     let mean = sum / (LOW_FREQ * LOW_FREQ - 1) as f32;
 
-    // 5. 各値を平均と比較 → 64bitハッシュ
+    // 各値を平均と比較 → 64bitハッシュ
     let mut hash: u64 = 0;
     for i in 0..64 {
         if values[i] > mean {
@@ -290,8 +180,8 @@ fn compute_phash_dct(pixels: &[u8], width: u32, height: u32) -> u64 {
 /// 知覚ハッシュ（pHash-DCT）を計算する。
 /// 仕様書 §3.2
 ///
-/// ホスト側でネイティブフォーマットにデコード後、WASM側でgrayscale変換し、
-/// pHash (DCT) アルゴリズムで64bitの知覚ハッシュを計算する。
+/// ホスト側でデコード + grayscale_resize(32×32) を行い、
+/// WASM側ではDCT計算のみで64bitの知覚ハッシュを算出する。
 ///
 /// 結果JSON: {"phash":"<16桁hex>","algorithm":"phash-dct","bits":64}
 #[no_mangle]
@@ -318,36 +208,24 @@ pub extern "C" fn process() -> u32 {
         }
     }
 
-    // 2. メタデータからサイズ・チャネル数取得
-    let width = u32::from_le_bytes([metadata[0], metadata[1], metadata[2], metadata[3]]);
-    let height = u32::from_le_bytes([metadata[4], metadata[5], metadata[6], metadata[7]]);
-    let channels = u32::from_le_bytes([metadata[8], metadata[9], metadata[10], metadata[11]]);
-
-    if width == 0 || height == 0 {
-        return write_result("{\"error\":\"invalid image dimensions\"}");
-    }
-
-    if channels != 1 && channels != 3 && channels != 4 {
-        return write_result("{\"error\":\"unsupported channel count\"}");
-    }
-
-    // 3. デコード済みピクセルを全読み取り
-    let pixels = read_all_decoded();
-    if pixels.is_empty() {
-        return write_result("{\"error\":\"empty decoded data\"}");
-    }
-
-    // 4. WASM側でgrayscale変換
-    let gray = if channels == 1 {
-        pixels
-    } else {
-        rgb_to_grayscale(&pixels, channels as usize)
+    // 2. ホスト側でgrayscale変換 + 32×32リサイズ
+    let spec = b"{\"op\":\"grayscale_resize\",\"width\":32,\"height\":32}";
+    let mut gray_32x32 = [0u8; DCT_SIZE * DCT_SIZE]; // 1024 bytes
+    let rc = unsafe {
+        get_decoded_feature(
+            spec.as_ptr() as u32,
+            spec.len() as u32,
+            gray_32x32.as_mut_ptr() as u32,
+        )
     };
+    if rc != (DCT_SIZE * DCT_SIZE) as i32 {
+        return write_result("{\"error\":\"grayscale_resize failed\"}");
+    }
 
-    // 5. pHash (DCT) 計算
-    let hash = compute_phash_dct(&gray, width, height);
+    // 3. DCTのみ（1024バイト入力）
+    let hash = compute_phash_dct(&gray_32x32);
 
-    // 5. 結果JSON構築
+    // 4. 結果JSON構築
     let mut hex = String::with_capacity(16);
     let _ = write!(&mut hex, "{:016x}", hash);
 

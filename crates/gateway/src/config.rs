@@ -9,7 +9,7 @@
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use title_types::*;
 
-use crate::storage::{SignedJsonStorage, TempStorage};
+use crate::storage::{SignedJsonStorageRouter, TempStorage};
 
 /// Gatewayの共有状態。
 /// 仕様書 §6.2
@@ -24,9 +24,10 @@ pub struct GatewayState {
     /// Temporary Storage（トレイトで抽象化）
     /// 仕様書 §6.3
     pub temp_storage: Box<dyn TempStorage>,
-    /// signed_jsonストレージ（オプション）。
+    /// signed_jsonストレージルーター（オプション）。
     /// 設定されている場合、`/sign-and-mint` でsigned_json本体を受け取り保存を代行できる。
-    pub signed_json_storage: Option<Box<dyn SignedJsonStorage>>,
+    /// core/extensionに応じて異なるストレージバックエンドにルーティングする。
+    pub signed_json_storage: Option<SignedJsonStorageRouter>,
     /// Solana RPC URL（sign-and-mint用）
     pub solana_rpc_url: Option<String>,
     /// Solana Gateway ウォレットキーペア（sign-and-mint用）

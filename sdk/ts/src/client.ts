@@ -23,11 +23,18 @@ import { encryptPayload, decryptResponse } from "./crypto";
 // Types
 // ---------------------------------------------------------------------------
 
+/** Node capabilities advertised via GET /health. */
+export interface NodeCapabilities {
+  store_signed_json: boolean;
+}
+
 /** Session with a specific TEE node. */
 export interface TeeSession {
   gatewayUrl: string;
   encryptionPubkey: string;
   signingPubkey: string;
+  /** Capabilities reported by /health. Undefined if not yet fetched. */
+  capabilities?: NodeCapabilities;
 }
 
 /**
@@ -42,12 +49,15 @@ export interface RegisterOptions {
   content: Uint8Array;
   /** Owner wallet address (Base58). */
   ownerWallet: string;
-  /** Processor IDs to execute. Default: `["core-c2pa"]`. */
-  processorIds?: string[];
+  /** Processor IDs to execute (e.g. `["core-c2pa"]`, `["core-c2pa", "phash-v1"]`). */
+  processorIds: string[];
   /** Optional extension auxiliary inputs. Key = extension_id. */
   extensionInputs?: Record<string, unknown>;
-  /** Callback to persist each signed_json. Returns a URI. */
-  storeSignedJson: StoreSignedJsonFn;
+  /**
+   * Callback to persist each signed_json. Returns a URI.
+   * Optional if the Gateway supports `store_signed_json` capability.
+   */
+  storeSignedJson?: StoreSignedJsonFn;
   /** Use a specific node instead of auto-selecting. */
   node?: TeeSession;
   /** If true, Gateway broadcasts the TX. Default: false. */
@@ -110,16 +120,28 @@ export class TitleClient {
           candidates.splice(idx, 1);
           continue;
         }
+
+        let capabilities: NodeCapabilities | undefined;
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const body = (await res.json()) as any;
+          if (body.capabilities) {
+            capabilities = body.capabilities as NodeCapabilities;
+          }
+        } catch {
+          // health returned non-JSON — ignore capabilities
+        }
+
+        return {
+          gatewayUrl: base,
+          encryptionPubkey: node.encryption_pubkey,
+          signingPubkey: node.signing_pubkey,
+          capabilities,
+        };
       } catch {
         candidates.splice(idx, 1);
         continue;
       }
-
-      return {
-        gatewayUrl: base,
-        encryptionPubkey: node.encryption_pubkey,
-        signingPubkey: node.signing_pubkey,
-      };
     }
 
     throw new Error("No healthy TEE node found");
@@ -133,7 +155,7 @@ export class TitleClient {
     const {
       content,
       ownerWallet,
-      processorIds = ["core-c2pa"],
+      processorIds,
       extensionInputs,
       storeSignedJson,
       delegateMint = false,
@@ -186,23 +208,45 @@ export class TitleClient {
     // 6. wasm_hash validation
     this.validateWasmHashes(verifyResponse);
 
-    // 7. Store signed_json via callback
+    // 7. Store signed_json — callback or Gateway delegation
+    const useGatewayStorage =
+      !storeSignedJson && node.capabilities?.store_signed_json === true;
+
+    if (!storeSignedJson && !useGatewayStorage) {
+      throw new Error(
+        "storeSignedJson callback is required when the Gateway does not support store_signed_json capability"
+      );
+    }
+
     const contents: RegisterContentResult[] = [];
-    const signRequests: { signed_json_uri: string }[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const signRequests: any[] = [];
 
     for (const result of verifyResponse.results) {
       const sj = result.signed_json;
-      const jsonStr = JSON.stringify(sj);
-      const uri = await storeSignedJson(jsonStr);
-
       const payload = sj.payload as { content_hash?: string };
-      contents.push({
-        processorId: result.processor_id,
-        contentHash: payload.content_hash ?? "",
-        storageUri: uri,
-        signedJson: sj,
-      });
-      signRequests.push({ signed_json_uri: uri });
+
+      if (storeSignedJson) {
+        // Client-side storage (existing flow)
+        const jsonStr = JSON.stringify(sj);
+        const uri = await storeSignedJson(jsonStr);
+        contents.push({
+          processorId: result.processor_id,
+          contentHash: payload.content_hash ?? "",
+          storageUri: uri,
+          signedJson: sj,
+        });
+        signRequests.push({ signed_json_uri: uri });
+      } else {
+        // Gateway storage delegation
+        contents.push({
+          processorId: result.processor_id,
+          contentHash: payload.content_hash ?? "",
+          storageUri: "", // URI assigned by Gateway
+          signedJson: sj,
+        });
+        signRequests.push({ signed_json: sj });
+      }
     }
 
     // 8. Sign or sign-and-mint
@@ -293,10 +337,11 @@ export class TitleClient {
     return await this.gatewayPost(gatewayUrl, "/sign", request);
   }
 
-  /** Call /sign-and-mint. */
+  /** Call /sign-and-mint. Accepts both signed_json_uri and signed_json body items. */
   async signAndMintRaw(
     gatewayUrl: string,
-    request: SignRequest
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    request: SignRequest | { recent_blockhash: string; requests: any[] }
   ): Promise<{ tx_signatures: string[] }> {
     return await this.gatewayPost(gatewayUrl, "/sign-and-mint", request);
   }

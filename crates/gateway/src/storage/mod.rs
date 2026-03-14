@@ -12,6 +12,12 @@ pub mod s3;
 #[cfg(feature = "vendor-aws")]
 pub use s3::{S3TempStorage, S3SignedJsonStorage};
 
+#[cfg(feature = "vendor-irys")]
+pub mod irys;
+
+#[cfg(feature = "vendor-irys")]
+pub use irys::IrysSignedJsonStorage;
+
 #[cfg(feature = "vendor-local")]
 pub mod local;
 
@@ -61,4 +67,77 @@ pub trait TempStorage: Send + Sync {
 pub trait SignedJsonStorage: Send + Sync {
     /// signed_jsonを保存し、アクセス可能なURIを返す。
     async fn store(&self, key: &str, data: &[u8]) -> Result<String, GatewayError>;
+}
+
+// ---------------------------------------------------------------------------
+// SignedJsonStorageRouter
+// ---------------------------------------------------------------------------
+
+/// signed_jsonストレージのルーター。
+///
+/// processor_idに応じて異なるストレージバックエンドにルーティングする。
+/// SDKと同様、`core-c2pa` も extension も全て processor_id で統一的に扱う。
+/// ルーティング戦略はノード運営者の裁量であり、プロトコルレベルの強要ではない。
+///
+/// processor_idの取得: `payload.extension_id` があればそれを使用、なければ `"core-c2pa"`。
+pub struct SignedJsonStorageRouter {
+    /// processor_id → ストレージのマッピング。
+    /// 例: `"core-c2pa"` → Irys, `"phash-v1"` → S3
+    routes: std::collections::HashMap<String, Box<dyn SignedJsonStorage>>,
+    /// マッピングにないprocessor_id用のデフォルトストレージ。
+    default_storage: Option<Box<dyn SignedJsonStorage>>,
+}
+
+impl SignedJsonStorageRouter {
+    /// ルーターを構築する。
+    ///
+    /// `routes` と `default_storage` の両方が空の場合は `None` を返す（機能無効）。
+    pub fn new(
+        routes: std::collections::HashMap<String, Box<dyn SignedJsonStorage>>,
+        default_storage: Option<Box<dyn SignedJsonStorage>>,
+    ) -> Option<Self> {
+        if routes.is_empty() && default_storage.is_none() {
+            return None;
+        }
+        Some(Self {
+            routes,
+            default_storage,
+        })
+    }
+
+    /// signed_jsonからprocessor_idを取得し、適切なストレージに保存する。
+    ///
+    /// processor_idの判定:
+    /// - `payload.extension_id` があれば → そのまま processor_id
+    /// - なければ → `"core-c2pa"`
+    ///
+    /// ルーティング:
+    /// 1. `routes` に processor_id のエントリがあれば → そのストレージ
+    /// 2. なければ → `default_storage`
+    pub async fn store(
+        &self,
+        signed_json: &serde_json::Value,
+        key: &str,
+        data: &[u8],
+    ) -> Result<String, GatewayError> {
+        let processor_id = signed_json
+            .pointer("/payload/extension_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("core-c2pa");
+
+        let storage = self
+            .routes
+            .get(processor_id)
+            .or(self.default_storage.as_ref());
+
+        let storage = storage.ok_or_else(|| {
+            GatewayError::BadRequest(
+                "このノードはsigned_json保存代行に対応していません。\
+                 signed_json_uriを指定してください"
+                    .to_string(),
+            )
+        })?;
+
+        storage.store(key, data).await
+    }
 }

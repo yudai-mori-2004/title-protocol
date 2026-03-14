@@ -39,17 +39,64 @@ fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
     Ok(Box::new(storage::S3TempStorage::from_env()?))
 }
 
-/// signed_jsonストレージを構築する（vendor-aws: S3互換ストレージ）。
-/// `SIGNED_JSON_S3_BUCKET` が未設定の場合は `None` を返す（機能無効）。
-#[cfg(feature = "vendor-aws")]
-fn create_signed_json_storage() -> anyhow::Result<Option<Box<dyn storage::SignedJsonStorage>>> {
-    Ok(storage::S3SignedJsonStorage::from_env()?.map(|s| Box::new(s) as _))
+/// signed_jsonストレージルーターを構築する。
+///
+/// processor_idごとのルーティングを環境変数から構築する。
+/// - `IRYS_PRIVATE_KEY` 設定時: Irysストレージが利用可能
+/// - `SIGNED_JSON_S3_BUCKET` 設定時: S3ストレージが利用可能
+/// - `IRYS_PROCESSOR_IDS`: Irysにルーティングするprocessor_id（カンマ区切り、デフォルト: `core-c2pa`）
+/// - 上記以外のprocessor_idはS3にルーティング（S3がデフォルト）
+///
+/// どちらも未設定の場合は `None` を返す（機能無効）。
+fn create_signed_json_storage_router() -> anyhow::Result<Option<storage::SignedJsonStorageRouter>> {
+    use std::collections::HashMap;
+
+    // Irysストレージの初期化
+    #[cfg(feature = "vendor-irys")]
+    let irys_storage: Option<Box<dyn storage::SignedJsonStorage>> =
+        storage::IrysSignedJsonStorage::from_env()?.map(|s| Box::new(s) as _);
+    #[cfg(not(feature = "vendor-irys"))]
+    let irys_storage: Option<Box<dyn storage::SignedJsonStorage>> = None;
+
+    // S3ストレージの初期化
+    #[cfg(feature = "vendor-aws")]
+    let s3_storage: Option<Box<dyn storage::SignedJsonStorage>> =
+        storage::S3SignedJsonStorage::from_env()?.map(|s| Box::new(s) as _);
+    #[cfg(not(feature = "vendor-aws"))]
+    let s3_storage: Option<Box<dyn storage::SignedJsonStorage>> = None;
+
+    // processor_id → ストレージのルーティングを構築
+    let mut routes: HashMap<String, Box<dyn storage::SignedJsonStorage>> = HashMap::new();
+
+    if let Some(irys) = irys_storage {
+        // Irysにルーティングするprocessor_idの一覧（デフォルト: core-c2pa）
+        let irys_ids = std::env::var("IRYS_PROCESSOR_IDS")
+            .unwrap_or_else(|_| "core-c2pa".to_string());
+
+        // 1つ目のIDは直接保存、2つ目以降はクローンが必要だが
+        // SignedJsonStorageはトレイトオブジェクトなのでArc経由で共有する
+        let irys = std::sync::Arc::new(irys);
+        for id in irys_ids.split(',').map(|s| s.trim()) {
+            if !id.is_empty() {
+                tracing::info!(processor_id = id, "→ Irysにルーティング");
+                routes.insert(id.to_string(), Box::new(ArcStorage(irys.clone())));
+            }
+        }
+    }
+
+    // S3はデフォルトストレージ（routesにマッチしないprocessor_id用）
+    Ok(storage::SignedJsonStorageRouter::new(routes, s3_storage))
 }
 
-/// signed_jsonストレージ（vendor-local: 未実装）。
-#[cfg(not(feature = "vendor-aws"))]
-fn create_signed_json_storage() -> anyhow::Result<Option<Box<dyn storage::SignedJsonStorage>>> {
-    Ok(None)
+/// Arc<dyn SignedJsonStorage> を SignedJsonStorage として使うためのラッパー。
+/// 同一のストレージを複数のprocessor_idで共有する場合に使用。
+struct ArcStorage(std::sync::Arc<Box<dyn storage::SignedJsonStorage>>);
+
+#[async_trait::async_trait]
+impl storage::SignedJsonStorage for ArcStorage {
+    async fn store(&self, key: &str, data: &[u8]) -> Result<String, error::GatewayError> {
+        self.0.store(key, data).await
+    }
 }
 
 /// Temporary Storageを構築する（vendor-local: ローカルファイルサーバー）。
@@ -103,12 +150,12 @@ async fn main() -> anyhow::Result<()> {
     // Temporary Storage
     let temp_storage = create_temp_storage()?;
 
-    // signed_jsonストレージ（オプション）
-    let signed_json_storage = create_signed_json_storage()?;
+    // signed_jsonストレージルーター（オプション）
+    let signed_json_storage = create_signed_json_storage_router()?;
     if signed_json_storage.is_some() {
         tracing::info!("signed_json保存代行が有効です");
     } else {
-        tracing::info!("signed_json保存代行は無効です（SIGNED_JSON_S3_BUCKET未設定）");
+        tracing::info!("signed_json保存代行は無効です（ストレージ未設定）");
     }
 
     // Solana RPC（sign-and-mint用、オプション）
@@ -189,7 +236,7 @@ mod tests {
     use auth::{b64, build_gateway_auth_wrapper};
     use config::GatewayState;
     use endpoints::*;
-    use storage::{PresignedUrls, TempStorage, SignedJsonStorage};
+    use storage::{PresignedUrls, TempStorage};
 
     use axum::extract::State;
     use axum::Json;
@@ -210,16 +257,6 @@ mod tests {
                 upload_url: format!("http://mock-storage/upload/{object_key}?sig=test"),
                 download_url: format!("http://mock-storage/download/{object_key}?sig=test"),
             })
-        }
-    }
-
-    /// テスト用のモックSignedJsonStorage。
-    struct MockSignedJsonStorage;
-
-    #[async_trait::async_trait]
-    impl SignedJsonStorage for MockSignedJsonStorage {
-        async fn store(&self, key: &str, _data: &[u8]) -> Result<String, error::GatewayError> {
-            Ok(format!("https://mock-storage/{key}"))
         }
     }
 

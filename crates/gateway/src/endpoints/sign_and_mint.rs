@@ -79,7 +79,7 @@ pub async fn handle_sign_and_mint(
         let uri = match (&item.signed_json, item.signed_json_uri.is_empty()) {
             (Some(sj), _) => {
                 // signed_json本体 → ストレージに保存してURIを取得
-                let storage = state.signed_json_storage.as_ref().ok_or_else(|| {
+                let router = state.signed_json_storage.as_ref().ok_or_else(|| {
                     GatewayError::BadRequest(
                         "このノードはsigned_json保存代行に対応していません。\
                          signed_json_uriを指定してください"
@@ -90,7 +90,7 @@ pub async fn handle_sign_and_mint(
                 let data = serde_json::to_vec(sj).map_err(|e| {
                     GatewayError::BadRequest(format!("signed_jsonのシリアライズに失敗: {e}"))
                 })?;
-                storage.store(&key, &data).await?
+                router.store(sj, &key, &data).await?
             }
             (None, false) => item.signed_json_uri.clone(),
             (None, true) => {

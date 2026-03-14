@@ -8,8 +8,9 @@ authors.workspace = true
 description = "Title Protocol Gateway"
 
 [features]
-default = ["vendor-aws"]
+default = ["vendor-aws", "vendor-irys"]
 vendor-aws = ["rust-s3"]
+vendor-irys = []
 vendor-local = []
 
 [dependencies]
@@ -33,6 +34,7 @@ bincode = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 async-trait = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 title-crypto = { path = "../crypto" }

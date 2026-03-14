@@ -1345,7 +1345,7 @@ async function testResourceExhaustion() {
     });
   }
 
-  // 9-3: health check after all tests (resilience)
+  // 9-3: health check after all tests (resilience) — lightweight endpoint
   {
     const t0 = Date.now();
     const res = await fetch(`${gatewayUrl}/upload-url`, {
@@ -1363,6 +1363,42 @@ async function testResourceExhaustion() {
       details: `HTTP ${res.status} — server ${res.ok ? "alive" : "DOWN"}`,
       expected: "200 OK (server survived all attacks)",
     });
+  }
+
+  // 9-4: ResourcePool recovery — full /verify after flood
+  // Verifies that Ticket Drop correctly releases pool budget after load spike
+  {
+    log("CAT 9", "  ResourcePool回復テスト: flood後に/verifyが成功するか確認...");
+    // Wait briefly for any in-flight timeouts to resolve and Tickets to drop
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const t0 = Date.now();
+    try {
+      const { downloadUrl, symmetricKey } = await uploadEncrypted();
+      const encResp = await client.verify(gatewayUrl, {
+        download_url: downloadUrl,
+        processor_ids: ["core-c2pa", "phash-v1"],
+      });
+      await decryptResponse(symmetricKey, encResp.nonce, encResp.ciphertext);
+      const d = Date.now() - t0;
+      record({
+        category: "resource",
+        name: "ResourcePool recovery /verify after flood",
+        status: "PASS",
+        duration_ms: d,
+        details: `full /verify+phash succeeded in ${d}ms — pool fully recovered`,
+        expected: "200 OK (Tickets released, pool budget available)",
+      });
+    } catch (e: any) {
+      record({
+        category: "resource",
+        name: "ResourcePool recovery /verify after flood",
+        status: "FAIL",
+        duration_ms: Date.now() - t0,
+        details: `FAILED: ${e.message.slice(0, 120)}`,
+        expected: "200 OK (pool should have recovered)",
+      });
+    }
   }
 }
 

@@ -262,6 +262,10 @@ pub struct SignRequest {
     pub recent_blockhash: String,
     /// 署名リクエストの一覧
     pub requests: Vec<SignRequestItem>,
+    /// Fee payerのBase58公開鍵（sign-and-mint時にGatewayウォレットを指定）。
+    /// 省略時はcreator_walletがfee payerとなる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_payer: Option<String>,
 }
 
 /// /sign リクエストの個別アイテム。

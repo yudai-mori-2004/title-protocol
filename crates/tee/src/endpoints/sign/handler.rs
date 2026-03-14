@@ -42,6 +42,13 @@ pub async fn handle_sign(
     let request: SignRequest = serde_json::from_value(inner_body)
         .map_err(|e| TeeError::BadRequest(format!("SignRequestのパースに失敗: {e}")))?;
 
+    // fee_payer（sign-and-mint時にGatewayウォレットをfee payerとして使用）
+    let fee_payer_pubkey = match &request.fee_payer {
+        Some(fp) => Some(Pubkey::from_str(fp)
+            .map_err(|e| TeeError::BadRequest(format!("fee_payerのBase58デコードに失敗: {e}")))?),
+        None => None,
+    };
+
     // resource_limitsの適用（§6.4）
     let limits = security::resolve_limits(resource_limits.as_ref());
     let chunk_timeout = Duration::from_secs(limits.chunk_read_timeout_sec);
@@ -168,6 +175,7 @@ pub async fn handle_sign(
             &item.signed_json_uri,
             collection_mint,
             &blockhash,
+            fee_payer_pubkey.as_ref(),
         );
 
         // Step 4: TEE秘密鍵で部分署名

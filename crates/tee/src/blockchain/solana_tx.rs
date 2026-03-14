@@ -152,8 +152,11 @@ pub fn build_create_tree_tx(
 /// core_collectionが指定された場合、MPL-Coreコレクションへのミントを行う。
 /// TEEがcollection_authorityとtree_creator_or_delegateの両方を兼ねる。
 ///
-/// 署名者: creator_wallet (fee payer), tee_signing_pubkey (tree delegate + collection authority)
-/// TEEはtee_signing_pubkeyで部分署名する。creator_walletは後から署名を追加する。
+/// `fee_payer`が指定された場合、そのアドレスがfee payerとなる（sign-and-mint用）。
+/// 省略時はcreator_walletがfee payerを兼ねる。
+///
+/// 署名者: fee_payer (fee payer), tee_signing_pubkey (tree delegate + collection authority)
+/// TEEはtee_signing_pubkeyで部分署名する。fee_payerは後から署名を追加する。
 pub fn build_mint_v2_tx(
     tree_pubkey: &Pubkey,
     tee_signing_pubkey: &Pubkey,
@@ -162,7 +165,9 @@ pub fn build_mint_v2_tx(
     signed_json_uri: &str,
     core_collection: Option<&Pubkey>,
     blockhash: &solana_sdk::hash::Hash,
+    fee_payer: Option<&Pubkey>,
 ) -> Transaction {
+    let payer = fee_payer.unwrap_or(creator_wallet);
     let (tree_config, _) = derive_tree_config(tree_pubkey);
 
     // cNFTメタデータ構築（仕様書 §5.1 Step 11）
@@ -192,7 +197,7 @@ pub fn build_mint_v2_tx(
     let mut builder = MintV2Builder::new();
     builder
         .tree_config(tree_config)
-        .payer(*creator_wallet)
+        .payer(*payer)
         .tree_creator_or_delegate(Some(*tee_signing_pubkey))
         .leaf_owner(*creator_wallet)
         .merkle_tree(*tree_pubkey)
@@ -211,7 +216,7 @@ pub fn build_mint_v2_tx(
 
     let message = Message::new_with_blockhash(
         &[mint_ix],
-        Some(creator_wallet),
+        Some(payer),
         blockhash,
     );
 
@@ -325,6 +330,7 @@ mod tests {
             "ar://test_uri",
             None,
             &blockhash,
+            None,
         );
 
         // 2つの署名者（creator/payer, tee_signer）
@@ -349,6 +355,7 @@ mod tests {
             "ar://test_uri",
             Some(&collection),
             &blockhash,
+            None,
         );
 
         // 2つの署名者（creator/payer, tee_signer）

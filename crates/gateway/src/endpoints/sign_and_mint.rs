@@ -104,9 +104,14 @@ pub async fn handle_sign_and_mint(
         });
     }
 
+    // sign-and-mint時はGatewayウォレットがfee payerとなる
+    use solana_sdk::signer::Signer;
+    let gateway_pubkey_str = gateway_keypair.pubkey().to_string();
+
     let mut body = SignRequest {
         recent_blockhash: input.recent_blockhash,
         requests: sign_items,
+        fee_payer: Some(gateway_pubkey_str),
     };
 
     // Step 1: recent_blockhashが空の場合、Solana RPCから最新のblockhashを取得
@@ -161,7 +166,6 @@ pub async fn handle_sign_and_mint(
             })?;
 
         // Gatewayウォレットで署名（未署名のスロットに署名）
-        use solana_sdk::signer::Signer;
         let gateway_pubkey = gateway_keypair.pubkey();
 
         // Gatewayの公開鍵に対応する署名スロットを特定

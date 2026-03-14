@@ -489,6 +489,7 @@ mod tests {
                 requests: vec![SignRequestItem {
                     signed_json_uri: "ar://test".to_string(),
                 }],
+                fee_payer: None,
             }),
         )
         .await;

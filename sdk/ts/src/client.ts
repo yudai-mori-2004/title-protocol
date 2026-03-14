@@ -375,15 +375,17 @@ export class TitleClient {
    * Throws if any extension's wasm_hash is not in trusted_wasm_modules.
    */
   private validateWasmHashes(response: VerifyResponse): void {
+    const stripPrefix = (h: string) =>
+      h.startsWith("0x") ? h.slice(2) : h;
     const trustedHashes = new Set(
-      this.globalConfig.trusted_wasm_modules.map((m) => m.wasm_hash)
+      this.globalConfig.trusted_wasm_modules.map((m) => stripPrefix(m.wasm_hash))
     );
 
     for (const result of response.results) {
       const payload = result.signed_json.payload;
       if ("wasm_hash" in payload) {
         const extPayload = payload as ExtensionPayload;
-        if (!trustedHashes.has(extPayload.wasm_hash)) {
+        if (!trustedHashes.has(stripPrefix(extPayload.wasm_hash))) {
           throw new Error(
             `Untrusted wasm_hash for extension "${extPayload.extension_id}": ` +
               `${extPayload.wasm_hash}. Not found in GlobalConfig trusted_wasm_modules.`

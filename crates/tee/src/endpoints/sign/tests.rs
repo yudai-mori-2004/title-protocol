@@ -95,6 +95,7 @@ async fn test_sign_roundtrip() {
         wasm_loader: None,
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({
@@ -155,6 +156,7 @@ async fn test_sign_rejects_wrong_key() {
         wasm_loader: None,
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({
@@ -199,6 +201,7 @@ async fn test_sign_rejects_oversized() {
         wasm_loader: None,
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({
@@ -233,6 +236,7 @@ async fn test_sign_inactive_returns_503() {
         wasm_loader: None,
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({

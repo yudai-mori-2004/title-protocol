@@ -23,10 +23,10 @@ use crate::endpoints::b64;
 use std::io::Cursor;
 use tokio::sync::{RwLock, Semaphore};
 
-// テストフィクスチャ（core crateから参照）
-const CERTS: &[u8] = include_bytes!("../../../../core/tests/fixtures/certs/chain.pem");
-const PRIVATE_KEY: &[u8] = include_bytes!("../../../../core/tests/fixtures/certs/ee.key");
-const TEST_IMAGE: &[u8] = include_bytes!("../../../../core/tests/fixtures/test.jpg");
+// テストフィクスチャ（共有テストフィクスチャディレクトリ）
+const CERTS: &[u8] = include_bytes!("../../../../../tests/fixtures/certs/chain.pem");
+const PRIVATE_KEY: &[u8] = include_bytes!("../../../../../tests/fixtures/certs/ee.key");
+const TEST_IMAGE: &[u8] = include_bytes!("../../../../../tests/fixtures/test.jpg");
 
 /// テスト用signerを作成する（core crateのテストと同一パターン）
 fn test_signer() -> Box<dyn c2pa::Signer> {
@@ -119,6 +119,7 @@ async fn test_verify_roundtrip() {
         wasm_loader: None,
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     // 6. /verify 呼び出し
@@ -290,6 +291,7 @@ async fn test_verify_with_extension() {
         ))),
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     // 4. /verify: core-c2pa + phash-v1
@@ -374,6 +376,7 @@ async fn test_verify_inactive_returns_503() {
         wasm_loader: None,
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({
@@ -469,6 +472,7 @@ async fn test_verify_rejects_untrusted_extension() {
         ))),
         memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
         trusted_extension_ids: Some(trusted),
+        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     // "evil-ext" を含む /verify リクエスト → 拒否されるべき

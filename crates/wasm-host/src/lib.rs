@@ -15,14 +15,24 @@
 //! - `hash_content`: コンテンツのハッシュ計算
 //! - `hmac_content`: コンテンツのHMAC計算
 //! - `get_content_length`: コンテンツの全長取得
+//! - `decode_content`: コンテンツのデコード（画像→ピクセル等）
+//! - `read_decoded_chunk`: デコード済みデータのチャンク読み取り
+//! - `get_decoded_length`: デコード済みデータの全長取得
 //!
 //! ## WASM結果フォーマット
 //! WASMエクスポート関数は結果バッファへのポインタ(u32)を返す。
 //! バッファ形式: `[4B LE: json_len][json_bytes...]`
 
+pub mod memory_pool;
+
+pub use memory_pool::MemoryPool;
+
+use std::io::Cursor;
 use std::panic;
+use std::sync::Arc;
 
 use hmac::{Hmac, Mac};
+use image::ImageReader;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use wasmtime::{Caller, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Trap};
 
@@ -56,6 +66,22 @@ pub struct ExtensionResult {
     pub output: serde_json::Value,
 }
 
+/// デコード済みコンテンツ。
+/// decode_content ホスト関数の結果として InnerHostState に格納される。
+/// width/height/channels はメタデータとしてWASMリニアメモリに書き込まれる。
+/// 仕様書 §7.1
+#[allow(dead_code)]
+struct DecodedContent {
+    /// デコード済みピクセルデータ（row-major）
+    data: Vec<u8>,
+    /// 画像幅
+    width: u32,
+    /// 画像高さ
+    height: u32,
+    /// チャンネル数（1=grayscale, 3=RGB, 4=RGBA）
+    channels: u32,
+}
+
 /// wasmtime Store内部の状態。
 /// コンテンツデータとStoreLimitsを保持する。
 struct InnerHostState {
@@ -65,6 +91,23 @@ struct InnerHostState {
     extension_input: Option<Vec<u8>>,
     /// メモリ制限
     limiter: StoreLimits,
+    /// デコード済みコンテンツ（decode_content 呼び出し後に Some）
+    /// 仕様書 §7.1
+    decoded: Option<DecodedContent>,
+    /// メモリプール参照（Semaphore B の予約/解放用）
+    memory_pool: Option<Arc<MemoryPool>>,
+    /// Semaphore B に予約したバイト数（Drop時に解放するため記録）
+    decoded_reserved: usize,
+}
+
+impl Drop for InnerHostState {
+    fn drop(&mut self) {
+        if self.decoded_reserved > 0 {
+            if let Some(ref pool) = self.memory_pool {
+                pool.release_b(self.decoded_reserved);
+            }
+        }
+    }
 }
 
 /// WASM実行ランナー。
@@ -74,10 +117,13 @@ pub struct WasmRunner {
     fuel_limit: u64,
     /// Memory制限（バイト）
     memory_limit: usize,
+    /// メモリプール（デコード済みデータのメモリ予算管理用）
+    /// 仕様書 §7.1
+    memory_pool: Option<Arc<MemoryPool>>,
 }
 
 impl WasmRunner {
-    /// 新しいWasmRunnerを作成する。
+    /// 新しいWasmRunnerを作成する（後方互換）。
     /// 仕様書 §7.1
     ///
     /// # 引数
@@ -87,6 +133,21 @@ impl WasmRunner {
         Self {
             fuel_limit,
             memory_limit,
+            memory_pool: None,
+        }
+    }
+
+    /// メモリプール付きのWasmRunnerを作成する。
+    /// 仕様書 §7.1
+    pub fn with_memory_pool(
+        fuel_limit: u64,
+        memory_limit: usize,
+        pool: Arc<MemoryPool>,
+    ) -> Self {
+        Self {
+            fuel_limit,
+            memory_limit,
+            memory_pool: Some(pool),
         }
     }
 
@@ -109,6 +170,7 @@ impl WasmRunner {
     ) -> Result<ExtensionResult, WasmError> {
         let fuel_limit = self.fuel_limit;
         let memory_limit = self.memory_limit;
+        let memory_pool = self.memory_pool.clone();
         let wasm_bytes = wasm_bytes.to_vec();
         let content = content.to_vec();
         let extension_input = extension_input.map(|v| v.to_vec());
@@ -119,6 +181,7 @@ impl WasmRunner {
             Self::execute_inner(
                 fuel_limit,
                 memory_limit,
+                memory_pool,
                 &wasm_bytes,
                 &content,
                 extension_input.as_deref(),
@@ -157,6 +220,7 @@ impl WasmRunner {
     fn execute_inner(
         fuel_limit: u64,
         memory_limit: usize,
+        memory_pool: Option<Arc<MemoryPool>>,
         wasm_bytes: &[u8],
         content: &[u8],
         extension_input: Option<&[u8]>,
@@ -178,6 +242,9 @@ impl WasmRunner {
             content: content.to_vec(),
             extension_input: extension_input.map(|v| v.to_vec()),
             limiter,
+            decoded: None,
+            memory_pool,
+            decoded_reserved: 0,
         };
 
         let mut store = Store::new(&engine, inner_state);
@@ -478,6 +545,175 @@ impl WasmRunner {
             )
             .map_err(|e| {
                 WasmError::ExecutionError(format!("get_content_lengthの登録に失敗: {e}"))
+            })?;
+
+        // decode_content(target_format: u32, params_ptr: u32, params_len: u32, metadata_ptr: u32) -> i32
+        // コンテンツをデコードし、InnerHostState.decoded に格納する。
+        // metadata_ptr に [width:u32 LE, height:u32 LE, channels:u32 LE] を書き込む。
+        // 戻り値: 0=成功, -1=非対応フォーマット, -2=メモリ予算超過, -3=デコードエラー
+        // 仕様書 §7.1
+        linker
+            .func_wrap(
+                "env",
+                "decode_content",
+                |mut caller: Caller<'_, InnerHostState>,
+                 target_format: u32,
+                 _params_ptr: u32,
+                 _params_len: u32,
+                 metadata_ptr: u32|
+                 -> i32 {
+                    // target_format: 0=GRAYSCALE, 1=RGB, 2=RGBA
+                    let channels: u32 = match target_format {
+                        0 => 1,
+                        1 => 3,
+                        2 => 4,
+                        _ => return -1, // 未サポート target_format
+                    };
+
+                    // ヘッダのみ読みでサイズ判定（圧縮爆弾対策）
+                    let dimensions = {
+                        let state = caller.data();
+                        let reader = match ImageReader::new(Cursor::new(&state.content))
+                            .with_guessed_format()
+                        {
+                            Ok(r) => r,
+                            Err(_) => return -1,
+                        };
+                        match reader.into_dimensions() {
+                            Ok(dims) => dims,
+                            Err(_) => return -1,
+                        }
+                    };
+                    let (width, height) = dimensions;
+                    let decoded_size = width as usize * height as usize * channels as usize;
+
+                    // メモリプールのSemaphore Bで予約
+                    {
+                        let state = caller.data();
+                        if let Some(ref pool) = state.memory_pool {
+                            if !pool.try_acquire_b(decoded_size) {
+                                return -2; // メモリ予算超過
+                            }
+                        }
+                    }
+
+                    // フルデコード
+                    let decoded_data = {
+                        let state = caller.data();
+                        let img = match image::load_from_memory(&state.content) {
+                            Ok(img) => img,
+                            Err(_) => {
+                                // 予約済みを解放
+                                if let Some(ref pool) = state.memory_pool {
+                                    pool.release_b(decoded_size);
+                                }
+                                return -3;
+                            }
+                        };
+                        match target_format {
+                            0 => img.to_luma8().into_raw(),
+                            1 => img.to_rgb8().into_raw(),
+                            2 => img.to_rgba8().into_raw(),
+                            _ => unreachable!(),
+                        }
+                    };
+
+                    // メタデータをWASMメモリに書き込み
+                    let memory = match caller.get_export("memory") {
+                        Some(ext) => match ext.into_memory() {
+                            Some(m) => m,
+                            None => return -3,
+                        },
+                        None => return -3,
+                    };
+                    let mem_data = memory.data_mut(&mut caller);
+                    let mp = metadata_ptr as usize;
+                    if mp + 12 <= mem_data.len() {
+                        mem_data[mp..mp + 4].copy_from_slice(&width.to_le_bytes());
+                        mem_data[mp + 4..mp + 8].copy_from_slice(&height.to_le_bytes());
+                        mem_data[mp + 8..mp + 12].copy_from_slice(&channels.to_le_bytes());
+                    }
+
+                    // InnerHostState に decoded を格納
+                    let state = caller.data_mut();
+                    state.decoded = Some(DecodedContent {
+                        data: decoded_data,
+                        width,
+                        height,
+                        channels,
+                    });
+                    state.decoded_reserved = decoded_size;
+
+                    0 // 成功
+                },
+            )
+            .map_err(|e| {
+                WasmError::ExecutionError(format!("decode_contentの登録に失敗: {e}"))
+            })?;
+
+        // read_decoded_chunk(offset: u32, length: u32, buf_ptr: u32) -> u32
+        // デコード済みデータのチャンクを読み取り、WASMメモリにコピーする。
+        // 仕様書 §7.1
+        linker
+            .func_wrap(
+                "env",
+                "read_decoded_chunk",
+                |mut caller: Caller<'_, InnerHostState>,
+                 offset: u32,
+                 length: u32,
+                 buf_ptr: u32|
+                 -> u32 {
+                    let memory = match caller.get_export("memory") {
+                        Some(ext) => match ext.into_memory() {
+                            Some(m) => m,
+                            None => return 0,
+                        },
+                        None => return 0,
+                    };
+                    let (mem_data, state) = memory.data_and_store_mut(&mut caller);
+
+                    let decoded = match &state.decoded {
+                        Some(d) => d,
+                        None => return 0,
+                    };
+
+                    let start = offset as usize;
+                    if start >= decoded.data.len() {
+                        return 0;
+                    }
+                    let end = (start + length as usize).min(decoded.data.len());
+                    let chunk_len = end - start;
+
+                    let dest = buf_ptr as usize;
+                    if dest + chunk_len > mem_data.len() {
+                        return 0;
+                    }
+                    mem_data[dest..dest + chunk_len]
+                        .copy_from_slice(&decoded.data[start..end]);
+                    chunk_len as u32
+                },
+            )
+            .map_err(|e| {
+                WasmError::ExecutionError(format!("read_decoded_chunkの登録に失敗: {e}"))
+            })?;
+
+        // get_decoded_length() -> u32
+        // デコード済みデータの全長を返す。デコード前は0。
+        // 仕様書 §7.1
+        linker
+            .func_wrap(
+                "env",
+                "get_decoded_length",
+                |caller: Caller<'_, InnerHostState>| -> u32 {
+                    caller
+                        .data()
+                        .decoded
+                        .as_ref()
+                        .map_or(0, |d| d.data.len() as u32)
+                },
+            )
+            .map_err(|e| {
+                WasmError::ExecutionError(format!("get_decoded_lengthの登録に失敗: {e}"))
             })?;
 
         Ok(())
@@ -801,5 +1037,206 @@ mod tests {
         let result = runner.execute(&wasm, b"content", None, "process");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), WasmError::ExecutionError(_)));
+    }
+
+    /// decode_contentテスト用WATテンプレート。
+    /// decode_content を呼び出し、rc==0 かつ dec_len>0 なら {"ok":1}、それ以外は {"ok":0} を返す。
+    fn decode_test_wat() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+            (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
+            (import "env" "get_content_length" (func $len (result i32)))
+            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
+            (import "env" "decode_content" (func $decode (param i32 i32 i32 i32) (result i32)))
+            (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
+            (import "env" "get_decoded_length" (func $dec_len (result i32)))
+            (memory (export "memory") 2)
+            ;; {"ok":1} = 8 bytes
+            (data (i32.const 1024) "\08\00\00\00{\"ok\":1}")
+            ;; {"ok":0} = 8 bytes
+            (data (i32.const 2048) "\08\00\00\00{\"ok\":0}")
+            (func (export "alloc") (param i32) (result i32) (i32.const 16384))
+
+            (func (export "process") (result i32)
+                (local $rc i32)
+                (local $dec_length i32)
+                ;; decode to grayscale (target_format=0), metadata at offset 8192
+                (local.set $rc (call $decode (i32.const 0) (i32.const 0) (i32.const 0) (i32.const 8192)))
+                (local.set $dec_length (call $dec_len))
+                ;; rc==0 かつ dec_length>0 なら成功
+                (if (result i32) (i32.and
+                    (i32.eq (local.get $rc) (i32.const 0))
+                    (i32.gt_u (local.get $dec_length) (i32.const 0))
+                )
+                    (then (i32.const 1024))
+                    (else (i32.const 2048))
+                )
+            )
+        )"#,
+        )
+        .unwrap()
+    }
+
+    /// テスト: decode_contentがPNG画像を正しくデコードする
+    /// 仕様書 §7.1
+    #[test]
+    fn test_decode_content_png_success() {
+        let wasm = decode_test_wat();
+        let content = include_bytes!("../../../tests/fixtures/test_2x2.png");
+
+        let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
+        let result = runner
+            .execute(&wasm, content, None, "process")
+            .expect("WASM実行に成功するべき");
+
+        assert_eq!(result.output["ok"], 1);
+    }
+
+    /// テスト: decode_contentが非画像データで-1を返す
+    /// 仕様書 §7.1
+    #[test]
+    fn test_decode_content_unsupported_format() {
+        // decode失敗時: rc != 0 → {"ok":0}
+        let wasm = decode_test_wat();
+        let content = b"this is not an image file at all";
+
+        let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
+        let result = runner
+            .execute(&wasm, content, None, "process")
+            .expect("WASM実行に成功するべき");
+
+        assert_eq!(result.output["ok"], 0);
+    }
+
+    /// テスト: decode_contentがメモリ予算超過で-2を返す
+    /// 仕様書 §7.1
+    #[test]
+    fn test_decode_content_memory_budget_exceeded() {
+        let wasm = decode_test_wat();
+        let content = include_bytes!("../../../tests/fixtures/test_2x2.png");
+
+        // 極小のメモリプール（1バイト）— 2x2 grayscale = 4バイトなので確実に超過
+        let pool = Arc::new(MemoryPool::new(1));
+        let runner = WasmRunner::with_memory_pool(100_000_000, 64 * 1024 * 1024, pool);
+        let result = runner
+            .execute(&wasm, content, None, "process")
+            .expect("WASM実行に成功するべき");
+
+        assert_eq!(result.output["ok"], 0);
+    }
+
+    /// テスト: decode前のread_decoded_chunkが0を返す
+    /// 仕様書 §7.1
+    #[test]
+    fn test_read_decoded_before_decode_returns_zero() {
+        let wasm = wat::parse_str(
+            r#"(module
+            (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
+            (import "env" "get_content_length" (func $len (result i32)))
+            (import "env" "hash_content" (func $hash (param i32 i32 i32 i32) (result i32)))
+            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
+            (import "env" "decode_content" (func $decode (param i32 i32 i32 i32) (result i32)))
+            (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
+            (import "env" "get_decoded_length" (func $dec_len (result i32)))
+            (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) (i32.const 4096))
+            ;; 成功: {"pre":0} = 9 bytes
+            (data (i32.const 1024) "\09\00\00\00{\"pre\":0}")
+            ;; 失敗: {"pre":1} = 9 bytes
+            (data (i32.const 2048) "\09\00\00\00{\"pre\":1}")
+            (func (export "process") (result i32)
+                (local $n i32)
+                (local $dec_len i32)
+                ;; decodeせずにread_decoded_chunkを呼ぶ
+                (local.set $n (call $read_dec (i32.const 0) (i32.const 256) (i32.const 4096)))
+                (local.set $dec_len (call $dec_len))
+                ;; n==0 かつ dec_len==0 なら成功
+                (if (result i32) (i32.and
+                    (i32.eq (local.get $n) (i32.const 0))
+                    (i32.eq (local.get $dec_len) (i32.const 0))
+                )
+                    (then (i32.const 1024))
+                    (else (i32.const 2048))
+                )
+            )
+        )"#,
+        )
+        .unwrap();
+
+        let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
+        let result = runner
+            .execute(&wasm, b"some content", None, "process")
+            .expect("WASM実行に成功するべき");
+
+        assert_eq!(result.output["pre"], 0);
+    }
+
+    /// テスト: C2PA署名済みJPEGをdecode_contentで正しくデコードできる。
+    /// 本番環境ではExtensionに渡されるコンテンツはC2PA署名付きであるため、
+    /// image crateがC2PA埋め込みJPEGを正常にデコードできることを保証する。
+    /// 仕様書 §7.1
+    #[test]
+    fn test_decode_content_c2pa_signed_jpeg() {
+        // test_4x4.jpg をベースにC2PA署名済みコンテンツを動的に生成
+        // （test.jpg は1x1最小JPEGで image crate がデコードできないため test_4x4.jpg を使用）
+        let certs = include_bytes!("../../../tests/fixtures/certs/chain.pem");
+        let private_key = include_bytes!("../../../tests/fixtures/certs/ee.key");
+        let test_image = include_bytes!("../../../tests/fixtures/test_4x4.jpg");
+
+        let signer =
+            c2pa::create_signer::from_keys(certs, private_key, c2pa::SigningAlg::Ed25519, None)
+                .unwrap();
+
+        let manifest_json = serde_json::json!({
+            "title": "test-decode.jpg",
+            "format": "image/jpeg",
+            "claim_generator_info": [{"name": "wasm-host-test", "version": "0.1"}]
+        })
+        .to_string();
+
+        let mut builder = c2pa::Builder::from_json(&manifest_json).unwrap();
+        let mut source = std::io::Cursor::new(test_image.as_slice());
+        let mut dest = std::io::Cursor::new(Vec::new());
+        builder
+            .sign(signer.as_ref(), "image/jpeg", &mut source, &mut dest)
+            .unwrap();
+        let c2pa_content = dest.into_inner();
+
+        // C2PAマニフェストが埋め込まれているのでサイズが増えている
+        assert!(c2pa_content.len() > test_image.len());
+
+        // decode_content がC2PA付きJPEGをデコードできることを検証
+        let wasm = decode_test_wat();
+        let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
+        let result = runner
+            .execute(&wasm, &c2pa_content, None, "process")
+            .expect("C2PA署名済みJPEGのデコードに成功するべき");
+
+        assert_eq!(
+            result.output["ok"], 1,
+            "C2PA署名済みJPEGがデコードできませんでした"
+        );
+    }
+
+    /// テスト: MemoryPoolのDrop時にSemaphore Bが解放される
+    /// 仕様書 §7.1
+    #[test]
+    fn test_memory_pool_released_after_execution() {
+        let wasm = decode_test_wat();
+        let content = include_bytes!("../../../tests/fixtures/test_2x2.png");
+
+        let pool = Arc::new(MemoryPool::new(100 * 1024 * 1024));
+        let runner = WasmRunner::with_memory_pool(100_000_000, 64 * 1024 * 1024, pool.clone());
+
+        // 実行前: 使用量0
+        assert_eq!(pool.total_used(), 0);
+
+        let _result = runner.execute(&wasm, content, None, "process").unwrap();
+
+        // 実行後: InnerHostState がDropされ、Semaphore Bが解放済み
+        assert_eq!(pool.total_used(), 0);
     }
 }

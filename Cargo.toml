@@ -49,6 +49,7 @@ mpl-bubblegum = "2.1"
 rust-s3 = { version = "0.35", default-features = false, features = ["tokio-rustls-tls"] }
 uuid = { version = "1", features = ["v4"] }
 hmac = "0.12"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 hex = "0.4"
 coset = "0.3"
 ciborium = "0.2"

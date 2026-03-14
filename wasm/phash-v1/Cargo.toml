@@ -12,3 +12,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 dlmalloc = { version = "0.2", features = ["global"] }
+libm = "0.2"

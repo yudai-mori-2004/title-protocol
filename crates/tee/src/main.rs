@@ -140,6 +140,9 @@ async fn main() -> anyhow::Result<()> {
         wasm_loader,
         memory_semaphore,
         trusted_extension_ids,
+        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(
+            max_concurrent_bytes,
+        )),
     });
 
     // Step 1: 鍵生成 (仕様書 §6.4)

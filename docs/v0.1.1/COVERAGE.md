@@ -11,6 +11,9 @@ v0.1.0 を基準とし、v0.1.1 での変更のみを追跡する。
 | TEE エンドポイント | `/register-node` リクエストにコレクションアドレスを追加 |
 | CLI | `register-node` / `remove-node` がコレクションアドレスを送信 |
 | デプロイスクリプト | `setup-ec2.sh` の環境変数書き込み修正 |
+| WASM 実行環境 | ホスト側コンテンツデコード関数 + メモリプール（セマフォ方式） |
+| WASM Extension | phash-v1 を dHash → pHash (DCT) に移行、ホスト側デコード活用 |
+| 仕様書 | §7.1 ホスト関数追加・メモリプール仕様、§7.4 pHash アルゴリズム更新 |
 
 ---
 
@@ -71,3 +74,4 @@ v0.1.1 でこれらを `register_tee_node` / `remove_tee_node` に統合し、MP
 | タスク | 内容 | 状態 |
 |-------|------|------|
 | [01-node-operator-docs](tasks/01-node-operator-docs/README.md) | ドキュメント体系再設計 + コレクション権限委譲統合 + 環境変数修正 | ドキュメント再現性テスト以外完了 |
+| [02-wasm-decode-host](tasks/02-wasm-decode-host/README.md) | WASM ホスト側デコード + メモリプール + pHash (DCT) | 完了 |

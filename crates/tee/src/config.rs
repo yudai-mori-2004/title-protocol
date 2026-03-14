@@ -62,4 +62,7 @@ pub struct TeeAppState {
     /// 仕様書 §6.4 不正WASMインジェクション防御
     /// Noneの場合は全Extension許可（開発環境用）、Someの場合は一覧にあるIDのみ許可。
     pub trusted_extension_ids: Option<HashSet<String>>,
+    /// WASM Extension実行時のデコード済みデータメモリ予算管理。
+    /// 仕様書 §7.1 メモリプール
+    pub wasm_memory_pool: Arc<title_wasm_host::MemoryPool>,
 }

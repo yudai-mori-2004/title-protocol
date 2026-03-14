@@ -13,6 +13,9 @@ thiserror = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
 wat = "1"
+c2pa = { workspace = true }
+serde_json = { workspace = true }

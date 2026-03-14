@@ -18,9 +18,9 @@ use std::fs;
 use std::io::Cursor;
 use std::path::PathBuf;
 
-const CERTS: &[u8] = include_bytes!("../tests/fixtures/certs/chain.pem");
-const PRIVATE_KEY: &[u8] = include_bytes!("../tests/fixtures/certs/ee.key");
-const TEST_IMAGE: &[u8] = include_bytes!("../tests/fixtures/test.jpg");
+const CERTS: &[u8] = include_bytes!("../../../tests/fixtures/certs/chain.pem");
+const PRIVATE_KEY: &[u8] = include_bytes!("../../../tests/fixtures/certs/ee.key");
+const TEST_IMAGE: &[u8] = include_bytes!("../../../tests/fixtures/test.jpg");
 
 fn test_signer() -> Box<dyn c2pa::Signer> {
     c2pa::create_signer::from_keys(CERTS, PRIVATE_KEY, c2pa::SigningAlg::Ed25519, None).unwrap()

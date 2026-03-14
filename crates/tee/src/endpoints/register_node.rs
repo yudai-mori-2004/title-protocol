@@ -248,6 +248,7 @@ mod tests {
             wasm_loader: None,
             memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
             trusted_extension_ids: None,
+            wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
         })
     }
 

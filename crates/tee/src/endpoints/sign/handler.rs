@@ -59,19 +59,32 @@ pub async fn handle_sign(
     let verifying_key = VerifyingKey::from_bytes(&tee_pubkey_bytes)
         .map_err(|e| TeeError::Internal(format!("検証用公開鍵の構築に失敗: {e}")))?;
 
+    // 動的グローバルタイムアウト適用（仕様書 §6.4）
+    // ContentSize = items数 × MAX_SIGNED_JSON_SIZE（最悪ケース見積もり）
+    let total_content_estimate = request.requests.len() as u64 * security::MAX_SIGNED_JSON_SIZE;
+    let global_timeout = security::compute_dynamic_timeout(&limits, total_content_estimate);
+
+    let partial_txs = tokio::time::timeout(global_timeout, async {
     let mut partial_txs = Vec::new();
 
     for item in &request.requests {
         // Step 1: signed_json_uriからJSONをフェッチ（セキュア化: サイズ制限+チャンクタイムアウト+セマフォ）
         // 仕様書 §6.4 /signフェーズでの防御（Verify on Sign）
-        let proxy_response = security::proxy_get_secured(
-            &state.proxy_addr,
-            &item.signed_json_uri,
-            security::MAX_SIGNED_JSON_SIZE,
-            chunk_timeout,
-            &state.memory_semaphore,
+        // ダウンロード全体にグローバルタイムアウトを適用
+        let download_timeout =
+            security::compute_dynamic_timeout(&limits, security::MAX_SIGNED_JSON_SIZE);
+        let (proxy_response, _sign_ticket) = tokio::time::timeout(
+            download_timeout,
+            security::proxy_get_secured(
+                &state.proxy_addr,
+                &item.signed_json_uri,
+                security::MAX_SIGNED_JSON_SIZE,
+                chunk_timeout,
+                &state.resource_pool,
+            ),
         )
         .await
+        .map_err(|_| TeeError::Timeout)?
         .map_err(|e| match &e {
             SecurityError::PayloadTooLarge { .. } => TeeError::PayloadTooLarge(format!("signed_jsonのサイズが上限を超えています: {e}")),
             SecurityError::MemoryLimitExceeded => TeeError::ServiceUnavailable(e.to_string()),
@@ -170,6 +183,11 @@ pub async fn handle_sign(
 
         partial_txs.push(b64().encode(&tx_bytes));
     }
+
+    Ok::<Vec<String>, TeeError>(partial_txs)
+    })
+    .await
+    .map_err(|_| TeeError::Timeout)??;
 
     Ok(Json(SignResponse { partial_txs }))
 }

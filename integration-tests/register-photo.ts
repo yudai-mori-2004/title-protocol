@@ -386,9 +386,6 @@ async function main() {
   // ---------------------------------------------------------------------------
   if (args.skipSign) {
     log("DONE", "--skip-sign 指定のため /sign をスキップします");
-    const outPath = path.resolve("output-verify.json");
-    fs.writeFileSync(outPath, JSON.stringify(verifyResponse, null, 2));
-    log("DONE", `verify結果を保存: ${outPath}`);
     process.exit(0);
   }
 

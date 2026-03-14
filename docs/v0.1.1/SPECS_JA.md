@@ -2217,12 +2217,13 @@ C2PA検証（c2pa-rs）はコンテンツ全体をメモリ上に保持する必
 | 攻撃ベクトル | 防御手段 | 仕組み |
 | --- | --- | --- |
 | Zip Bomb | `tokio::io::take` | 宣言サイズを超えるデータの読み取りを物理的に遮断 |
-| Reservation DoS | 漸進的重み付きセマフォ予約 | 実際に受信したデータ量に応じてのみメモリを確保 |
+| Reservation DoS | ResourcePool + Ticket（漸進的予約） | 実際に受信したデータ量に応じてのみメモリを確保 |
 | Slowloris | チャンク単位のRead Timeout | 一定時間データが到着しなければ接続を切断 |
+| Slow Write DoS | ダウンロードグローバルタイムアウト | ダウンロード全体に `compute_dynamic_timeout` で算出した上限時間を適用。チャンクタイムアウトの積算による長時間占有を防止 |
 
 ---
 
-### 漸進的重み付きセマフォ予約（Incremental Reservation）
+### ResourcePool + Ticket による漸進的予約（Incremental Reservation）
 
 前もって取得しておいたコンテンツのサイズ（ `content_size` ）分のメモリを処理開始時に一括予約する方法には、以下の脆弱性がある。
 
@@ -2230,21 +2231,21 @@ C2PA検証（c2pa-rs）はコンテンツ全体をメモリ上に保持する必
 
 ```
 攻撃者が content_size: 2GB を宣言
-→ TEEが2GB分のセマフォを予約
+→ TEEが2GB分のメモリを予約
 → 攻撃者は1バイトも送信せずコネクションを維持
 → 他の正規ユーザーがメモリ不足で処理拒否される
 ```
 
-**解決策: 漸進的重み付きセマフォ予約**
+**解決策: ResourcePool + Ticket（漸進的予約）**
 
-メモリ予約を「宣言時」ではなく「実際のデータ受信時」に行う。
+メモリ予約を「宣言時」ではなく「実際のデータ受信時」に行う。`ResourcePool` は単一の `AtomicUsize` で全予約の合計使用量を CAS 管理し、`Ticket` は Drop で自動解放される予約チケットである。rawバイナリのダウンロードとデコード済みデータのメモリ予算を同一プールで統合管理する。
 
 ```
 1. クライアントが content_size: 2GB を宣言
-2. TEEは予約せず、ストリーミング読み取りを開始
-3. 64KBチャンクを受信するたびに、64KB分のセマフォを予約
-4. 予約失敗（メモリ上限到達）→ 即座に接続切断
-5. 全データ受信完了 → 宣言サイズと実受信サイズを照合
+2. TEEは pool.ticket() で0バイトチケットを発行、ストリーミング読み取りを開始
+3. 64KBチャンクを受信するたびに ticket.extend(64KB) で漸進的に予約
+4. 予約失敗（メモリ上限到達）→ 即座に接続切断（Ticket の Drop で予約解放）
+5. 全データ受信完了 → Ticket を呼び出し元に返却（raw binary メモリが追跡される）
 ```
 
 ```rust
@@ -2254,10 +2255,10 @@ const CHUNK_SIZE: usize = 64 * 1024; // 64KB
 async fn stream_with_incremental_reservation(
     stream: impl AsyncRead,
     declared_size: usize,
-    semaphore: &Semaphore,
-) -> Result<Vec<u8>> {
+    pool: &Arc<ResourcePool>,
+) -> Result<(Vec<u8>, Ticket)> {
     let mut buffer = Vec::new();
-    let mut total_reserved = 0;
+    let ticket = pool.ticket(); // 0バイトチケット発行
 
     // 宣言サイズを超えるデータの読み取りを物理的に遮断
     let mut limited = stream.take(declared_size as u64);
@@ -2274,16 +2275,15 @@ async fn stream_with_incremental_reservation(
         }
 
         // 実際に受信したデータ量に応じてのみメモリを予約
-        let permit = semaphore
-            .try_acquire_many(chunk.len() as u32)
-            .map_err(|_| Error::MemoryLimitExceeded)?;
-        permit.forget(); // 処理完了まで保持
+        if !ticket.extend(chunk.len()) {
+            return Err(Error::MemoryLimitExceeded);
+            // ticket は Drop で自動解放
+        }
 
-        total_reserved += chunk.len();
         buffer.extend(chunk);
     }
 
-    Ok(buffer)
+    Ok((buffer, ticket)) // Ticket を呼び出し元に返却
 }
 ```
 
@@ -2573,7 +2573,7 @@ WASM                                     TEE Host
 この設計により：
 
 - WASMの線形メモリ使用量を最小化
-- 漸進的重み付きセマフォ予約との整合性を維持
+- ResourcePool + Ticket による漸進的予約との整合性を維持
 - ストリーム処理的な属性抽出（pHash計算等）が可能
 
 ### WASMからの補助入力アクセス
@@ -2602,18 +2602,19 @@ WASMは最初にバッファサイズ0で呼び出して実サイズを取得し
 - **フォーマット追加困難**: 新フォーマット対応にはWASM再ビルドが必要
 - **メモリ不可視**: デコード時のメモリ展開がホスト側のリソース管理から見えない
 
-これらを解決するため、TEEホストはコンテンツのデコード変換をホスト関数として提供する。WASMはデコード対象フォーマットと変換先フォーマットを指定し、ホスト側でネイティブ速度でデコードを実行する。デコード済みデータはホストメモリ上に保持され、WASMはPull型で64KBチャンク単位で読み取る。
+これらを解決するため、TEEホストはコンテンツのデコード変換をホスト関数として提供する。ホスト側はコンテンツをネイティブフォーマット（JPEG→RGB, PNG→RGBA等）でデコードし、グレースケール変換等の後処理はWASM側で行う。これによりホスト側での中間バッファが不要となり、デコード時のピークメモリ = 出力サイズ = ResourcePool予約量が一致する。デコード済みデータはホストメモリ上に保持され、WASMはPull型で64KBチャンク単位で読み取る。
 
 ```
 WASM                                           TEE Host
   │                                               │
-  │  rc = decode_content(0, 0, 0, metadata_ptr)   │
+  │  rc = decode_content(0, 0, metadata_ptr)      │
   │──────────────────────────────────────────────>│
-  │                                               │  ① ヘッダ読み（dimensions取得）
-  │                                               │  ② decoded_size = w × h × ch
-  │                                               │  ③ MemoryPool.try_acquire_b(decoded_size)
-  │                                               │  ④ image::load_from_memory でフルデコード
-  │                                               │  ⑤ デコード済みデータをホストメモリに保持
+  │                                               │  ① ヘッダ読み（dimensions + format 取得）
+  │                                               │  ② native_ch = format別推定（JPEG→3, PNG→4, …）
+  │                                               │  ③ peak_size = w × h × native_ch
+  │                                               │  ④ ResourcePool.acquire(peak_size) → Ticket
+  │                                               │  ⑤ image::load_from_memory でネイティブデコード
+  │                                               │  ⑥ デコード済みデータをホストメモリに保持
   │<──────────────────────────────────────────────│
   │    rc=0（成功）、metadata_ptr に w/h/ch 書込済み  │
   │                                               │
@@ -2627,18 +2628,25 @@ WASM                                           TEE Host
   │<──────────────────────────────────────────────│
   │    buf に min(length, remaining) バイトコピー済み │
   │                                               │
+  │  ※ WASM側でgrayscale変換等の後処理              │
+  │                                               │
 ```
 
-**target_format:**
+**ネイティブフォーマット:**
 
-デコード変換先フォーマットはu32の数値コードで指定する。
+`decode_content` は `target_format` パラメータを持たず、常にコンテンツのネイティブフォーマットでデコードする。metadata の `channels` はデコード結果の実チャネル数を返す。
 
-| target_format（u32） | フォーマット | チャンネル数 | 説明 |
-| --- | --- | --- | --- |
-| `0` | GRAYSCALE | 1 | グレースケール（輝度のみ） |
-| `1` | RGB | 3 | RGB 24bit |
-| `2` | RGBA | 4 | RGBA 32bit |
-| `16`〜 | 予約 | — | 将来の音声・動画等のフォーマット用 |
+| コンテンツ形式 | デコード結果 | channels |
+| --- | --- | --- |
+| JPEG | RGB | 3 |
+| PNG | RGBA（または RGB） | 4（または 3） |
+| WebP | RGBA | 4 |
+| GIF | RGBA | 4 |
+| BMP | RGB | 3 |
+| TIFF | RGBA | 4 |
+| Luma画像 | Grayscale | 1 |
+
+WASMモジュールは `channels` の値を確認し、必要に応じて自前でgrayscale変換等の後処理を行う（例: phash-v1 は ITU-R BT.601 係数でグレースケール変換）。
 
 **戻り値:**
 
@@ -2646,7 +2654,7 @@ WASM                                           TEE Host
 | --- | --- |
 | `0` | 成功 |
 | `-1` | 非対応フォーマット（コンテンツがデコード不能） |
-| `-2` | メモリ予算超過（MemoryPoolの上限に到達） |
+| `-2` | メモリ予算超過（ResourcePoolの上限に到達） |
 | `-3` | デコードエラー（破損データ等） |
 
 **metadata_ptr のレイアウト:**
@@ -2657,18 +2665,22 @@ WASM                                           TEE Host
 [4バイト LE: width][4バイト LE: height][4バイト LE: channels]
 ```
 
+**複数回呼び出し:**
+
+`decode_content` は同一WASM実行内で複数回呼び出すことができる。2回目以降の呼び出しでは、前回のデコード済みデータとTicket予約を解放してから新規デコードを実行する。常にネイティブフォーマットでデコードされるため、再デコードは同一結果を返す。
+
 **圧縮爆弾対策:**
 
-`decode_content` はフルデコードの前にコンテンツのヘッダのみを読み取り、展開後サイズ（`width × height × channels`）を事前計算する。このサイズに対してMemoryPoolのセマフォ予約（`try_acquire_b`）を試行し、メモリ予算を超過する場合はフルデコードを行わずに `-2` を返却する。これにより、小さな圧縮ファイルが巨大なピクセルデータに展開される圧縮爆弾攻撃を防御する。
+`decode_content` はフルデコードの前にコンテンツのヘッダのみを読み取り、ピークメモリサイズを事前計算する。フォーマット別デコーダ（JpegDecoder, PngDecoder, TiffDecoder等）でColorType（ビット深度）をヘッダ読みし、bytes/pixel（bpp）を算出する。8-bit直接マッチ型（L8, Rgb8, Rgba8）はピーク = native_bpp（変換バッファなし）、16-bit/32-bit型はピーク = native_bpp + 3（to_rgb8 fallback変換バッファが一時共存）として計算する。このサイズに対してResourcePoolの予約（`pool.acquire(peak_size)`）を試行し、メモリ予算を超過する場合はフルデコードを行わずに `-2` を返却する。ピークサイズの計算にはオーバーフローチェック付き乗算を使用し、算術オーバーフロー時もメモリ予算超過（`-2`）として安全に拒否する。これにより、小さな圧縮ファイルが巨大なピクセルデータに展開される圧縮爆弾攻撃を防御する。
 
-**MemoryPool:**
+**ResourcePool + Ticket:**
 
-MemoryPoolは複数の独立したセマフォ（A: 生バイナリ、B: デコード済みデータ）の合計使用量を単一の `total_limit` 以下に維持する。各セマフォはAtomicUsizeによるCASループで実装され、非同期ランタイムに依存しない。
+ResourcePoolは合計使用量を単一の `AtomicUsize` でCAS管理する統合セマフォである。raw binaryダウンロードとデコード済みデータのメモリ予算を単一のリソースプールで管理し、TOCTOU競合を完全に排除する。非同期ランタイムに依存しない。
 
-- セマフォA: コンテンツの生バイナリ（既存の漸進的重み付きセマフォ予約との統合は将来タスク）
-- セマフォB: デコード済みデータ（`decode_content` で予約、WASM実行完了時にDrop で解放）
+- ダウンロード: `pool.ticket()` で0バイトTicketを発行し、チャンクごとに `ticket.extend(chunk_size)` で漸進的予約
+- デコード: `pool.acquire(peak_size)` でTicketを取得し、`InnerHostState.decode_ticket` に格納
 
-WASMの実行完了時（正常・異常問わず）、ホスト状態の `Drop` 実装によりセマフォBの予約が確実に解放される。
+Ticketは `Drop` トレイトを実装しており、WASM実行完了時（正常・異常問わず）に自動的に予約が解放される。手動解放は不要。
 
 **コンテンツデータとの共存:**
 
@@ -2736,7 +2748,7 @@ WASM                                           TEE Host
 | `get_extension_input` | `(buf_ptr: u32, buf_len: u32) -> u32` | 補助入力をWASMリニアメモリの `buf_ptr` に書き込む。補助入力の実サイズを返す（0=補助入力なし） |
 | `hash_content` | `(algorithm: u32, offset: u32, length: u32, out_ptr: u32) -> u32` | コンテンツの指定範囲のハッシュを `out_ptr` に書き込む。出力バイト数を返す（エラー時0） |
 | `hmac_content` | `(algorithm: u32, key_ptr: u32, key_len: u32, offset: u32, length: u32, out_ptr: u32) -> u32` | コンテンツの指定範囲のHMACを `out_ptr` に書き込む。鍵はWASMリニアメモリの `key_ptr` から読み取る。出力バイト数を返す（エラー時0） |
-| `decode_content` | `(target_format: u32, params_ptr: u32, params_len: u32, metadata_ptr: u32) -> i32` | コンテンツをデコードしてホストメモリに保持する。`metadata_ptr` に `[width:u32 LE, height:u32 LE, channels:u32 LE]` を書き込む。戻り値: 0=成功, -1=非対応, -2=メモリ超過, -3=デコードエラー |
+| `decode_content` | `(params_ptr: u32, params_len: u32, metadata_ptr: u32) -> i32` | コンテンツをネイティブフォーマットでデコードしてホストメモリに保持する。`metadata_ptr` に `[width:u32 LE, height:u32 LE, channels:u32 LE]` を書き込む。戻り値: 0=成功, -1=非対応, -2=メモリ超過, -3=デコードエラー |
 | `read_decoded_chunk` | `(offset: u32, length: u32, buf_ptr: u32) -> u32` | デコード済みデータの指定範囲をWASMリニアメモリの `buf_ptr` に書き込む。実際にコピーしたバイト数を返す |
 | `get_decoded_length` | `() -> u32` | デコード済みデータの総バイト数を返す（デコード前は0） |
 

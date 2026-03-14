@@ -14,9 +14,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
-use tokio::sync::Semaphore;
 
 use title_types::ResourceLimits;
+use title_wasm_host::{ResourcePool, Ticket};
 
 use super::proxy_client::ProxyResponse;
 
@@ -154,60 +154,24 @@ pub enum SecurityError {
     ProxyError(u32),
 }
 
-/// セマフォパーミットのRAIIガード。
-/// Drop時に予約済みパーミットを自動解放する。
-/// エラーパスでのセマフォリークを防止する。
-struct SemaphoreGuard {
-    semaphore: Arc<Semaphore>,
-    reserved: u32,
-}
-
-impl SemaphoreGuard {
-    fn new(semaphore: &Arc<Semaphore>) -> Self {
-        Self {
-            semaphore: Arc::clone(semaphore),
-            reserved: 0,
-        }
-    }
-
-    /// パーミットを予約する。失敗時はMemoryLimitExceeded。
-    fn acquire(&mut self, permits: u32) -> Result<(), SecurityError> {
-        let permit = self
-            .semaphore
-            .try_acquire_many(permits)
-            .map_err(|_| SecurityError::MemoryLimitExceeded)?;
-        permit.forget();
-        self.reserved += permits;
-        Ok(())
-    }
-}
-
-impl Drop for SemaphoreGuard {
-    fn drop(&mut self) {
-        if self.reserved > 0 {
-            self.semaphore.add_permits(self.reserved as usize);
-        }
-    }
-}
-
 /// セキュア化されたプロキシGETリクエスト。
 /// 仕様書 §6.4 — 三層防御（Zip Bomb、Reservation DoS、Slowloris）を適用。
 ///
 /// 1. レスポンスの宣言サイズをmax_size_bytesでチェック（Zip Bomb対策）
-/// 2. 64KBチャンク単位でセマフォを漸進的に予約（Reservation DoS対策）
+/// 2. 64KBチャンク単位で `Ticket.extend()` により漸進的に予約（Reservation DoS対策）
 /// 3. 各チャンク読み取りにタイムアウトを設定（Slowloris対策）
 ///
-/// セマフォは `SemaphoreGuard` で管理され、エラーパスでも確実に解放される。
+/// `Ticket` を返却し、呼び出し元が保持する。raw binary メモリが追跡される。
 pub async fn proxy_get_secured(
     proxy_addr: &str,
     url: &str,
     max_size_bytes: u64,
     chunk_timeout: Duration,
-    semaphore: &Arc<Semaphore>,
-) -> Result<ProxyResponse, SecurityError> {
+    pool: &Arc<ResourcePool>,
+) -> Result<(ProxyResponse, Ticket), SecurityError> {
     // Direct HTTPモード: プロキシプロトコルを経由せず直接HTTPリクエスト
     if proxy_addr == "direct" {
-        return proxy_get_secured_direct(url, max_size_bytes, semaphore).await;
+        return proxy_get_secured_direct(url, max_size_bytes, pool).await;
     }
 
     // プロキシに接続
@@ -262,18 +226,22 @@ pub async fn proxy_get_secured(
     }
 
     if declared_size == 0 {
-        return Ok(ProxyResponse {
-            status,
-            body: Vec::new(),
-        });
+        let ticket = pool.ticket();
+        return Ok((
+            ProxyResponse {
+                status,
+                body: Vec::new(),
+            },
+            ticket,
+        ));
     }
 
-    // 漸進的重み付きセマフォ予約 + Slowloris対策
+    // 漸進的予約（Ticket.extend） + Slowloris対策
     // 仕様書 §6.4
-    // SemaphoreGuardにより、タイムアウトやIOエラー時もDrop時に確実に解放される。
+    // Ticket により、タイムアウトやIOエラー時もDrop時に確実に解放される。
     let total_to_read = declared_size as usize;
     let mut buffer = Vec::with_capacity(total_to_read);
-    let mut guard = SemaphoreGuard::new(semaphore);
+    let ticket = pool.ticket();
     let mut remaining = total_to_read;
 
     while remaining > 0 {
@@ -288,30 +256,26 @@ pub async fn proxy_get_secured(
             })?;
         read_result?;
 
-        // 漸進的セマフォ予約（Reservation DoS対策）
-        guard.acquire(to_read as u32)?;
+        // 漸進的予約（Reservation DoS対策）
+        if !ticket.extend(to_read) {
+            return Err(SecurityError::MemoryLimitExceeded);
+        }
 
         buffer.extend_from_slice(&chunk_buf);
         remaining -= to_read;
     }
 
-    // guardのDropで自動解放されるが、成功パスでは明示的にここで消費される
-    drop(guard);
-
-    Ok(ProxyResponse {
-        status,
-        body: buffer,
-    })
+    Ok((ProxyResponse { status, body: buffer }, ticket))
 }
 
 /// Direct HTTPモードのセキュア化されたGETリクエスト。
 /// PROXY_ADDR=direct の場合に使用。reqwestで直接取得しつつ
-/// サイズ制限とセマフォ予約を適用する。
+/// サイズ制限とResourcePool予約を適用する。
 async fn proxy_get_secured_direct(
     url: &str,
     max_size_bytes: u64,
-    semaphore: &Arc<Semaphore>,
-) -> Result<ProxyResponse, SecurityError> {
+    pool: &Arc<ResourcePool>,
+) -> Result<(ProxyResponse, Ticket), SecurityError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
@@ -352,15 +316,15 @@ async fn proxy_get_secured_direct(
         });
     }
 
-    // セマフォ容量チェック（SemaphoreGuard経由）
-    // direct版ではダウンロード済みのため、acquire → Dropで即解放。
-    if !body.is_empty() {
-        let mut guard = SemaphoreGuard::new(semaphore);
-        guard.acquire(body.len() as u32)?;
-        // guardのDrop → 即解放
-    }
+    // ResourcePool で予約（Ticket 発行）— body 分のメモリを追跡
+    let ticket = if !body.is_empty() {
+        pool.acquire(body.len())
+            .ok_or(SecurityError::MemoryLimitExceeded)?
+    } else {
+        pool.ticket()
+    };
 
-    Ok(ProxyResponse { status, body })
+    Ok((ProxyResponse { status, body }, ticket))
 }
 
 #[cfg(test)]
@@ -458,13 +422,13 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let sem = Arc::new(Semaphore::new(1024 * 1024 * 1024));
+        let pool = Arc::new(ResourcePool::new(1024 * 1024 * 1024));
         let result = proxy_get_secured(
             &format!("127.0.0.1:{port}"),
             "http://example.com/payload",
             1024 * 1024, // 1MB制限
             Duration::from_secs(30),
-            &sem,
+            &pool,
         )
         .await;
 
@@ -478,7 +442,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_get_secured_semaphore_exhaustion() {
+    async fn test_proxy_get_secured_pool_exhaustion() {
         use tokio::io::AsyncWriteExt;
 
         // 正常なレスポンスを返すモックプロキシ
@@ -503,14 +467,14 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // セマフォ容量を64KBに制限 → 128KBの2チャンク目で枯渇
-        let sem = Arc::new(Semaphore::new(64 * 1024));
+        // ResourcePool容量を64KBに制限 → 128KBの2チャンク目で枯渇
+        let pool = Arc::new(ResourcePool::new(64 * 1024));
         let result = proxy_get_secured(
             &format!("127.0.0.1:{port}"),
             "http://example.com/payload",
             1024 * 1024,
             Duration::from_secs(30),
-            &sem,
+            &pool,
         )
         .await;
 
@@ -551,13 +515,13 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let sem = Arc::new(Semaphore::new(1024 * 1024));
+        let pool = Arc::new(ResourcePool::new(1024 * 1024));
         let result = proxy_get_secured(
             &format!("127.0.0.1:{port}"),
             "http://example.com/payload",
             1024 * 1024,
             Duration::from_millis(200), // 200msのタイムアウト（テスト用に短く）
-            &sem,
+            &pool,
         )
         .await;
 
@@ -597,20 +561,21 @@ mod tests {
             }
         });
 
-        let sem = Arc::new(Semaphore::new(1024 * 1024));
+        let pool = Arc::new(ResourcePool::new(1024 * 1024));
         let result = proxy_get_secured(
             &format!("127.0.0.1:{port}"),
             "http://example.com/test",
             1024 * 1024,
             Duration::from_secs(30),
-            &sem,
+            &pool,
         )
         .await;
 
         assert!(result.is_ok(), "proxy_get_securedが失敗: {:?}", result.err());
-        let resp = result.unwrap();
+        let (resp, ticket) = result.unwrap();
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body, body_data);
+        assert_eq!(ticket.reserved(), 1024);
 
         handle.abort();
     }

@@ -20,7 +20,7 @@ pub mod wasm_loader;
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::RwLock;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -107,15 +107,13 @@ async fn main() -> anyhow::Result<()> {
             Some(Box::new(wasm_loader::FileLoader::new(wasm_dir)))
         };
 
-    // メモリ管理セマフォ（仕様書 §6.4 漸進的重み付きセマフォ予約）
+    // ResourcePool（仕様書 §6.4, §7.1 統合リソースプール）
     let max_concurrent_bytes: usize = std::env::var("MAX_CONCURRENT_BYTES")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(infra::security::DEFAULT_MAX_CONCURRENT_BYTES as usize);
-    // Semaphoreのパーミット上限はusize::MAXだが、実用上はu32::MAX以下に抑える
-    let semaphore_permits = max_concurrent_bytes.min(u32::MAX as usize);
-    let memory_semaphore = Arc::new(Semaphore::new(semaphore_permits));
-    tracing::info!(max_concurrent_bytes = semaphore_permits, "メモリセマフォ初期化");
+    let resource_pool = Arc::new(title_wasm_host::ResourcePool::new(max_concurrent_bytes));
+    tracing::info!(max_concurrent_bytes, "ResourcePool初期化");
 
     // 信頼されたExtension ID（仕様書 §6.4 不正WASMインジェクション防御）
     // TRUSTED_EXTENSIONS=phash-v1,hardware-google,c2pa-training-v1,c2pa-license-v1
@@ -138,11 +136,8 @@ async fn main() -> anyhow::Result<()> {
         ext_collection_mint,
         gateway_pubkey,
         wasm_loader,
-        memory_semaphore,
+        resource_pool,
         trusted_extension_ids,
-        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(
-            max_concurrent_bytes,
-        )),
     });
 
     // Step 1: 鍵生成 (仕様書 §6.4)

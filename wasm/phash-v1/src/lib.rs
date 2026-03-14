@@ -6,11 +6,12 @@
 //! ホスト側デコード関数を使用し、あらゆる画像フォーマットに対応する。
 //!
 //! ## アルゴリズム: pHash (DCT)
-//! 1. ホスト側で画像をグレースケールにデコード（`decode_content`）
-//! 2. 32×32にバイリニア補間リサイズ
-//! 3. 分離型2D DCT（行方向→列方向、O(N³)）
-//! 4. 左上8×8低周波ブロックを抽出
-//! 5. DC成分を除く63値の平均と比較 → 64bit ハッシュ
+//! 1. ホスト側で画像をネイティブフォーマットにデコード（`decode_content`）
+//! 2. WASM側でgrayscale変換
+//! 3. 32×32にバイリニア補間リサイズ
+//! 4. 分離型2D DCT（行方向→列方向、O(N³)）
+//! 5. 左上8×8低周波ブロックを抽出
+//! 6. DC成分を除く63値の平均と比較 → 64bit ハッシュ
 //!
 //! pHashは画像変換（リサイズ、圧縮、色調補正）に対してロバストなハッシュを返す。
 //! ハミング距離が小さいほど類似度が高い。
@@ -53,12 +54,10 @@ extern "C" {
     /// Extension補助入力を取得する。
     fn get_extension_input(buf_ptr: u32, buf_len: u32) -> u32;
 
-    /// コンテンツをデコードする。
-    /// target_format: 0=GRAYSCALE, 1=RGB, 2=RGBA
+    /// コンテンツをネイティブフォーマットでデコードする。
     /// metadata_ptr: [width:u32 LE, height:u32 LE, channels:u32 LE] を書き込む
     /// 戻り値: 0=成功, -1=非対応, -2=メモリ超過, -3=デコードエラー
-    fn decode_content(target_format: u32, params_ptr: u32, params_len: u32, metadata_ptr: u32)
-        -> i32;
+    fn decode_content(params_ptr: u32, params_len: u32, metadata_ptr: u32) -> i32;
 
     /// デコード済みデータの指定範囲を読み取る。
     fn read_decoded_chunk(offset: u32, length: u32, buf_ptr: u32) -> u32;
@@ -124,6 +123,24 @@ fn read_all_decoded() -> Vec<u8> {
         offset += len;
     }
     buf
+}
+
+// ---------------------------------------------------------------------------
+// RGB→グレースケール変換
+// ---------------------------------------------------------------------------
+
+/// RGBまたはRGBAピクセルデータをグレースケールに変換する。
+/// ITU-R BT.601: Y = 0.299*R + 0.587*G + 0.114*B
+fn rgb_to_grayscale(pixels: &[u8], channels: usize) -> Vec<u8> {
+    let pixel_count = pixels.len() / channels;
+    let mut gray = vec![0u8; pixel_count];
+    for i in 0..pixel_count {
+        let r = pixels[i * channels] as f32;
+        let g = pixels[i * channels + 1] as f32;
+        let b = pixels[i * channels + 2] as f32;
+        gray[i] = libm::roundf(r * 0.299 + g * 0.587 + b * 0.114) as u8;
+    }
+    gray
 }
 
 // ---------------------------------------------------------------------------
@@ -273,8 +290,8 @@ fn compute_phash_dct(pixels: &[u8], width: u32, height: u32) -> u64 {
 /// 知覚ハッシュ（pHash-DCT）を計算する。
 /// 仕様書 §3.2
 ///
-/// ホスト側で画像をグレースケールにデコードし、pHash (DCT) アルゴリズムで
-/// 64bitの知覚ハッシュを計算する。
+/// ホスト側でネイティブフォーマットにデコード後、WASM側でgrayscale変換し、
+/// pHash (DCT) アルゴリズムで64bitの知覚ハッシュを計算する。
 ///
 /// 結果JSON: {"phash":"<16桁hex>","algorithm":"phash-dct","bits":64}
 #[no_mangle]
@@ -282,9 +299,9 @@ pub extern "C" fn process() -> u32 {
     // suppress unused warnings
     let _ = (get_extension_input, read_content_chunk, get_content_length);
 
-    // 1. ホスト側でグレースケールにデコード
+    // 1. ホスト側でネイティブフォーマットにデコード
     let mut metadata = [0u8; 12];
-    let rc = unsafe { decode_content(0, 0, 0, metadata.as_mut_ptr() as u32) };
+    let rc = unsafe { decode_content(0, 0, metadata.as_mut_ptr() as u32) };
 
     match rc {
         0 => {} // 成功
@@ -301,12 +318,17 @@ pub extern "C" fn process() -> u32 {
         }
     }
 
-    // 2. メタデータからサイズ取得
+    // 2. メタデータからサイズ・チャネル数取得
     let width = u32::from_le_bytes([metadata[0], metadata[1], metadata[2], metadata[3]]);
     let height = u32::from_le_bytes([metadata[4], metadata[5], metadata[6], metadata[7]]);
+    let channels = u32::from_le_bytes([metadata[8], metadata[9], metadata[10], metadata[11]]);
 
     if width == 0 || height == 0 {
         return write_result("{\"error\":\"invalid image dimensions\"}");
+    }
+
+    if channels != 1 && channels != 3 && channels != 4 {
+        return write_result("{\"error\":\"unsupported channel count\"}");
     }
 
     // 3. デコード済みピクセルを全読み取り
@@ -315,8 +337,15 @@ pub extern "C" fn process() -> u32 {
         return write_result("{\"error\":\"empty decoded data\"}");
     }
 
-    // 4. pHash (DCT) 計算
-    let hash = compute_phash_dct(&pixels, width, height);
+    // 4. WASM側でgrayscale変換
+    let gray = if channels == 1 {
+        pixels
+    } else {
+        rgb_to_grayscale(&pixels, channels as usize)
+    };
+
+    // 5. pHash (DCT) 計算
+    let hash = compute_phash_dct(&gray, width, height);
 
     // 5. 結果JSON構築
     let mut hex = String::with_capacity(16);

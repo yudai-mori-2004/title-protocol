@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::RwLock;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::runtime::TeeRuntime;
@@ -54,15 +54,11 @@ pub struct TeeAppState {
     /// 仕様書 §7.1: Extension WASMバイナリの取得を抽象化
     /// Noneの場合、Extension実行は不可（core-c2paのみ対応）
     pub wasm_loader: Option<Box<dyn WasmLoader>>,
-    /// グローバルメモリ予約セマフォ。
-    /// 仕様書 §6.4 漸進的重み付きセマフォ予約
-    /// max_concurrent_bytes分のパーミットを持ち、チャンク単位で予約する。
-    pub memory_semaphore: Arc<Semaphore>,
+    /// 統合リソースプール（raw binary + decoded data の単一予算管理）。
+    /// 仕様書 §6.4, §7.1
+    pub resource_pool: Arc<title_wasm_host::ResourcePool>,
     /// 信頼されたExtension IDの一覧。
     /// 仕様書 §6.4 不正WASMインジェクション防御
     /// Noneの場合は全Extension許可（開発環境用）、Someの場合は一覧にあるIDのみ許可。
     pub trusted_extension_ids: Option<HashSet<String>>,
-    /// WASM Extension実行時のデコード済みデータメモリ予算管理。
-    /// 仕様書 §7.1 メモリプール
-    pub wasm_memory_pool: Arc<title_wasm_host::MemoryPool>,
 }

@@ -60,14 +60,21 @@ pub async fn handle_verify(
     // Step 3. download_urlからプロキシ経由で暗号化ペイロードを取得
     // 仕様書 §5.1 Step 3, §6.4
     // 三層防御: Zip Bomb対策 + Reservation DoS対策 + Slowloris対策
-    let proxy_response = security::proxy_get_secured(
-        &state.proxy_addr,
-        &request.download_url,
-        limits.max_single_content_bytes,
-        chunk_timeout,
-        &state.memory_semaphore,
+    // ダウンロード全体にグローバルタイムアウトを適用（チャンクタイムアウト積算によるSlowloris対策）
+    let download_timeout =
+        security::compute_dynamic_timeout(&limits, limits.max_single_content_bytes);
+    let (proxy_response, _download_ticket) = tokio::time::timeout(
+        download_timeout,
+        security::proxy_get_secured(
+            &state.proxy_addr,
+            &request.download_url,
+            limits.max_single_content_bytes,
+            chunk_timeout,
+            &state.resource_pool,
+        ),
     )
     .await
+    .map_err(|_| TeeError::Timeout)?
     .map_err(|e| match &e {
         SecurityError::PayloadTooLarge { .. } => TeeError::PayloadTooLarge(e.to_string()),
         SecurityError::MemoryLimitExceeded => TeeError::ServiceUnavailable(e.to_string()),
@@ -81,6 +88,7 @@ pub async fn handle_verify(
     let encrypted_payload: EncryptedPayload =
         serde_json::from_slice(&proxy_response.body)
             .map_err(|e| TeeError::BadGateway(format!("暗号化ペイロードのパースに失敗: {e}")))?;
+    drop(proxy_response); // JSONボディのメモリを早期解放
 
     // Step 4. ペイロード復号（ECDH + HKDF + AES-GCM）
     // 仕様書 §6.4 ハイブリッド暗号化 Step 6-7
@@ -112,18 +120,23 @@ pub async fn handle_verify(
     let ciphertext = b64()
         .decode(&encrypted_payload.ciphertext)
         .map_err(|e| TeeError::BadRequest(format!("ciphertextのBase64デコードに失敗: {e}")))?;
+    drop(encrypted_payload); // EncryptedPayloadのメモリを早期解放
 
     // AES-GCM復号
     let plaintext = title_crypto::aes_gcm_decrypt(&symmetric_key, &nonce, &ciphertext)
         .map_err(|e| TeeError::BadRequest(format!("ペイロードの復号に失敗: {e}")))?;
+    drop(ciphertext); // 暗号文のメモリを早期解放
 
     // ClientPayloadをパース
-    let client_payload: title_types::ClientPayload = serde_json::from_slice(&plaintext)
+    let mut client_payload: title_types::ClientPayload = serde_json::from_slice(&plaintext)
         .map_err(|e| TeeError::BadRequest(format!("ClientPayloadのパースに失敗: {e}")))?;
+    drop(plaintext); // 平文JSONのメモリを早期解放
 
-    // コンテンツをBase64デコード
-    let content_bytes = b64().decode(&client_payload.content)
+    // コンテンツをBase64デコード（content文字列のメモリを早期解放）
+    let content_string = std::mem::take(&mut client_payload.content);
+    let content_bytes = b64().decode(&content_string)
         .map_err(|e| TeeError::BadRequest(format!("contentのBase64デコードに失敗: {e}")))?;
+    drop(content_string);
 
     // MIMEタイプを検出
     let mime_type = detect_mime_type(&content_bytes);

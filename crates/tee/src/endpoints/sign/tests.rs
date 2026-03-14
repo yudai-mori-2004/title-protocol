@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::Json;
 use base64::Engine;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::RwLock;
 
 use title_types::{Attribute, SignedJson, SignedJsonCore};
 
@@ -93,9 +93,8 @@ async fn test_sign_roundtrip() {
         ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: None,
-        memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
+        resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
-        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({
@@ -154,9 +153,8 @@ async fn test_sign_rejects_wrong_key() {
         ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: None,
-        memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
+        resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
-        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({
@@ -199,9 +197,8 @@ async fn test_sign_rejects_oversized() {
         ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: None,
-        memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
+        resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
-        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({
@@ -234,9 +231,8 @@ async fn test_sign_inactive_returns_503() {
         ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: None,
-        memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
+        resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
-        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({

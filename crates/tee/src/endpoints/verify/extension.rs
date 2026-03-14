@@ -54,10 +54,10 @@ pub(crate) async fn process_extension(
 
     // WASMランナーで実行（仕様書 §7.1）
     // 標準エクスポート関数名 "process" を使用
-    let runner = title_wasm_host::WasmRunner::with_memory_pool(
+    let runner = title_wasm_host::WasmRunner::with_resource_pool(
         100_000_000, // Fuel制限: 1億命令
         64 * 1024 * 1024, // Memory制限: 64MB
-        std::sync::Arc::clone(&state.wasm_memory_pool),
+        std::sync::Arc::clone(&state.resource_pool),
     );
 
     let wasm_result = runner

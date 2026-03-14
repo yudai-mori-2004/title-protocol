@@ -21,7 +21,7 @@ use super::handle_verify;
 use crate::endpoints::b64;
 
 use std::io::Cursor;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::RwLock;
 
 // テストフィクスチャ（共有テストフィクスチャディレクトリ）
 const CERTS: &[u8] = include_bytes!("../../../../../tests/fixtures/certs/chain.pem");
@@ -117,9 +117,8 @@ async fn test_verify_roundtrip() {
         ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: None,
-        memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
+        resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
-        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     // 6. /verify 呼び出し
@@ -289,9 +288,8 @@ async fn test_verify_with_extension() {
         wasm_loader: Some(Box::new(crate::wasm_loader::FileLoader::new(
             wasm_dir.to_str().unwrap().to_string(),
         ))),
-        memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
+        resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
-        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     // 4. /verify: core-c2pa + phash-v1
@@ -374,9 +372,8 @@ async fn test_verify_inactive_returns_503() {
         ext_collection_mint: None,
         gateway_pubkey: None,
         wasm_loader: None,
-        memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
+        resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
-        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     let body = serde_json::json!({
@@ -470,9 +467,8 @@ async fn test_verify_rejects_untrusted_extension() {
         wasm_loader: Some(Box::new(crate::wasm_loader::FileLoader::new(
             wasm_dir.to_str().unwrap().to_string(),
         ))),
-        memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
+        resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: Some(trusted),
-        wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
     });
 
     // "evil-ext" を含む /verify リクエスト → 拒否されるべき

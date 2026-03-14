@@ -11,9 +11,9 @@ v0.1.0 を基準とし、v0.1.1 での変更のみを追跡する。
 | TEE エンドポイント | `/register-node` リクエストにコレクションアドレスを追加 |
 | CLI | `register-node` / `remove-node` がコレクションアドレスを送信 |
 | デプロイスクリプト | `setup-ec2.sh` の環境変数書き込み修正 |
-| WASM 実行環境 | ホスト側コンテンツデコード関数 + メモリプール（セマフォ方式） |
-| WASM Extension | phash-v1 を dHash → pHash (DCT) に移行、ホスト側デコード活用 |
-| 仕様書 | §7.1 ホスト関数追加・メモリプール仕様、§7.4 pHash アルゴリズム更新 |
+| WASM 実行環境 | ホスト側コンテンツデコード関数 + ResourcePool（統合セマフォ） |
+| WASM Extension | phash-v1 を dHash → pHash (DCT) に移行、ホスト側デコード活用、WASM側grayscale変換 |
+| 仕様書 | §7.1 ホスト関数追加・ResourcePool仕様、§6.4 三層防御更新、§7.4 pHash アルゴリズム更新 |
 
 ---
 
@@ -69,9 +69,44 @@ v0.1.1 でこれらを `register_tee_node` / `remove_tee_node` に統合し、MP
 
 ---
 
+## §7.1 / §6.4 — ResourcePool統合（セマフォアーキテクチャ統一）
+
+v0.1.1 Task 02 で導入した `MemoryPool`（セマフォB）と既存の `tokio::Semaphore`（セマフォA）を、CASベースの単一 `ResourcePool` に統合。
+
+### 解決した問題
+
+| 問題 | 旧設計 | 新設計 |
+|------|--------|--------|
+| デコード中ヒープピーク過小見積もり | `w×h×1`（grayscale出力）で予約、実ピーク4倍 | ビット深度考慮のピーク推定（8bit=native_bpp, 16/32bit=native_bpp+3） |
+| ホスト側不要変換 | `to_luma8()` で中間バッファ発生 | ネイティブフォーマットでデコード、grayscale変換はWASM側 |
+| A/B統合不在 | `tokio::Semaphore` + `MemoryPool` が独立 | 単一 `ResourcePool` + `Ticket`（Drop自動解放） |
+| ダウンロード無制限占有 | チャンクタイムアウトのみ（積算で長時間占有可能） | ダウンロード全体にグローバルタイムアウト適用 |
+| handler.rsメモリピーク | 中間表現が全スコープ存続 | 使用後即drop（proxy_response, ciphertext, plaintext, content文字列） |
+| デコーダー密結合 | lib.rs内に画像固有ロジック | decode.rsにコンテンツ種別非依存の抽象化（DecoderKind + サブモジュール） |
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `crates/wasm-host/src/resource_pool.rs` | 新規作成。`ResourcePool` + `Ticket`（CASベース統合セマフォ） |
+| `crates/wasm-host/src/memory_pool.rs` | 削除（`resource_pool.rs` に統合） |
+| `crates/wasm-host/src/decode.rs` | 新規作成。コンテンツ種別非依存のデコーダー抽象化（DecoderKind、ビット深度考慮ピーク推定） |
+| `crates/wasm-host/src/lib.rs` | `decode_content` API変更（ネイティブデコード、decode.rsに委譲）、`execute_inner`パラメータ所有権移動（clone削除） |
+| `crates/tee/src/config.rs` | `memory_semaphore` + `wasm_memory_pool` → `resource_pool` |
+| `crates/tee/src/infra/security.rs` | `SemaphoreGuard` 削除、Ticket返却パターンに変更 |
+| `crates/tee/src/main.rs` | ResourcePool初期化に統一 |
+| `crates/tee/src/endpoints/verify/handler.rs` | download Ticket保持パターン、ダウンロードグローバルタイムアウト、中間変数早期drop |
+| `crates/tee/src/endpoints/verify/extension.rs` | `with_resource_pool` に変更 |
+| `crates/tee/src/endpoints/sign/handler.rs` | download Ticket保持パターン、ダウンロードグローバルタイムアウト |
+| `wasm/phash-v1/src/lib.rs` | `decode_content` 3引数化、WASM側grayscale変換追加、channelsバリデーション追加 |
+| `docs/v0.1.1/SPECS_JA.md` | §6.4 三層防御・漸進的予約、§7.1 decode_content・ResourcePool・ABIテーブル更新 |
+
+---
+
 ## タスク一覧
 
 | タスク | 内容 | 状態 |
 |-------|------|------|
 | [01-node-operator-docs](tasks/01-node-operator-docs/README.md) | ドキュメント体系再設計 + コレクション権限委譲統合 + 環境変数修正 | ドキュメント再現性テスト以外完了 |
 | [02-wasm-decode-host](tasks/02-wasm-decode-host/README.md) | WASM ホスト側デコード + メモリプール + pHash (DCT) | 完了 |
+| [03-resource-pool-unification](tasks/03-resource-pool-unification/README.md) | ResourcePool統合 — セマフォアーキテクチャ統一 | 完了 |

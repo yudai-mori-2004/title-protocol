@@ -154,7 +154,7 @@ mod tests {
     use crate::runtime::mock::MockRuntime;
     use crate::runtime::TeeRuntime;
     use solana_sdk::transaction::Transaction;
-    use tokio::sync::{RwLock, Semaphore};
+    use tokio::sync::RwLock;
 
     fn make_test_state() -> Arc<TeeAppState> {
         let rt = MockRuntime::new();
@@ -173,9 +173,8 @@ mod tests {
             ext_collection_mint: None,
             gateway_pubkey: None,
             wasm_loader: None,
-            memory_semaphore: Arc::new(Semaphore::new(1024 * 1024 * 1024)),
+            resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
             trusted_extension_ids: None,
-            wasm_memory_pool: Arc::new(title_wasm_host::MemoryPool::new(1024 * 1024 * 1024)),
         })
     }
 

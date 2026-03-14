@@ -104,6 +104,57 @@ resource "aws_s3_bucket_cors_configuration" "uploads_cors" {
 }
 
 # ---------------------------------------------------------------------------
+# S3 バケット (signed_json ストレージ — 全ノードで共有)
+# ---------------------------------------------------------------------------
+# signed_jsonの保存代行用。cNFTメタデータURIとして使用されるため、
+# ライフサイクル（自動削除）は設定しない。パブリック読み取りを許可。
+
+resource "aws_s3_bucket" "signed_json" {
+  bucket = var.signed_json_s3_bucket_name
+
+  tags = {
+    Project = var.project_name
+    Purpose = "signed-json-storage"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "signed_json_public" {
+  bucket = aws_s3_bucket.signed_json.id
+
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_policy" "signed_json_read" {
+  bucket     = aws_s3_bucket.signed_json.id
+  depends_on = [aws_s3_bucket_public_access_block.signed_json_public]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "PublicReadSignedJson"
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = "s3:GetObject"
+      Resource  = "${aws_s3_bucket.signed_json.arn}/*"
+    }]
+  })
+}
+
+resource "aws_s3_bucket_cors_configuration" "signed_json_cors" {
+  bucket = aws_s3_bucket.signed_json.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET"]
+    allowed_origins = ["*"]
+    max_age_seconds = 86400
+  }
+}
+
+# ---------------------------------------------------------------------------
 # IAM ロール (EC2 → S3)
 # ---------------------------------------------------------------------------
 
@@ -138,7 +189,9 @@ resource "aws_iam_role_policy" "s3_access" {
       ]
       Resource = [
         aws_s3_bucket.uploads.arn,
-        "${aws_s3_bucket.uploads.arn}/*"
+        "${aws_s3_bucket.uploads.arn}/*",
+        aws_s3_bucket.signed_json.arn,
+        "${aws_s3_bucket.signed_json.arn}/*"
       ]
     }]
   })
@@ -177,7 +230,9 @@ resource "aws_iam_user_policy" "s3_user_access" {
       ]
       Resource = [
         aws_s3_bucket.uploads.arn,
-        "${aws_s3_bucket.uploads.arn}/*"
+        "${aws_s3_bucket.uploads.arn}/*",
+        aws_s3_bucket.signed_json.arn,
+        "${aws_s3_bucket.signed_json.arn}/*"
       ]
     }]
   })

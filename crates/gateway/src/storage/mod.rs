@@ -10,7 +10,7 @@
 pub mod s3;
 
 #[cfg(feature = "vendor-aws")]
-pub use s3::S3TempStorage;
+pub use s3::{S3TempStorage, S3SignedJsonStorage};
 
 #[cfg(feature = "vendor-local")]
 pub mod local;
@@ -47,4 +47,18 @@ pub trait TempStorage: Send + Sync {
         object_key: &str,
         expiry_secs: u32,
     ) -> Result<PresignedUrls, GatewayError>;
+}
+
+/// signed_jsonのストレージインターフェース。
+///
+/// Gatewayがsigned_jsonの保存を代行する場合に使用する。
+/// ノード運営者のオプション機能であり、`/health` の capabilities で公開される。
+///
+/// 保存先の永続性は実装に依存する（S3: バケットのライフサイクル設定次第、
+/// Arweave: 永続保証）。cNFTのメタデータURIとして使用されるため、
+/// ノード運営者は適切な保持期間を保証する責任を負う。
+#[async_trait::async_trait]
+pub trait SignedJsonStorage: Send + Sync {
+    /// signed_jsonを保存し、アクセス可能なURIを返す。
+    async fn store(&self, key: &str, data: &[u8]) -> Result<String, GatewayError>;
 }

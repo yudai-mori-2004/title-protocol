@@ -23,6 +23,16 @@ output "s3_bucket_endpoint" {
   value       = "https://s3.${var.aws_region}.amazonaws.com"
 }
 
+output "signed_json_s3_bucket_name" {
+  description = "signed_jsonストレージ S3バケット名（全ノード共有）"
+  value       = aws_s3_bucket.signed_json.bucket
+}
+
+output "signed_json_s3_public_url" {
+  description = "signed_jsonのパブリックURL（cNFTメタデータURIのベース）"
+  value       = "https://${aws_s3_bucket.signed_json.bucket}.s3.${var.aws_region}.amazonaws.com"
+}
+
 output "s3_access_key_id" {
   description = "S3アクセスキーID（.env の S3_ACCESS_KEY に設定）"
   value       = aws_iam_access_key.s3_user_key.id

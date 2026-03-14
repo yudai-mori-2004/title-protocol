@@ -5,17 +5,52 @@
 //! 仕様書 §6.2
 //!
 //! sign + ブロードキャスト代行。
+//! signed_json本体の保存代行にも対応（ノード運営者のオプション機能）。
 
 use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
 use base64::Engine;
+use serde::Deserialize;
 use title_types::*;
 
 use crate::auth::{b64, relay_to_tee};
 use crate::config::GatewayState;
 use crate::error::GatewayError;
+
+// ---------------------------------------------------------------------------
+// Gateway固有のリクエスト型（signed_json本体対応）
+// ---------------------------------------------------------------------------
+
+/// /sign-and-mint リクエストの個別アイテム（Gateway固有）。
+///
+/// `signed_json_uri` と `signed_json` の2パターンに対応:
+/// - `signed_json_uri`: クライアントが事前に保存済みのURI
+/// - `signed_json`: Gatewayに保存を代行させる場合のJSON本体
+#[derive(Debug, Deserialize)]
+pub(crate) struct SignAndMintItem {
+    /// オフチェーンストレージのURI（既にsigned_jsonが保存されている場合）
+    #[serde(default)]
+    pub signed_json_uri: String,
+    /// signed_json本体（Gatewayに保存を代行させる場合）
+    #[serde(default)]
+    pub signed_json: Option<serde_json::Value>,
+}
+
+/// /sign-and-mint リクエスト（Gateway固有、signed_json本体対応）。
+#[derive(Debug, Deserialize)]
+pub(crate) struct SignAndMintInput {
+    /// Base58エンコードされたBlockhash（空の場合はGatewayが自動取得）
+    #[serde(default)]
+    pub recent_blockhash: String,
+    /// 署名リクエストの一覧
+    pub requests: Vec<SignAndMintItem>,
+}
+
+// ---------------------------------------------------------------------------
+// ハンドラ
+// ---------------------------------------------------------------------------
 
 /// POST /sign-and-mint — sign + ブロードキャスト代行。
 /// 仕様書 §6.2
@@ -23,9 +58,12 @@ use crate::error::GatewayError;
 /// /signと同様にTEEから部分署名済みトランザクションを取得し、
 /// GatewayのSolanaウォレットで最終署名を行い、Solanaにブロードキャストする。
 /// クライアントはSolanaウォレットでの署名を省略でき、ガス代はGateway運営者が負担する。
+///
+/// `signed_json` 本体が渡された場合、Gatewayが保存を代行しURIに変換してからTEEに中継する。
+/// この機能は `signed_json_storage` が設定されている場合のみ利用可能。
 pub async fn handle_sign_and_mint(
     State(state): State<Arc<GatewayState>>,
-    Json(body): Json<SignRequest>,
+    Json(input): Json<SignAndMintInput>,
 ) -> Result<Json<SignAndMintResponse>, GatewayError> {
     let solana_rpc_url = state
         .solana_rpc_url
@@ -35,8 +73,43 @@ pub async fn handle_sign_and_mint(
         GatewayError::Internal("GATEWAY_SOLANA_KEYPAIRが設定されていません".to_string())
     })?;
 
+    // Step 0: signed_json本体 → 保存 → URI変換
+    let mut sign_items = Vec::new();
+    for item in &input.requests {
+        let uri = match (&item.signed_json, item.signed_json_uri.is_empty()) {
+            (Some(sj), _) => {
+                // signed_json本体 → ストレージに保存してURIを取得
+                let storage = state.signed_json_storage.as_ref().ok_or_else(|| {
+                    GatewayError::BadRequest(
+                        "このノードはsigned_json保存代行に対応していません。\
+                         signed_json_uriを指定してください"
+                            .to_string(),
+                    )
+                })?;
+                let key = format!("signed-json/{}.json", uuid::Uuid::new_v4());
+                let data = serde_json::to_vec(sj).map_err(|e| {
+                    GatewayError::BadRequest(format!("signed_jsonのシリアライズに失敗: {e}"))
+                })?;
+                storage.store(&key, &data).await?
+            }
+            (None, false) => item.signed_json_uri.clone(),
+            (None, true) => {
+                return Err(GatewayError::BadRequest(
+                    "signed_json_uriまたはsigned_jsonのいずれかが必要です".to_string(),
+                ));
+            }
+        };
+        sign_items.push(SignRequestItem {
+            signed_json_uri: uri,
+        });
+    }
+
+    let mut body = SignRequest {
+        recent_blockhash: input.recent_blockhash,
+        requests: sign_items,
+    };
+
     // Step 1: recent_blockhashが空の場合、Solana RPCから最新のblockhashを取得
-    let mut body = body;
     if body.recent_blockhash.is_empty() {
         let rpc_request = serde_json::json!({
             "jsonrpc": "2.0",

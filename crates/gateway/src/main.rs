@@ -39,6 +39,19 @@ fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
     Ok(Box::new(storage::S3TempStorage::from_env()?))
 }
 
+/// signed_jsonストレージを構築する（vendor-aws: S3互換ストレージ）。
+/// `SIGNED_JSON_S3_BUCKET` が未設定の場合は `None` を返す（機能無効）。
+#[cfg(feature = "vendor-aws")]
+fn create_signed_json_storage() -> anyhow::Result<Option<Box<dyn storage::SignedJsonStorage>>> {
+    Ok(storage::S3SignedJsonStorage::from_env()?.map(|s| Box::new(s) as _))
+}
+
+/// signed_jsonストレージ（vendor-local: 未実装）。
+#[cfg(not(feature = "vendor-aws"))]
+fn create_signed_json_storage() -> anyhow::Result<Option<Box<dyn storage::SignedJsonStorage>>> {
+    Ok(None)
+}
+
 /// Temporary Storageを構築する（vendor-local: ローカルファイルサーバー）。
 #[cfg(all(feature = "vendor-local", not(feature = "vendor-aws")))]
 fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
@@ -90,6 +103,14 @@ async fn main() -> anyhow::Result<()> {
     // Temporary Storage
     let temp_storage = create_temp_storage()?;
 
+    // signed_jsonストレージ（オプション）
+    let signed_json_storage = create_signed_json_storage()?;
+    if signed_json_storage.is_some() {
+        tracing::info!("signed_json保存代行が有効です");
+    } else {
+        tracing::info!("signed_json保存代行は無効です（SIGNED_JSON_S3_BUCKET未設定）");
+    }
+
     // Solana RPC（sign-and-mint用、オプション）
     let solana_rpc_url = std::env::var("SOLANA_RPC_URL").ok();
     let solana_keypair = std::env::var("GATEWAY_SOLANA_KEYPAIR").ok().map(|s| {
@@ -136,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         http_client,
         signing_key,
         temp_storage,
+        signed_json_storage,
         solana_rpc_url,
         solana_keypair,
         default_resource_limits: effective_limits,
@@ -145,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = axum::Router::new()
-        .route("/health", axum::routing::get(|| async { "ok" }))
+        .route("/health", axum::routing::get(endpoints::handle_health))
         .route("/upload-url", axum::routing::post(endpoints::handle_upload_url))
         .route("/verify", axum::routing::post(endpoints::handle_verify))
         .route("/sign", axum::routing::post(endpoints::handle_sign))
@@ -167,7 +189,7 @@ mod tests {
     use auth::{b64, build_gateway_auth_wrapper};
     use config::GatewayState;
     use endpoints::*;
-    use storage::{PresignedUrls, TempStorage};
+    use storage::{PresignedUrls, TempStorage, SignedJsonStorage};
 
     use axum::extract::State;
     use axum::Json;
@@ -191,6 +213,16 @@ mod tests {
         }
     }
 
+    /// テスト用のモックSignedJsonStorage。
+    struct MockSignedJsonStorage;
+
+    #[async_trait::async_trait]
+    impl SignedJsonStorage for MockSignedJsonStorage {
+        async fn store(&self, key: &str, _data: &[u8]) -> Result<String, error::GatewayError> {
+            Ok(format!("https://mock-storage/{key}"))
+        }
+    }
+
     /// テスト用GatewayStateを構築するヘルパー
     fn test_state(tee_endpoint: &str) -> Arc<GatewayState> {
         let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
@@ -200,6 +232,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             signing_key,
             temp_storage: Box::new(MockTempStorage),
+            signed_json_storage: None,
             solana_rpc_url: None,
             solana_keypair: None,
             default_resource_limits: ResourceLimits {
@@ -473,10 +506,11 @@ mod tests {
 
         let result = handle_sign_and_mint(
             State(state),
-            Json(SignRequest {
+            Json(endpoints::SignAndMintInput {
                 recent_blockhash: "11111111111111111111111111111111".to_string(),
-                requests: vec![SignRequestItem {
+                requests: vec![endpoints::SignAndMintItem {
                     signed_json_uri: "ar://test".to_string(),
+                    signed_json: None,
                 }],
             }),
         )
@@ -501,6 +535,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             signing_key,
             temp_storage: Box::new(MockTempStorage),
+            signed_json_storage: None,
             solana_rpc_url: Some("http://localhost:8899".to_string()),
             solana_keypair: None,
             default_resource_limits: ResourceLimits {
@@ -519,10 +554,11 @@ mod tests {
 
         let result = handle_sign_and_mint(
             State(state),
-            Json(SignRequest {
+            Json(endpoints::SignAndMintInput {
                 recent_blockhash: "11111111111111111111111111111111".to_string(),
-                requests: vec![SignRequestItem {
+                requests: vec![endpoints::SignAndMintItem {
                     signed_json_uri: "ar://test".to_string(),
+                    signed_json: None,
                 }],
             }),
         )
@@ -533,6 +569,100 @@ mod tests {
         assert!(
             err_msg.contains("GATEWAY_SOLANA_KEYPAIR"),
             "エラーメッセージにGATEWAY_SOLANA_KEYPAIRが含まれるべき: {err_msg}"
+        );
+    }
+
+    /// /sign-and-mint — signed_json本体でstorage未設定時にエラーが返ることを確認
+    #[tokio::test]
+    async fn test_sign_and_mint_signed_json_no_storage() {
+        let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
+
+        let state = Arc::new(GatewayState {
+            tee_endpoint: "http://localhost:4000".to_string(),
+            http_client: reqwest::Client::new(),
+            signing_key,
+            temp_storage: Box::new(MockTempStorage),
+            signed_json_storage: None, // ストレージ未設定
+            solana_rpc_url: Some("http://localhost:8899".to_string()),
+            solana_keypair: Some(solana_sdk::signer::keypair::Keypair::new()),
+            default_resource_limits: ResourceLimits {
+                max_single_content_bytes: Some(1024),
+                max_concurrent_bytes: None,
+                min_upload_speed_bytes: None,
+                base_processing_time_sec: None,
+                max_global_timeout_sec: None,
+                chunk_read_timeout_sec: None,
+                c2pa_max_graph_size: None,
+            },
+            on_chain_resource_limits: None,
+            max_upload_size: 1024,
+            presign_expiry_secs: 3600,
+        });
+
+        let result = handle_sign_and_mint(
+            State(state),
+            Json(endpoints::SignAndMintInput {
+                recent_blockhash: "11111111111111111111111111111111".to_string(),
+                requests: vec![endpoints::SignAndMintItem {
+                    signed_json_uri: String::new(),
+                    signed_json: Some(serde_json::json!({"protocol": "Title-v1"})),
+                }],
+            }),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("保存代行"),
+            "ストレージ未設定エラーメッセージが期待と異なる: {err_msg}"
+        );
+    }
+
+    /// /sign-and-mint — signed_json_uriもsigned_jsonも未指定時にエラーが返ることを確認
+    #[tokio::test]
+    async fn test_sign_and_mint_missing_both() {
+        let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
+
+        let state = Arc::new(GatewayState {
+            tee_endpoint: "http://localhost:4000".to_string(),
+            http_client: reqwest::Client::new(),
+            signing_key,
+            temp_storage: Box::new(MockTempStorage),
+            signed_json_storage: None,
+            solana_rpc_url: Some("http://localhost:8899".to_string()),
+            solana_keypair: Some(solana_sdk::signer::keypair::Keypair::new()),
+            default_resource_limits: ResourceLimits {
+                max_single_content_bytes: Some(1024),
+                max_concurrent_bytes: None,
+                min_upload_speed_bytes: None,
+                base_processing_time_sec: None,
+                max_global_timeout_sec: None,
+                chunk_read_timeout_sec: None,
+                c2pa_max_graph_size: None,
+            },
+            on_chain_resource_limits: None,
+            max_upload_size: 1024,
+            presign_expiry_secs: 3600,
+        });
+
+        let result = handle_sign_and_mint(
+            State(state),
+            Json(endpoints::SignAndMintInput {
+                recent_blockhash: "11111111111111111111111111111111".to_string(),
+                requests: vec![endpoints::SignAndMintItem {
+                    signed_json_uri: String::new(),
+                    signed_json: None,
+                }],
+            }),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("いずれかが必要"),
+            "バリデーションエラーメッセージが期待と異なる: {err_msg}"
         );
     }
 }

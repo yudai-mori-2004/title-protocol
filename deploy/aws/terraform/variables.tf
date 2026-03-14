@@ -48,6 +48,12 @@ variable "s3_bucket_name" {
   default     = "title-uploads-devnet"
 }
 
+variable "signed_json_s3_bucket_name" {
+  description = "signed_jsonストレージ用S3バケット名（パブリック読み取り、ライフサイクルなし）"
+  type        = string
+  default     = "title-signed-json-devnet"
+}
+
 variable "volume_size" {
   description = "EBSボリュームサイズ（GB）"
   type        = number

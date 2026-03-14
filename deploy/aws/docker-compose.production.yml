@@ -1,6 +1,6 @@
 # Title Protocol — AWS Production Docker Compose
 #
-# Runs Gateway as a container.
+# Runs Gateway + Irys Uploader sidecar as containers.
 # TEE + Proxy run separately inside the Nitro Enclave (not in Docker).
 #
 # Note: Indexer + PostgreSQL are NOT part of node deployment.
@@ -27,5 +27,20 @@ services:
     environment:
       # TEEはEnclave内、Proxyが localhost:4000 で中継
       TEE_ENDPOINT: "http://host.docker.internal:4000"
+      # Irysサイドカーへの接続
+      IRYS_UPLOADER_URL: "http://irys-uploader:3001"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      - irys-uploader
+
+  # Irys Uploader Sidecar (Arweave永続保存)
+  irys-uploader:
+    build:
+      context: ../..
+      dockerfile: docker/irys-uploader.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      PORT: "3001"

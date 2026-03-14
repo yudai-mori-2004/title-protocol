@@ -25,17 +25,12 @@ const client = new TitleClient(config);
 const result = await client.register({
   content: imageBuffer,             // Uint8Array — C2PA-signed content
   ownerWallet: "YourSolana...",     // Base58 wallet address
-  processorIds: ["core-c2pa"],      // processors to run in TEE
-  storeSignedJson: async (json) => {
-    // Persist signed_json to permanent storage (e.g. Arweave via Irys).
-    // Return a retrievable URI.
-    return await uploadToArweave(json);
-  },
-  recentBlockhash: blockhash,       // from connection.getLatestBlockhash()
+  processorIds: ["core-c2pa"],      // processors to run in TEE (required)
+  delegateMint: true,               // Gateway broadcasts the TX + stores signed_json
 });
 
 // result.contents — verified content details (contentHash, storageUri, signedJson)
-// result.partialTxs — Base64 partial TXs to co-sign with your wallet and broadcast
+// result.txSignatures — already on-chain
 ```
 
 ### Custom RPC
@@ -49,16 +44,22 @@ const config = await fetchGlobalConfig(conn, "devnet");
 const client = new TitleClient(config);
 ```
 
-### Delegate Minting
+### With Custom Storage
+
+If you want to store signed_json yourself instead of using Gateway delegation:
 
 ```typescript
 const result = await client.register({
   content: imageBuffer,
   ownerWallet: wallet,
-  storeSignedJson: myUploader,
-  delegateMint: true,   // Gateway broadcasts the TX
+  processorIds: ["core-c2pa", "phash-v1"],
+  storeSignedJson: async (json) => {
+    // Persist to your own storage. Return a retrievable URI.
+    return await uploadToArweave(json);
+  },
+  recentBlockhash: blockhash,
 });
-// result.txSignatures — already on-chain
+// result.partialTxs — Base64 partial TXs to co-sign with your wallet
 ```
 
 ## API
@@ -90,8 +91,8 @@ const client = new TitleClient(globalConfig);
 |-------|------|----------|-------------|
 | `content` | `Uint8Array` | Yes | Content binary (C2PA-signed image, etc.) |
 | `ownerWallet` | `string` | Yes | Owner wallet address (Base58) |
-| `storeSignedJson` | `(json: string) => Promise<string>` | Yes | Callback to persist signed_json. Returns a URI. |
-| `processorIds` | `string[]` | No | Processors to run. Default: `["core-c2pa"]` |
+| `processorIds` | `string[]` | Yes | Processors to run (e.g. `["core-c2pa"]`) |
+| `storeSignedJson` | `(json: string) => Promise<string>` | No | Callback to persist signed_json. Optional if Gateway supports `store_signed_json`. |
 | `extensionInputs` | `Record<string, unknown>` | No | Auxiliary inputs for WASM extensions |
 | `node` | `TeeSession` | No | Specific node to use (auto-selected if omitted) |
 | `delegateMint` | `boolean` | No | If true, Gateway broadcasts TX. Default: false |

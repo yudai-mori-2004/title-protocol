@@ -42,7 +42,7 @@ fn create_temp_storage() -> anyhow::Result<Box<dyn storage::TempStorage>> {
 /// signed_jsonストレージルーターを構築する。
 ///
 /// processor_idごとのルーティングを環境変数から構築する。
-/// - `IRYS_PRIVATE_KEY` 設定時: Irysストレージが利用可能
+/// - `IRYS_UPLOADER_URL` 設定時: Irysストレージが利用可能（Node.jsサイドカー経由）
 /// - `SIGNED_JSON_S3_BUCKET` 設定時: S3ストレージが利用可能
 /// - `IRYS_PROCESSOR_IDS`: Irysにルーティングするprocessor_id（カンマ区切り、デフォルト: `core-c2pa`）
 /// - 上記以外のprocessor_idはS3にルーティング（S3がデフォルト）

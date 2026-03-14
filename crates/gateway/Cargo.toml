@@ -34,7 +34,6 @@ bincode = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 async-trait = { workspace = true }
-sha2 = { workspace = true }
 
 [dev-dependencies]
 title-crypto = { path = "../crypto" }

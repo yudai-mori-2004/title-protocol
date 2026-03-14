@@ -53,6 +53,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 hex = "0.4"
 coset = "0.3"
 ciborium = "0.2"
+p256 = { version = "0.13", features = ["ecdsa"] }
 p384 = { version = "0.13", features = ["ecdsa"] }
 ecdsa = { version = "0.16", features = ["der", "verifying"] }
 x509-cert = { version = "0.2", features = ["std"] }

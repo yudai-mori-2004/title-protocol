@@ -14,6 +14,13 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 image = { workspace = true }
+ciborium = { workspace = true }
+p256 = { workspace = true }
+p384 = { workspace = true }
+ecdsa = { workspace = true }
+x509-cert = { workspace = true }
+der = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 wat = "1"

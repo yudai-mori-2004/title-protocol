@@ -6881,13 +6881,20 @@ name = "title-wasm-host"
 version = "0.1.0"
 dependencies = [
  "c2pa",
+ "ciborium",
+ "der",
+ "ecdsa",
+ "hex",
  "hmac 0.12.1",
  "image",
+ "p256",
+ "p384",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "wasmtime",
  "wat",
+ "x509-cert",
 ]
 
 [[package]]

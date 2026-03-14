@@ -24,6 +24,7 @@
 //! WASMエクスポート関数は結果バッファへのポインタ(u32)を返す。
 //! バッファ形式: `[4B LE: json_len][json_bytes...]`
 
+pub mod c2pa_cert;
 pub mod decode;
 pub mod resource_pool;
 
@@ -413,11 +414,23 @@ impl WasmRunner {
                     };
                     let data_slice = &state.content[offset..end];
 
-                    // ハッシュ計算（仕様書 §7.1）
+                    // 特徴量計算（仕様書 §7.1）
                     let hash_bytes: Vec<u8> = match op {
                         "sha256" => Sha256::digest(data_slice).to_vec(),
                         "sha384" => Sha384::digest(data_slice).to_vec(),
                         "sha512" => Sha512::digest(data_slice).to_vec(),
+                        "c2pa_verify_active_cert_chain" => {
+                            let root_spki_hex = match spec.get("root_spki_hex").and_then(|v| v.as_str()) {
+                                Some(s) => s,
+                                None => return -1,
+                            };
+                            // 証明書チェーン検証はコンテンツ全体が必要
+                            match c2pa_cert::verify_active_cert_chain(&state.content, root_spki_hex) {
+                                Ok(true) => vec![0x01],
+                                Ok(false) => vec![0x00],
+                                Err(_) => return -5, // C2PA構造エラー
+                            }
+                        }
                         _ => return -1, // 未知のop
                     };
 

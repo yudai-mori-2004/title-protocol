@@ -183,6 +183,22 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# .env にネットワーク設定を書き出す（Enclave Dockerイメージにベイクされるため、
+# ビルド前に確定させておく必要がある）
+# ---------------------------------------------------------------------------
+ensure_env() {
+  local key="$1" value="$2"
+  if ! grep -q "^${key}=" .env 2>/dev/null; then
+    echo "${key}=${value}" >> .env
+    echo "  .env に ${key} を追加"
+  fi
+}
+ensure_env "GATEWAY_SIGNING_KEY" "$GATEWAY_SIGNING_KEY"
+ensure_env "GLOBAL_CONFIG_PDA" "$GLOBAL_CONFIG_PDA"
+ensure_env "CORE_COLLECTION_MINT" "$CORE_COLLECTION_MINT"
+ensure_env "EXT_COLLECTION_MINT" "$EXT_COLLECTION_MINT"
+
+# ---------------------------------------------------------------------------
 # Step 1: WASMモジュールのビルド
 # ---------------------------------------------------------------------------
 echo ""
@@ -351,20 +367,6 @@ fi
 echo ""
 echo "[Step 6/10] Docker Compose (Gateway) 起動..."
 
-# Auto-generated値を .env に書き出す（Docker コンテナが env_file 経由で読む）
-# 冪等: 既に存在するキーは上書きしない
-ensure_env() {
-  local key="$1" value="$2"
-  if ! grep -q "^${key}=" .env 2>/dev/null; then
-    echo "${key}=${value}" >> .env
-    echo "  .env に ${key} を追加"
-  fi
-}
-ensure_env "GATEWAY_SIGNING_KEY" "$GATEWAY_SIGNING_KEY"
-ensure_env "GLOBAL_CONFIG_PDA" "$GLOBAL_CONFIG_PDA"
-ensure_env "CORE_COLLECTION_MINT" "$CORE_COLLECTION_MINT"
-ensure_env "EXT_COLLECTION_MINT" "$EXT_COLLECTION_MINT"
-
 docker compose -f deploy/aws/docker-compose.production.yml up -d --build
 echo "  Docker Compose 起動完了"
 
@@ -466,9 +468,7 @@ else
 fi
 
 # Gateway
-if curl -sf -X POST -H "Content-Type: application/json" \
-  -d '{"content_size":1,"content_type":"image/jpeg"}' \
-  http://localhost:3000/upload-url > /dev/null 2>&1; then
+if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
   echo "  OK  Gateway"
 else
   echo "  NG  Gateway"

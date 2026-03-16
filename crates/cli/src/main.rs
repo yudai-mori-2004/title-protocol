@@ -3,7 +3,7 @@
 //! Title Protocol CLI。
 //!
 //! JSインフラスクリプトを統合したRust CLIバイナリ。
-//! 4つのサブコマンド: init-global, register-node, create-tree, remove-node
+//! サブコマンド: init-global, register-node, create-tree, remove-node, register-wasm, add-wasm-version
 
 mod anchor;
 mod commands;
@@ -70,6 +70,30 @@ enum Commands {
         /// 削除するTEEノードの signing pubkey (Base58)
         #[arg(long)]
         signing_pubkey: String,
+    },
+    /// WASMモジュールをオンチェーンに登録する（PDA作成 + 初期バージョン登録）
+    RegisterWasm {
+        /// Extension ID（例: phash, hardware-google）
+        #[arg(long)]
+        extension_id: String,
+        /// WASMバイナリのパス
+        #[arg(long)]
+        wasm_path: std::path::PathBuf,
+        /// WASM取得先URL（例: ar://...）。省略時は空文字
+        #[arg(long, default_value = "")]
+        wasm_source: String,
+    },
+    /// 既存WASMモジュールに新バージョンを追加する
+    AddWasmVersion {
+        /// Extension ID（例: phash, hardware-google）
+        #[arg(long)]
+        extension_id: String,
+        /// WASMバイナリのパス
+        #[arg(long)]
+        wasm_path: std::path::PathBuf,
+        /// WASM取得先URL（例: ar://...）。省略時は空文字
+        #[arg(long, default_value = "")]
+        wasm_source: String,
     },
 }
 
@@ -138,6 +162,34 @@ async fn main() {
         }
         Commands::RemoveNode { signing_pubkey } => {
             commands::remove_node::run(&project_root, &keys_dir, &signing_pubkey).await
+        }
+        Commands::RegisterWasm {
+            extension_id,
+            wasm_path,
+            wasm_source,
+        } => {
+            commands::register_wasm::run(
+                &project_root,
+                &keys_dir,
+                &extension_id,
+                &wasm_path,
+                &wasm_source,
+            )
+            .await
+        }
+        Commands::AddWasmVersion {
+            extension_id,
+            wasm_path,
+            wasm_source,
+        } => {
+            commands::add_wasm_version::run(
+                &project_root,
+                &keys_dir,
+                &extension_id,
+                &wasm_path,
+                &wasm_source,
+            )
+            .await
         }
     };
 

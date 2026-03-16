@@ -48,6 +48,13 @@ cargo build --release -p title-cli
 
 # 6. Initialize GlobalConfig (creates keys/authority.json + network.json)
 ./target/release/title-cli init-global --cluster devnet
+
+# 7. Register WASM modules on-chain
+for module in phash hardware-google c2pa-training-v1 c2pa-license-v1; do
+  wasm_file="wasm/${module}/target/wasm32-unknown-unknown/release/${module//-/_}.wasm"
+  [ -f "$wasm_file" ] && ./target/release/title-cli register-wasm \
+    --extension-id "$module" --wasm-path "$wasm_file"
+done
 ```
 
 > **Full details:** [`programs/title-config/README.md`](programs/title-config/README.md) — program ID update locations, network.json schema, and what init-global does.

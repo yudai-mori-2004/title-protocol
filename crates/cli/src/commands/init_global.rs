@@ -2,12 +2,12 @@
 
 //! `title-cli init-global` サブコマンド。
 //!
-//! GlobalConfig PDA の初期化、MPL Core コレクション作成、WASM モジュール登録を行う。
+//! GlobalConfig PDA の初期化と MPL Core コレクション作成を行う。
+//! WASMモジュールは後から `register-wasm` で個別管理する。
 //! 実行後 `network.json` をプロジェクトルートに書き出す。
 
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
 #[allow(deprecated)]
 use solana_sdk::{
     message::Message,
@@ -17,22 +17,12 @@ use solana_sdk::{
 };
 
 use crate::anchor;
-use crate::config::{
-    self, NetworkConfig, WasmModuleInfo,
-};
+use crate::config::{self, NetworkConfig};
 use crate::error::CliError;
 use crate::rpc::SolanaRpc;
 
 /// デフォルトプログラムID。
 const DEFAULT_PROGRAM_ID: &str = "5p5Tf93fEbCPZxA1NG48rH9ozDALsVmVVf52QW3VDNoN";
-
-/// WASM モジュールID一覧。
-const WASM_MODULES: &[&str] = &[
-    "phash-v1",
-    "hardware-google",
-    "c2pa-training-v1",
-    "c2pa-license-v1",
-];
 
 /// init-global サブコマンドを実行する。
 #[allow(deprecated)]
@@ -140,73 +130,9 @@ pub async fn run(
     };
 
     // =====================================================================
-    // Step 5: WASM モジュール登録
+    // Step 5: ResourceLimits をオンチェーンに設定
     // =====================================================================
-    println!("\n[Step 5] WASM モジュール登録");
-
-    let mut wasm_module_info = std::collections::HashMap::new();
-
-    for module_id in WASM_MODULES {
-        let wasm_filename = module_id.replace('-', "_") + ".wasm";
-        let local_path = project_root
-            .join("wasm")
-            .join(module_id)
-            .join("target")
-            .join("wasm32-unknown-unknown")
-            .join("release")
-            .join(&wasm_filename);
-
-        if !local_path.exists() {
-            println!("  {module_id}: ローカルビルドなし → スキップ");
-            println!(
-                "    ビルド: cd wasm/{module_id} && cargo build --target wasm32-unknown-unknown --release"
-            );
-            continue;
-        }
-
-        let wasm_bytes = std::fs::read(&local_path)?;
-        let hash: [u8; 32] = Sha256::digest(&wasm_bytes).into();
-        let hash_hex = hex::encode(hash);
-        println!(
-            "  {module_id}: {}... ({} bytes)",
-            &hash_hex[..16],
-            wasm_bytes.len()
-        );
-
-        let ix = anchor::build_add_wasm_module_ix(
-            &program_id,
-            &global_config_pda,
-            &authority_pubkey,
-            module_id,
-            &hash,
-            "",
-        );
-
-        let blockhash = rpc.get_latest_blockhash().await?;
-        let message =
-            Message::new_with_blockhash(&[ix], Some(&authority_pubkey), &blockhash);
-        let mut tx = Transaction::new_unsigned(message);
-        tx.try_sign(&[&authority], blockhash)
-            .map_err(|e| CliError::Transaction(format!("署名に失敗: {e}")))?;
-
-        let tx_bytes = bincode::serialize(&tx)
-            .map_err(|e| CliError::Transaction(format!("シリアライズに失敗: {e}")))?;
-
-        match rpc.send_and_confirm(&tx_bytes).await {
-            Ok(sig) => println!("    登録完了: {sig}"),
-            Err(e) => println!("    登録失敗: {e}"),
-        }
-
-        wasm_module_info.insert(
-            module_id.to_string(),
-            WasmModuleInfo { hash: hash_hex },
-        );
-    }
-
-    // =====================================================================
-    // Step 6: ResourceLimits をオンチェーンに設定
-    // =====================================================================
-    println!("\n[Step 6] ResourceLimits をオンチェーンに設定");
+    println!("\n[Step 5] ResourceLimits をオンチェーンに設定");
 
     let default_limits = title_types::ResourceLimits {
         max_single_content_bytes: Some(2 * 1024 * 1024 * 1024),     // 2GB
@@ -241,9 +167,9 @@ pub async fn run(
     }
 
     // =====================================================================
-    // Step 7: network.json 書き出し
+    // Step 6: network.json 書き出し
     // =====================================================================
-    println!("\n[Step 7] network.json 書き出し");
+    println!("\n[Step 6] network.json 書き出し");
 
     let network_config = NetworkConfig {
         cluster: cluster.to_string(),
@@ -252,7 +178,6 @@ pub async fn run(
         authority: authority_pubkey.to_string(),
         core_collection_mint: core_mint_str.clone(),
         ext_collection_mint: ext_mint_str.clone(),
-        wasm_modules: wasm_module_info.clone(),
     };
 
     let network_path = project_root.join("network.json");
@@ -270,15 +195,10 @@ pub async fn run(
     println!("  Core Collection:      {core_mint_str}");
     println!("  Extension Collection: {ext_mint_str}");
     println!("  Program ID:           {program_id}");
-    println!(
-        "  WASM Modules:         {}/{}",
-        wasm_module_info.len(),
-        WASM_MODULES.len()
-    );
     println!("  network.json:         {}", network_path.display());
     println!();
     println!("次のステップ:");
-    println!("  1. network.json をリポジトリにコミット");
+    println!("  1. WASMモジュール登録: title-cli register-wasm --extension-id phash --wasm-path ...");
     println!("  2. ノード起動: deploy/aws/setup-ec2.sh");
     println!("  ※ keys/authority.json を各ノードにコピーすれば自動承認可能");
     println!();

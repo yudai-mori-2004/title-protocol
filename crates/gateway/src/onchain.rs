@@ -71,7 +71,7 @@ async fn fetch_inner(
 ///   discriminator(8) + authority(32) + core_mint(32) + ext_mint(32) = 104B固定
 ///   Vec<[u8;32]> trusted_node_keys (4B len + N×32B)
 ///   Vec<[u8;32]> trusted_tsa_keys  (4B len + N×32B)
-///   Vec<WasmModuleEntry> trusted_wasm_modules (4B len + N×(32+32+4+str_len))
+///   Vec<[u8;32]> trusted_wasm_ids (4B len + N×32B)
 ///   ResourceLimitsOnChain (7 × Option<u64>)
 fn parse_resource_limits(data: &[u8]) -> Result<ResourceLimits, Box<dyn std::error::Error>> {
     let mut pos: usize = 104; // Skip discriminator + 3 Pubkeys
@@ -84,13 +84,9 @@ fn parse_resource_limits(data: &[u8]) -> Result<ResourceLimits, Box<dyn std::err
     let tsa_keys_len = read_u32_le(data, &mut pos)? as usize;
     pos += tsa_keys_len * 32;
 
-    // Skip Vec<WasmModuleEntry> (extension_id[32] + wasm_hash[32] + String)
-    let wasm_len = read_u32_le(data, &mut pos)? as usize;
-    for _ in 0..wasm_len {
-        pos += 32 + 32; // extension_id + wasm_hash
-        let str_len = read_u32_le(data, &mut pos)? as usize;
-        pos += str_len; // wasm_source string bytes
-    }
+    // Skip Vec<[u8; 32]> trusted_wasm_ids
+    let wasm_ids_len = read_u32_le(data, &mut pos)? as usize;
+    pos += wasm_ids_len * 32;
 
     // Parse ResourceLimitsOnChain: 7 × Option<u64>
     let max_single_content_bytes = read_option_u64(data, &mut pos)?;
@@ -249,7 +245,7 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes());
         // Vec<[u8;32]> trusted_tsa_keys — empty
         data.extend_from_slice(&0u32.to_le_bytes());
-        // Vec<WasmModuleEntry> — empty
+        // Vec<[u8;32]> trusted_wasm_ids — empty
         data.extend_from_slice(&0u32.to_le_bytes());
 
         // ResourceLimitsOnChain: 7 × Option<u64>
@@ -303,13 +299,9 @@ mod tests {
         data.extend_from_slice(&1u32.to_le_bytes());
         data.extend_from_slice(&[20u8; 32]);
 
-        // Vec<WasmModuleEntry> — 1 entry
+        // Vec<[u8;32]> trusted_wasm_ids — 1 entry
         data.extend_from_slice(&1u32.to_le_bytes());
         data.extend_from_slice(&[30u8; 32]); // extension_id
-        data.extend_from_slice(&[31u8; 32]); // wasm_hash
-        let wasm_source = "ar://test";
-        data.extend_from_slice(&(wasm_source.len() as u32).to_le_bytes());
-        data.extend_from_slice(wasm_source.as_bytes());
 
         // ResourceLimitsOnChain: all None
         for _ in 0..7 {

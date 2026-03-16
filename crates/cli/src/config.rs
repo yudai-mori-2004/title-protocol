@@ -2,7 +2,6 @@
 
 //! 設定ファイルI/O（network.json, keypair, tee-info.json）。
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -20,13 +19,6 @@ pub struct NetworkConfig {
     pub authority: String,
     pub core_collection_mint: String,
     pub ext_collection_mint: String,
-    pub wasm_modules: HashMap<String, WasmModuleInfo>,
-}
-
-/// WASM モジュール情報（network.json 内）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WasmModuleInfo {
-    pub hash: String,
 }
 
 /// TEE情報（tests/e2e/fixtures/tee-info.json）。

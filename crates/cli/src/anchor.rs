@@ -32,6 +32,11 @@ pub fn find_tee_node_pda(signing_pubkey: &[u8; 32], program_id: &Pubkey) -> (Pub
     Pubkey::find_program_address(&[b"tee-node", signing_pubkey.as_ref()], program_id)
 }
 
+/// WasmModuleAccount PDA導出。seeds = [b"wasm-module", &extension_id]
+pub fn find_wasm_module_pda(extension_id: &[u8; 32], program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"wasm-module", extension_id.as_ref()], program_id)
+}
+
 /// Borsh String encode: 4-byte LE length + UTF-8 bytes
 pub fn borsh_string(s: &str) -> Vec<u8> {
     let bytes = s.as_bytes();
@@ -100,19 +105,21 @@ pub fn build_update_collections_ix(
     }
 }
 
-/// `add_wasm_module` 命令を構築する（upsert）。
+/// `register_wasm_module` 命令を構築する（PDA作成 + 初期バージョン登録）。
 /// 仕様書 §7.3
-pub fn build_add_wasm_module_ix(
+#[allow(deprecated)]
+pub fn build_register_wasm_module_ix(
     program_id: &Pubkey,
     global_config_pda: &Pubkey,
+    wasm_module_pda: &Pubkey,
     authority: &Pubkey,
-    extension_id: &str,
+    extension_id: &[u8; 32],
     wasm_hash: &[u8; 32],
     wasm_source: &str,
 ) -> Instruction {
     let mut data = Vec::new();
-    data.extend_from_slice(&anchor_discriminator("add_wasm_module"));
-    data.extend_from_slice(&extension_id_bytes(extension_id));
+    data.extend_from_slice(&anchor_discriminator("register_wasm_module"));
+    data.extend_from_slice(extension_id);
     data.extend_from_slice(wasm_hash);
     data.extend_from_slice(&borsh_string(wasm_source));
 
@@ -120,7 +127,37 @@ pub fn build_add_wasm_module_ix(
         program_id: *program_id,
         accounts: vec![
             AccountMeta::new(*global_config_pda, false),
-            AccountMeta::new_readonly(*authority, true),
+            AccountMeta::new(*wasm_module_pda, false),
+            AccountMeta::new(*authority, true),
+            AccountMeta::new_readonly(system_program::id(), false),
+        ],
+        data,
+    }
+}
+
+/// `add_wasm_version` 命令を構築する（既存PDAに新バージョン追加）。
+/// 仕様書 §7.3
+#[allow(deprecated)]
+pub fn build_add_wasm_version_ix(
+    program_id: &Pubkey,
+    global_config_pda: &Pubkey,
+    wasm_module_pda: &Pubkey,
+    authority: &Pubkey,
+    wasm_hash: &[u8; 32],
+    wasm_source: &str,
+) -> Instruction {
+    let mut data = Vec::new();
+    data.extend_from_slice(&anchor_discriminator("add_wasm_version"));
+    data.extend_from_slice(wasm_hash);
+    data.extend_from_slice(&borsh_string(wasm_source));
+
+    Instruction {
+        program_id: *program_id,
+        accounts: vec![
+            AccountMeta::new_readonly(*global_config_pda, false),
+            AccountMeta::new(*wasm_module_pda, false),
+            AccountMeta::new(*authority, true),
+            AccountMeta::new_readonly(system_program::id(), false),
         ],
         data,
     }

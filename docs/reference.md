@@ -194,6 +194,40 @@ title-cli remove-node --signing-pubkey <BASE58_PUBKEY>
 
 `remove_tee_node` 命令は GlobalConfig からの除去と同時に、MPL Core CPI で両コレクションの UpdateDelegate プラグインから signing_pubkey を削除する（最後のノード削除時はプラグイン自体を除去）。コレクション権限取消は削除と不可分に1トランザクションで完了する。
 
+### `register-wasm`
+
+WASM モジュールをオンチェーンに登録する。WasmModuleAccount PDA を作成し、初期バージョン (version=1) を登録する。`keys/authority.json` が必須。
+
+```bash
+title-cli register-wasm \
+  --extension-id phash \
+  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm \
+  --wasm-source "ar://..."
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--extension-id` | Yes | Extension 識別子（例: `phash`, `hardware-google`） |
+| `--wasm-path` | Yes | WASM バイナリファイルのパス |
+| `--wasm-source` | No | WASM 取得先 URL（例: `ar://...`）。省略時は空文字。 |
+
+### `add-wasm-version`
+
+既存の WASM モジュールに新バージョンを追加する。PDA は `realloc` で動的に拡張される。`keys/authority.json` が必須。
+
+```bash
+title-cli add-wasm-version \
+  --extension-id phash \
+  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm \
+  --wasm-source "ar://..."
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--extension-id` | Yes | 対象 Extension 識別子 |
+| `--wasm-path` | Yes | WASM バイナリファイルのパス |
+| `--wasm-source` | No | WASM 取得先 URL。省略時は空文字。 |
+
 ### Global Options
 
 | Flag | Default | Description |

@@ -11,6 +11,9 @@
 //! - `TeeNodeAccount` (PDA: seeds=[b"tee-node", &signing_pubkey]):
 //!   TEEノードごとの詳細情報。gateway_endpoint、expected_measurements含む。
 //!
+//! - `WasmModuleAccount` (PDA: seeds=[b"wasm-module", &extension_id]):
+//!   WASMモジュール種別ごとの詳細情報。バージョン管理付き。
+//!
 //! ## 命令
 //! - `initialize`: Global Configの初期化
 //! - `register_tee_node`: TEEノードの登録（PDA作成 + リスト追加 + Collection Authority委譲）
@@ -18,8 +21,10 @@
 //! - `deactivate_tee_node`: TEEノードの無効化
 //! - `remove_tee_node`: TEEノードの削除（リスト除去 + Collection Authority取り消し + PDAクローズ）
 //! - `update_collections`: コレクションMintの更新
-//! - `add_wasm_module`: WASMモジュールの追加
-//! - `remove_wasm_module`: WASMモジュールの削除
+//! - `register_wasm_module`: WASMモジュールの登録（PDA作成 + リスト追加 + 初期バージョン登録）
+//! - `remove_wasm_module`: WASMモジュールの削除（PDAクローズ + リスト除去）
+//! - `add_wasm_version`: WASMモジュールに新バージョン追加
+//! - `update_wasm_version`: WASMバージョンのステータス等更新
 //! - `set_resource_limits`: リソース制限の設定
 //! - `add_tsa_key`: TSA鍵の追加
 //! - `remove_tsa_key`: TSA鍵の削除
@@ -372,50 +377,106 @@ pub mod title_config {
         Ok(())
     }
 
-    /// 信頼されたWASMモジュールを追加または更新する（upsert）。
+    /// WASMモジュールを登録する（PDA作成 + GlobalConfigリスト追加 + 初期バージョン登録）。
     /// 仕様書 §7.3
-    ///
-    /// 同じextension_idが既に登録されている場合はwasm_hashとwasm_sourceを更新する。
-    /// 存在しない場合は新規追加する。
-    pub fn add_wasm_module(
-        ctx: Context<UpdateConfig>,
+    pub fn register_wasm_module(
+        ctx: Context<RegisterWasmModule>,
         extension_id: [u8; 32],
         wasm_hash: [u8; 32],
         wasm_source: String,
     ) -> Result<()> {
         require!(wasm_source.len() <= 256, ErrorCode::WasmSourceTooLong);
 
+        let clock = Clock::get()?;
+
+        // WasmModuleAccount 初期化
+        let module = &mut ctx.accounts.wasm_module;
+        module.extension_id = extension_id;
+        module.versions = vec![WasmVersionEntry {
+            version: 1,
+            wasm_hash,
+            wasm_source,
+            status: 0, // active
+            registered_at: clock.unix_timestamp,
+        }];
+        module.bump = ctx.bumps.wasm_module;
+
+        // GlobalConfig にモジュールID追加
         let config = &mut ctx.accounts.global_config;
-        if let Some(existing) = config
-            .trusted_wasm_modules
-            .iter_mut()
-            .find(|m| m.extension_id == extension_id)
-        {
-            existing.wasm_hash = wasm_hash;
-            existing.wasm_source = wasm_source;
-        } else {
-            config.trusted_wasm_modules.push(WasmModuleEntry {
-                extension_id,
-                wasm_hash,
-                wasm_source,
-            });
-        }
+        config.trusted_wasm_ids.push(extension_id);
+
+        emit!(WasmModuleRegistered { extension_id });
         Ok(())
     }
 
-    /// 信頼されたWASMモジュールを削除する。
+    /// WASMモジュールを削除する（PDAクローズ + GlobalConfigリスト除去）。
     /// 仕様書 §7.3
-    pub fn remove_wasm_module(
-        ctx: Context<UpdateConfig>,
-        extension_id: [u8; 32],
-    ) -> Result<()> {
+    pub fn remove_wasm_module(ctx: Context<RemoveWasmModule>) -> Result<()> {
+        let extension_id = ctx.accounts.wasm_module.extension_id;
+
         let config = &mut ctx.accounts.global_config;
-        let pos = config
-            .trusted_wasm_modules
-            .iter()
-            .position(|m| m.extension_id == extension_id)
-            .ok_or(ErrorCode::WasmModuleNotFound)?;
-        config.trusted_wasm_modules.remove(pos);
+        config.trusted_wasm_ids.retain(|id| id != &extension_id);
+
+        emit!(WasmModuleRemoved { extension_id });
+        Ok(())
+    }
+
+    /// WASMモジュールに新バージョンを追加する。
+    /// PDAはreallocで動的に拡張される。
+    /// 仕様書 §7.3
+    pub fn add_wasm_version(
+        ctx: Context<AddWasmVersion>,
+        wasm_hash: [u8; 32],
+        wasm_source: String,
+    ) -> Result<()> {
+        require!(wasm_source.len() <= 256, ErrorCode::WasmSourceTooLong);
+
+        let clock = Clock::get()?;
+        let module = &mut ctx.accounts.wasm_module;
+
+        let next_version = module
+            .versions
+            .last()
+            .map(|v| v.version + 1)
+            .unwrap_or(1);
+
+        module.versions.push(WasmVersionEntry {
+            version: next_version,
+            wasm_hash,
+            wasm_source,
+            status: 0, // active
+            registered_at: clock.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    /// WASMバージョンのフィールドを更新する（status変更等）。
+    /// 仕様書 §7.3
+    pub fn update_wasm_version(
+        ctx: Context<UpdateWasmModule>,
+        version: u32,
+        status: Option<u8>,
+        wasm_source: Option<String>,
+    ) -> Result<()> {
+        if let Some(ref s) = wasm_source {
+            require!(s.len() <= 256, ErrorCode::WasmSourceTooLong);
+        }
+
+        let module = &mut ctx.accounts.wasm_module;
+        let entry = module
+            .versions
+            .iter_mut()
+            .find(|v| v.version == version)
+            .ok_or(ErrorCode::WasmVersionNotFound)?;
+
+        if let Some(s) = status {
+            entry.status = s;
+        }
+        if let Some(s) = wasm_source {
+            entry.wasm_source = s;
+        }
+
         Ok(())
     }
 
@@ -467,7 +528,8 @@ pub mod title_config {
 /// プロトコル検証者から正規のコンテンツ記録として認識される。
 ///
 /// TEEノードの詳細は個別のTeeNodeAccount PDAに格納される。
-/// 本アカウントはノードのsigning_pubkeyリスト（フラット）のみを保持する。
+/// WASMモジュールの詳細は個別のWasmModuleAccount PDAに格納される。
+/// 本アカウントはノードのsigning_pubkeyリストとWASMのextension_idリスト（フラット）のみを保持する。
 #[account]
 pub struct GlobalConfigAccount {
     /// DAO multi-sigのウォレットアドレス
@@ -480,8 +542,8 @@ pub struct GlobalConfigAccount {
     pub trusted_node_keys: Vec<[u8; 32]>,
     /// 信頼するTSA公開鍵ハッシュのリスト
     pub trusted_tsa_keys: Vec<[u8; 32]>,
-    /// 信頼されたWASMモジュールのリスト
-    pub trusted_wasm_modules: Vec<WasmModuleEntry>,
+    /// 信頼されたWASMモジュールのextension_idリスト
+    pub trusted_wasm_ids: Vec<[u8; 32]>,
     /// リソース制限（オンチェーン上限）
     pub resource_limits: ResourceLimitsOnChain,
 }
@@ -492,8 +554,6 @@ impl GlobalConfigAccount {
 
     /// 初期割当サイズ。
     /// Solana CPI制限（MAX_PERMITTED_DATA_INCREASE = 10,240バイト）に収める。
-    /// 可変領域 10,124B: ノードID(32B)×100 + TSA鍵(32B)×30 + WASMモジュール(≈98B)×30 ≈ 6.1KB。
-    /// 将来的にrealloc命令追加で拡張可能。
     pub const INIT_SPACE: usize = 10240;
 }
 
@@ -520,16 +580,52 @@ pub struct ResourceLimitsOnChain {
     pub c2pa_max_graph_size: Option<u64>,
 }
 
-/// 信頼されたWASMモジュール情報。
-/// 仕様書 §5.2 Step 1, §7.3
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct WasmModuleEntry {
+/// WASMモジュール情報。per-module PDA。
+/// 仕様書 §7.3
+///
+/// GlobalConfigのtrusted_wasm_idsにextension_idが登録され、
+/// 詳細情報は本PDA（seeds=[b"wasm-module", &extension_id]）に格納される。
+/// バージョン管理付き。reallocで動的にサイズ拡張。
+#[account]
+pub struct WasmModuleAccount {
     /// Extension識別子（最大32バイト、null-padded）
     pub extension_id: [u8; 32],
+    /// バージョンリスト（追加順）
+    pub versions: Vec<WasmVersionEntry>,
+    /// PDA bump seed
+    pub bump: u8,
+}
+
+impl WasmModuleAccount {
+    /// 固定フィールドサイズ
+    pub const BASE_SIZE: usize = 8  // discriminator
+        + 32  // extension_id
+        + 4   // versions Vec prefix
+        + 1;  // bump
+
+    /// 初期サイズ（1バージョン分）
+    pub const INIT_SPACE: usize = Self::BASE_SIZE + WasmVersionEntry::MAX_SIZE;
+}
+
+/// WASMモジュールのバージョンエントリ。
+/// 仕様書 §7.3
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct WasmVersionEntry {
+    /// バージョン番号（1始まり、単調増加）
+    pub version: u32,
     /// WASMバイナリのSHA-256ハッシュ
     pub wasm_hash: [u8; 32],
     /// WASMバイナリの取得先URL（例: "ar://..."）
     pub wasm_source: String,
+    /// ステータス (0=active, 1=deprecated)
+    pub status: u8,
+    /// 登録時のUnixタイムスタンプ
+    pub registered_at: i64,
+}
+
+impl WasmVersionEntry {
+    /// 最大サイズ（wasm_source 256文字想定）
+    pub const MAX_SIZE: usize = 4 + 32 + 4 + 256 + 1 + 8;
 }
 
 /// TEEノード情報。per-node PDA。
@@ -746,6 +842,102 @@ pub struct UpdateConfig<'info> {
     pub authority: Signer<'info>,
 }
 
+/// WASMモジュール登録命令のアカウント。
+/// 仕様書 §7.3
+#[derive(Accounts)]
+#[instruction(extension_id: [u8; 32])]
+pub struct RegisterWasmModule<'info> {
+    #[account(
+        mut,
+        seeds = [b"global-config"],
+        bump,
+        has_one = authority
+    )]
+    pub global_config: Account<'info, GlobalConfigAccount>,
+    #[account(
+        init,
+        payer = authority,
+        space = WasmModuleAccount::INIT_SPACE,
+        seeds = [b"wasm-module", extension_id.as_ref()],
+        bump
+    )]
+    pub wasm_module: Account<'info, WasmModuleAccount>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// WASMモジュール削除命令のアカウント。
+/// 仕様書 §7.3
+#[derive(Accounts)]
+pub struct RemoveWasmModule<'info> {
+    #[account(
+        mut,
+        seeds = [b"global-config"],
+        bump,
+        has_one = authority
+    )]
+    pub global_config: Account<'info, GlobalConfigAccount>,
+    #[account(
+        mut,
+        close = rent_recipient,
+        seeds = [b"wasm-module", wasm_module.extension_id.as_ref()],
+        bump = wasm_module.bump
+    )]
+    pub wasm_module: Account<'info, WasmModuleAccount>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    /// CHECK: rent lamportsの受取先。任意のアカウント。
+    #[account(mut)]
+    pub rent_recipient: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// WASMバージョン追加命令のアカウント。
+/// reallocで動的にサイズ拡張する。
+/// 仕様書 §7.3
+#[derive(Accounts)]
+pub struct AddWasmVersion<'info> {
+    #[account(
+        seeds = [b"global-config"],
+        bump,
+        has_one = authority
+    )]
+    pub global_config: Account<'info, GlobalConfigAccount>,
+    #[account(
+        mut,
+        realloc = WasmModuleAccount::BASE_SIZE
+            + (wasm_module.versions.len() + 1) * WasmVersionEntry::MAX_SIZE,
+        realloc::payer = authority,
+        realloc::zero = false,
+        seeds = [b"wasm-module", wasm_module.extension_id.as_ref()],
+        bump = wasm_module.bump
+    )]
+    pub wasm_module: Account<'info, WasmModuleAccount>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// WASMバージョン更新命令のアカウント。
+/// 仕様書 §7.3
+#[derive(Accounts)]
+pub struct UpdateWasmModule<'info> {
+    #[account(
+        seeds = [b"global-config"],
+        bump,
+        has_one = authority
+    )]
+    pub global_config: Account<'info, GlobalConfigAccount>,
+    #[account(
+        mut,
+        seeds = [b"wasm-module", wasm_module.extension_id.as_ref()],
+        bump = wasm_module.bump
+    )]
+    pub wasm_module: Account<'info, WasmModuleAccount>,
+    pub authority: Signer<'info>,
+}
+
 // ---------------------------------------------------------------------------
 // イベント
 // ---------------------------------------------------------------------------
@@ -762,6 +954,20 @@ pub struct TeeNodeRegistered {
 #[event]
 pub struct TeeNodeDeactivated {
     pub signing_pubkey: Pubkey,
+}
+
+/// WASMモジュール登録イベント。
+/// 仕様書 §7.3
+#[event]
+pub struct WasmModuleRegistered {
+    pub extension_id: [u8; 32],
+}
+
+/// WASMモジュール削除イベント。
+/// 仕様書 §7.3
+#[event]
+pub struct WasmModuleRemoved {
+    pub extension_id: [u8; 32],
 }
 
 // ---------------------------------------------------------------------------
@@ -798,4 +1004,7 @@ pub enum ErrorCode {
     /// payerのアドレスがsigning_pubkeyと一致しない
     #[msg("payerのアドレスがsigning_pubkeyと一致しません")]
     PayerSigningKeyMismatch,
+    /// WASMバージョンが見つからない
+    #[msg("指定されたバージョンのWASMエントリが見つかりません")]
+    WasmVersionNotFound,
 }

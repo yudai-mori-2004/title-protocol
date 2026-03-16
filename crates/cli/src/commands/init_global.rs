@@ -22,7 +22,7 @@ use crate::error::CliError;
 use crate::rpc::SolanaRpc;
 
 /// デフォルトプログラムID。
-const DEFAULT_PROGRAM_ID: &str = "5p5Tf93fEbCPZxA1NG48rH9ozDALsVmVVf52QW3VDNoN";
+const DEFAULT_PROGRAM_ID: &str = "HLdrA1s96z9rTsWMP9H8HrZXcV4guFkCyFrdKGBdAMyC";
 
 /// init-global サブコマンドを実行する。
 #[allow(deprecated)]

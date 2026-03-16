@@ -35,7 +35,7 @@ use anchor_lang::solana_program::{
     program::invoke,
 };
 
-declare_id!("5p5Tf93fEbCPZxA1NG48rH9ozDALsVmVVf52QW3VDNoN");
+declare_id!("HLdrA1s96z9rTsWMP9H8HrZXcV4guFkCyFrdKGBdAMyC");
 
 /// MPL Core プログラムID: CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d
 fn mpl_core_program_id() -> Pubkey {

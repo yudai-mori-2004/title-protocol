@@ -29,7 +29,7 @@ export type TitleCluster = "devnet" | "mainnet";
 
 /** Known Title Config program IDs per cluster. */
 export const TITLE_CONFIG_PROGRAM_IDS: Record<TitleCluster, PublicKey | null> = {
-  devnet: new PublicKey("5p5Tf93fEbCPZxA1NG48rH9ozDALsVmVVf52QW3VDNoN"),
+  devnet: new PublicKey("HLdrA1s96z9rTsWMP9H8HrZXcV4guFkCyFrdKGBdAMyC"),
   mainnet: null, // TBD — DAO deployment
 };
 

@@ -21,6 +21,7 @@ ecdsa = { workspace = true }
 x509-cert = { workspace = true }
 der = { workspace = true }
 hex = { workspace = true }
+kamadak-exif = { workspace = true }
 
 [dev-dependencies]
 wat = "1"

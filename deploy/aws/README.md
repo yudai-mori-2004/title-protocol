@@ -103,13 +103,16 @@ Copy keys from your local machine:
 ```bash
 # From local machine:
 scp -i deploy/aws/keys/title-protocol-devnet.pem \
-  keys/authority.json keys/operator.json network.json \
-  ec2-user@NODE_IP:~/title-protocol/keys/
+  network.json \
+  ec2-user@NODE_IP:~/title-protocol/
 
-# Move network.json to project root
-ssh -i deploy/aws/keys/title-protocol-devnet.pem ec2-user@NODE_IP \
-  "mv ~/title-protocol/keys/network.json ~/title-protocol/network.json"
+# authority.json is required for devnet (auto-sign mode)
+scp -i deploy/aws/keys/title-protocol-devnet.pem \
+  keys/authority.json \
+  ec2-user@NODE_IP:~/title-protocol/keys/
 ```
+
+`keys/operator.json` is optional — if not copied, `setup-ec2.sh` auto-creates one from `~/.config/solana/id.json` or generates a new keypair. If auto-created, fund it with SOL before proceeding (the script pauses and displays the address).
 
 Run the setup:
 
@@ -141,7 +144,8 @@ Values auto-configured by `setup-ec2.sh` (no manual setup needed):
 
 | Value | Source |
 |-------|--------|
-| `GATEWAY_SIGNING_KEY` | Auto-generated, appended to `.env` |
+| `GATEWAY_SIGNING_KEY` | Auto-generated (random), appended to `.env` |
+| `GATEWAY_SOLANA_KEYPAIR` | Derived from `keys/operator.json` (Base58), appended to `.env` |
 | `GLOBAL_CONFIG_PDA` | Read from `network.json`, appended to `.env` |
 | `CORE_COLLECTION_MINT` | Read from `network.json` |
 | `EXT_COLLECTION_MINT` | Read from `network.json` |

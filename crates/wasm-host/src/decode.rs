@@ -109,9 +109,11 @@ mod image_decoder {
     }
 
     /// 画像をネイティブフォーマットでデコードする。
+    /// EXIF orientation タグに基づき回転・反転を適用する。
     /// 仕様書 §7.1
     pub fn decode(content: &[u8]) -> Result<DecodeResult, i32> {
         let img = image::load_from_memory(content).map_err(|_| -3i32)?;
+        let img = apply_exif_orientation(img, content);
 
         let (width, height) = (img.width(), img.height());
 
@@ -130,6 +132,34 @@ mod image_decoder {
         metadata.extend_from_slice(&channels.to_le_bytes());
 
         Ok(DecodeResult { data, metadata })
+    }
+
+    /// EXIF orientation タグを読み取り、DynamicImage に回転・反転を適用する。
+    /// EXIF 読み取り失敗時（PNG 等 EXIF 非対応フォーマット含む）は無変換で返す。
+    /// 仕様書 §7.1
+    fn apply_exif_orientation(
+        img: image::DynamicImage,
+        content: &[u8],
+    ) -> image::DynamicImage {
+        let orientation = (|| -> Option<u32> {
+            let exif_reader = exif::Reader::new();
+            let exif_data = exif_reader
+                .read_from_container(&mut Cursor::new(content))
+                .ok()?;
+            let field = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?;
+            field.value.get_uint(0)
+        })();
+
+        match orientation.unwrap_or(1) {
+            2 => img.fliph(),
+            3 => img.rotate180(),
+            4 => img.flipv(),
+            5 => img.fliph().rotate270(),
+            6 => img.rotate90(),
+            7 => img.fliph().rotate90(),
+            8 => img.rotate270(),
+            _ => img, // 1 or unknown
+        }
     }
 
     /// フォーマット別デコーダでカラータイプを判定し、ピークbytes/pixelを返す。

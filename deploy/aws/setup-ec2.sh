@@ -198,6 +198,31 @@ ensure_env "GLOBAL_CONFIG_PDA" "$GLOBAL_CONFIG_PDA"
 ensure_env "CORE_COLLECTION_MINT" "$CORE_COLLECTION_MINT"
 ensure_env "EXT_COLLECTION_MINT" "$EXT_COLLECTION_MINT"
 
+# GATEWAY_SOLANA_KEYPAIR の自動設定（operator.json → Base58）
+# sign-and-mint および Irys sidecar が使用する Solana keypair
+if [ -z "${GATEWAY_SOLANA_KEYPAIR:-}" ]; then
+  GATEWAY_SOLANA_KEYPAIR=$(python3 -c "
+import json
+ALPHABET = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+with open('$OPERATOR_KEY_PATH') as f:
+    key_bytes = bytes(json.load(f))
+n = int.from_bytes(key_bytes, 'big')
+result = b''
+while n > 0:
+    n, r = divmod(n, 58)
+    result = ALPHABET[r:r+1] + result
+for b in key_bytes:
+    if b == 0:
+        result = ALPHABET[0:1] + result
+    else:
+        break
+print(result.decode())
+")
+  echo "  GATEWAY_SOLANA_KEYPAIR を operator.json から自動設定"
+fi
+export GATEWAY_SOLANA_KEYPAIR
+ensure_env "GATEWAY_SOLANA_KEYPAIR" "$GATEWAY_SOLANA_KEYPAIR"
+
 # ---------------------------------------------------------------------------
 # Step 1: WASMモジュールのビルド
 # ---------------------------------------------------------------------------

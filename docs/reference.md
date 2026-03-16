@@ -21,7 +21,7 @@
 | `GATEWAY_SIGNING_KEY` | Auto | Ed25519 secret key (64-char hex). `setup.sh` が未設定時に自動生成する。Gateway と TEE が同じ鍵を共有する必要がある。 |
 | `TEE_ENDPOINT` | Auto | TEE server URL. Default: `http://localhost:4000`. |
 | `GLOBAL_CONFIG_PDA` | Auto | GlobalConfig PDA address. Gateway 起動時にオンチェーン ResourceLimits を取得する。`network.json` から自動設定。 |
-| `GATEWAY_SOLANA_KEYPAIR` | No | Solana keypair (Base58) for `/sign-and-mint` (delegateMint). Operator がクライアントに代わって TX 手数料を支払う。`delegateMint: true` 使用時のみ必要。 |
+| `GATEWAY_SOLANA_KEYPAIR` | Auto | Solana keypair (Base58). sign-and-mint (delegateMint) および Irys sidecar が使用する。`setup-ec2.sh` が `keys/operator.json` から自動設定。 |
 
 ### Gateway — TempStorage (vendor-aws)
 

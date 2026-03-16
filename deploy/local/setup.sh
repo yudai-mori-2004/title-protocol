@@ -249,7 +249,7 @@ if [ -z "$TEE_PID" ]; then
     CORE_COLLECTION_MINT="$CORE_COLLECTION_MINT" \
     EXT_COLLECTION_MINT="$EXT_COLLECTION_MINT" \
     GATEWAY_PUBKEY="${GATEWAY_PUBKEY:-}" \
-    TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-phash-v1,hardware-google,c2pa-training-v1,c2pa-license-v1}" \
+    TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-image-phash,hardware-google,c2pa-training,c2pa-license}" \
     WASM_DIR="$WASM_OUTPUT" \
     nohup ./target/release/title-tee > /tmp/title-tee.log 2>&1 &
   TEE_PID=$!

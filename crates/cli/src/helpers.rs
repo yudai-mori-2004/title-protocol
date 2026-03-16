@@ -73,6 +73,86 @@ pub async fn fund_tee_wallet(
     Ok(())
 }
 
+/// WASMバイナリをArweaveにアップロードし、permanent URLを返す。
+///
+/// `services/irys-uploader/upload-file.js` を `node` で実行する。
+/// operator.json の秘密鍵をBase58で渡し、SOLで支払う。
+pub fn upload_to_arweave(
+    project_root: &Path,
+    keys_dir: &Path,
+    wasm_path: &Path,
+) -> Result<String, CliError> {
+    let operator_path = keys_dir.join("operator.json");
+    if !operator_path.exists() {
+        return Err(CliError::Config(
+            "keys/operator.json が見つかりません。Arweaveアップロードに必要です。".into(),
+        ));
+    }
+
+    // operator.json → Base58 private key
+    let key_bytes: Vec<u8> = {
+        let data = std::fs::read_to_string(&operator_path)?;
+        serde_json::from_str(&data)
+            .map_err(|e| CliError::Config(format!("operator.json のパースに失敗: {e}")))?
+    };
+    let private_key_b58 = base58::ToBase58::to_base58(key_bytes.as_slice());
+
+    let script_path = project_root
+        .join("services")
+        .join("irys-uploader")
+        .join("upload-file.js");
+    if !script_path.exists() {
+        return Err(CliError::Config(format!(
+            "upload-file.js が見つかりません: {}",
+            script_path.display()
+        )));
+    }
+
+    println!("  Arweaveにアップロード中...");
+
+    // Node.jsスクリプトは services/irys-uploader/ で実行されるため、
+    // wasm_path は絶対パスに変換する
+    let abs_wasm_path = if wasm_path.is_absolute() {
+        wasm_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| project_root.to_path_buf())
+            .join(wasm_path)
+    };
+
+    let output = std::process::Command::new("node")
+        .arg(&script_path)
+        .arg(&abs_wasm_path)
+        .arg(&private_key_b58)
+        .arg("application/wasm")
+        .current_dir(project_root.join("services").join("irys-uploader"))
+        .output()
+        .map_err(|e| CliError::Config(format!("node の実行に失敗: {e}")))?;
+
+    // stderr はログ出力（ユーザー向け表示）
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stderr.lines() {
+        println!("  {line}");
+    }
+
+    if !output.status.success() {
+        return Err(CliError::Config(format!(
+            "Arweaveアップロードに失敗 (exit {})",
+            output.status.code().unwrap_or(-1)
+        )));
+    }
+
+    // stdout から JSON { "url": "..." } をパース
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|e| CliError::Config(format!("アップロード結果のパースに失敗: {e}")))?;
+    let url = parsed["url"]
+        .as_str()
+        .ok_or_else(|| CliError::Config("アップロード結果にurlがありません".into()))?;
+
+    Ok(url.to_string())
+}
+
 /// TEEエンドポイント呼び出しの結果。
 pub enum TeeCallResult<T> {
     /// 成功（200 OK）

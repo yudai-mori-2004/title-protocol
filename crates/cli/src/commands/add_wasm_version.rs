@@ -22,6 +22,7 @@ use solana_sdk::{
 use crate::anchor;
 use crate::config;
 use crate::error::CliError;
+use crate::helpers;
 use crate::rpc::SolanaRpc;
 
 /// add-wasm-version サブコマンドを実行する。
@@ -53,6 +54,13 @@ pub async fn run(
     let hash_hex = hex::encode(wasm_hash);
 
     let extension_id_bytes = anchor::extension_id_bytes(extension_id);
+
+    // wasm_source が空ならArweaveにアップロード
+    let wasm_source = if wasm_source.is_empty() {
+        helpers::upload_to_arweave(project_root, keys_dir, wasm_path)?
+    } else {
+        wasm_source.to_string()
+    };
 
     println!("  Extension ID:   {extension_id}");
     println!("  WASM path:      {}", wasm_path.display());
@@ -92,7 +100,7 @@ pub async fn run(
         &wasm_module_pda,
         &authority_pubkey,
         &wasm_hash,
-        wasm_source,
+        &wasm_source,
     );
 
     let blockhash = rpc.get_latest_blockhash().await?;

@@ -83,6 +83,12 @@ enum Commands {
         #[arg(long, default_value = "")]
         wasm_source: String,
     },
+    /// WASMモジュールをオンチェーンから削除する（PDAクローズ + リスト除去）
+    RemoveWasm {
+        /// Extension ID（例: phash-v1）
+        #[arg(long)]
+        extension_id: String,
+    },
     /// 既存WASMモジュールに新バージョンを追加する
     AddWasmVersion {
         /// Extension ID（例: phash, hardware-google）
@@ -162,6 +168,9 @@ async fn main() {
         }
         Commands::RemoveNode { signing_pubkey } => {
             commands::remove_node::run(&project_root, &keys_dir, &signing_pubkey).await
+        }
+        Commands::RemoveWasm { extension_id } => {
+            commands::remove_wasm::run(&project_root, &keys_dir, &extension_id).await
         }
         Commands::RegisterWasm {
             extension_id,

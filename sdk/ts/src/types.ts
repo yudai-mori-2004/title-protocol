@@ -94,7 +94,7 @@ export interface GlobalConfig {
   ext_collection_mint: string;
   trusted_tee_nodes: TrustedTeeNode[];
   trusted_tsa_keys: string[];
-  trusted_wasm_modules: TrustedWasmModule[];
+  trusted_wasm_ids: string[];
   resource_limits: ResourceLimits;
 }
 

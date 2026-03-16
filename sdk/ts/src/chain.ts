@@ -16,7 +16,6 @@ import type {
   GlobalConfig,
   ResourceLimits,
   TrustedTeeNode,
-  TrustedWasmModule,
   ExpectedMeasurements,
 } from "./types";
 
@@ -195,14 +194,8 @@ interface RawGlobalConfig {
   extCollectionMint: Buffer;
   trustedNodeKeys: Buffer[];
   trustedTsaKeys: Buffer[];
-  trustedWasmModules: RawWasmModuleEntry[];
+  trustedWasmIds: Buffer[];
   resourceLimits: ResourceLimits;
-}
-
-interface RawWasmModuleEntry {
-  extensionId: Buffer;
-  wasmHash: Buffer;
-  wasmSource: string;
 }
 
 interface RawTeeNodeAccount {
@@ -250,14 +243,11 @@ function deserializeGlobalConfig(data: Buffer): RawGlobalConfig {
     trustedTsaKeys.push(r.readFixedBytes(32));
   }
 
-  // Vec<WasmModuleEntry>
-  const wasmLen = r.readU32LE();
-  const trustedWasmModules: RawWasmModuleEntry[] = [];
-  for (let i = 0; i < wasmLen; i++) {
-    const extensionId = r.readFixedBytes(32);
-    const wasmHash = r.readFixedBytes(32);
-    const wasmSource = r.readString();
-    trustedWasmModules.push({ extensionId, wasmHash, wasmSource });
+  // Vec<[u8; 32]> trusted_wasm_ids
+  const wasmIdsLen = r.readU32LE();
+  const trustedWasmIds: Buffer[] = [];
+  for (let i = 0; i < wasmIdsLen; i++) {
+    trustedWasmIds.push(r.readFixedBytes(32));
   }
 
   // ResourceLimitsOnChain: 7 × Option<u64>
@@ -277,7 +267,7 @@ function deserializeGlobalConfig(data: Buffer): RawGlobalConfig {
     extCollectionMint,
     trustedNodeKeys,
     trustedTsaKeys,
-    trustedWasmModules,
+    trustedWasmIds,
     resourceLimits,
   };
 }
@@ -364,12 +354,8 @@ function rawToTrustedTeeNode(raw: RawTeeNodeAccount): TrustedTeeNode {
   };
 }
 
-function rawToTrustedWasmModule(raw: RawWasmModuleEntry): TrustedWasmModule {
-  return {
-    extension_id: trimNulls(raw.extensionId),
-    wasm_hash: bytesToHex(raw.wasmHash),
-    wasm_source: raw.wasmSource,
-  };
+function rawWasmIdToString(buf: Buffer): string {
+  return trimNulls(buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +460,7 @@ export async function fetchGlobalConfig(
     ext_collection_mint: pubkeyToBase58(raw.extCollectionMint),
     trusted_tee_nodes: trustedTeeNodes,
     trusted_tsa_keys: raw.trustedTsaKeys.map(pubkeyToBase58),
-    trusted_wasm_modules: raw.trustedWasmModules.map(rawToTrustedWasmModule),
+    trusted_wasm_ids: raw.trustedWasmIds.map(rawWasmIdToString),
     resource_limits: raw.resourceLimits,
   };
 }

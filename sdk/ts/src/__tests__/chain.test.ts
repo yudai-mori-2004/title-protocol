@@ -75,7 +75,7 @@ function buildGlobalConfigBuffer(opts: {
   extMint: Buffer;
   nodeKeys: Buffer[];
   tsaKeys: Buffer[];
-  wasmModules: { extensionId: Buffer; wasmHash: Buffer; wasmSource: string }[];
+  wasmIds: Buffer[];
   resourceLimits?: Buffer;
 }): Buffer {
   const parts: Buffer[] = [];
@@ -93,12 +93,10 @@ function buildGlobalConfigBuffer(opts: {
   parts.push(u32le(opts.tsaKeys.length));
   for (const k of opts.tsaKeys) parts.push(k);
 
-  // Vec<WasmModuleEntry>
-  parts.push(u32le(opts.wasmModules.length));
-  for (const m of opts.wasmModules) {
-    parts.push(m.extensionId);
-    parts.push(m.wasmHash);
-    parts.push(borshString(m.wasmSource));
+  // Vec<[u8; 32]> trusted_wasm_ids
+  parts.push(u32le(opts.wasmIds.length));
+  for (const id of opts.wasmIds) {
+    parts.push(id);
   }
 
   // ResourceLimitsOnChain
@@ -224,7 +222,7 @@ describe("chain", () => {
         extMint,
         nodeKeys: [],
         tsaKeys: [],
-        wasmModules: [],
+        wasmIds: [],
       });
 
       const result = _deserializeGlobalConfig(buf);
@@ -239,14 +237,14 @@ describe("chain", () => {
       );
       assert.equal(result.trustedNodeKeys.length, 0);
       assert.equal(result.trustedTsaKeys.length, 0);
-      assert.equal(result.trustedWasmModules.length, 0);
+      assert.equal(result.trustedWasmIds.length, 0);
     });
 
-    it("deserializes config with node keys, TSA keys, and WASM modules", () => {
+    it("deserializes config with node keys, TSA keys, and WASM IDs", () => {
       const nodeKey1 = randomBytes32();
       const nodeKey2 = randomBytes32();
       const tsaKey = randomBytes32();
-      const wasmHash = randomBytes32();
+      const wasmId = extensionIdBytes("image-phash");
 
       const buf = buildGlobalConfigBuffer({
         authority: randomBytes32(),
@@ -254,13 +252,7 @@ describe("chain", () => {
         extMint: randomBytes32(),
         nodeKeys: [nodeKey1, nodeKey2],
         tsaKeys: [tsaKey],
-        wasmModules: [
-          {
-            extensionId: extensionIdBytes("phash-v1"),
-            wasmHash,
-            wasmSource: "https://example.com/phash.wasm",
-          },
-        ],
+        wasmIds: [wasmId],
       });
 
       const result = _deserializeGlobalConfig(buf);
@@ -274,11 +266,7 @@ describe("chain", () => {
         nodeKey2.toString("hex")
       );
       assert.equal(result.trustedTsaKeys.length, 1);
-      assert.equal(result.trustedWasmModules.length, 1);
-      assert.equal(
-        result.trustedWasmModules[0].wasmSource,
-        "https://example.com/phash.wasm"
-      );
+      assert.equal(result.trustedWasmIds.length, 1);
     });
 
     it("deserializes resource_limits (all None)", () => {
@@ -288,7 +276,7 @@ describe("chain", () => {
         extMint: randomBytes32(),
         nodeKeys: [],
         tsaKeys: [],
-        wasmModules: [],
+        wasmIds: [],
       });
 
       const result = _deserializeGlobalConfig(buf);
@@ -314,7 +302,7 @@ describe("chain", () => {
         extMint: randomBytes32(),
         nodeKeys: [randomBytes32()],
         tsaKeys: [],
-        wasmModules: [],
+        wasmIds: [],
         resourceLimits: limits,
       });
 

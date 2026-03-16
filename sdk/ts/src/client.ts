@@ -9,7 +9,6 @@
 import type {
   GlobalConfig,
   TrustedTeeNode,
-  TrustedWasmModule,
   VerifyRequest,
   VerifyResponse,
   SignRequest,
@@ -350,8 +349,8 @@ export class TitleClient {
   // GlobalConfig accessors
   // ---------------------------------------------------------------------------
 
-  getTrustedWasmModules(): TrustedWasmModule[] {
-    return this.globalConfig.trusted_wasm_modules;
+  getTrustedWasmIds(): string[] {
+    return this.globalConfig.trusted_wasm_ids;
   }
 
   getCoreCollectionMint(): string {
@@ -371,24 +370,23 @@ export class TitleClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Validate wasm_hash in extension signed_json against GlobalConfig.
-   * Throws if any extension's wasm_hash is not in trusted_wasm_modules.
+   * Validate wasm_hash in extension signed_json against on-chain data.
+   *
+   * NOTE: WASM hashes are now stored in per-module WasmModuleAccount PDAs,
+   * not in GlobalConfig. Full validation requires reading each PDA.
+   * Currently validates that extension_id is in trusted_wasm_ids.
    */
   private validateWasmHashes(response: VerifyResponse): void {
-    const stripPrefix = (h: string) =>
-      h.startsWith("0x") ? h.slice(2) : h;
-    const trustedHashes = new Set(
-      this.globalConfig.trusted_wasm_modules.map((m) => stripPrefix(m.wasm_hash))
-    );
+    const trustedIds = new Set(this.globalConfig.trusted_wasm_ids);
 
     for (const result of response.results) {
       const payload = result.signed_json.payload;
-      if ("wasm_hash" in payload) {
+      if ("extension_id" in payload) {
         const extPayload = payload as ExtensionPayload;
-        if (!trustedHashes.has(stripPrefix(extPayload.wasm_hash))) {
+        if (!trustedIds.has(extPayload.extension_id)) {
           throw new Error(
-            `Untrusted wasm_hash for extension "${extPayload.extension_id}": ` +
-              `${extPayload.wasm_hash}. Not found in GlobalConfig trusted_wasm_modules.`
+            `Untrusted extension "${extPayload.extension_id}": ` +
+              `Not found in GlobalConfig trusted_wasm_ids.`
           );
         }
       }

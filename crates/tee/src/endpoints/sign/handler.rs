@@ -73,7 +73,7 @@ pub async fn handle_sign(
 
     let partial_txs = tokio::time::timeout(global_timeout, async {
     let mut mint_instructions = Vec::new();
-    let payer = fee_payer_pubkey.as_ref().unwrap_or(&tee_signing_pubkey);
+    let mut creator_pubkey: Option<Pubkey> = None;
 
     for item in &request.requests {
         // Step 1: signed_json_uriからJSONをフェッチ（セキュア化: サイズ制限+チャンクタイムアウト+セマフォ）
@@ -159,6 +159,7 @@ pub async fn handle_sign(
             .ok_or(TeeError::BadRequest("signed_json.payload.creator_walletが見つかりません".into()))?;
         let creator_wallet = Pubkey::from_str(creator_wallet_str)
             .map_err(|e| TeeError::BadRequest(format!("creator_walletのBase58デコードに失敗: {e}")))?;
+        creator_pubkey.get_or_insert(creator_wallet);
 
         // content_hashを取得
         let content_hash = signed_json
@@ -168,6 +169,7 @@ pub async fn handle_sign(
             .ok_or(TeeError::BadRequest("signed_json.payload.content_hashが見つかりません".into()))?;
 
         // MintV2 instruction を生成（TXには後でパッキング）
+        let payer = fee_payer_pubkey.as_ref().unwrap_or(&creator_wallet);
         let ix = solana_tx::build_mint_v2_ix(
             &tree_pubkey,
             &tee_signing_pubkey,
@@ -181,7 +183,10 @@ pub async fn handle_sign(
     }
 
     // ビンパッキング: 可能な限り多くのMintV2を1つのTXに詰める
-    let packed_txs = solana_tx::pack_mint_txs(mint_instructions, payer, &blockhash);
+    let tx_payer = fee_payer_pubkey.as_ref()
+        .or(creator_pubkey.as_ref())
+        .unwrap_or(&tee_signing_pubkey);
+    let packed_txs = solana_tx::pack_mint_txs(mint_instructions, tx_payer, &blockhash);
 
     // 各TXにTEE部分署名を適用
     let mut partial_txs = Vec::new();

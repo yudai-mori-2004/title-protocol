@@ -196,4 +196,4 @@ OnChainLoaderの上にキャッシングレイヤーを追加する形で拡張�
 - [x] setup.sh / setup-ec2.sh / entrypoint.sh から WASM_DIR 強制設定を削除
 - [x] PROGRAM_ID を .env にベイクする処理を追加（setup-ec2.sh）
 - [x] 全既存テストがパスする
-- [ ] EC2 Enclave で OnChainLoader 動作確認（プログラム再デプロイ後）
+- [x] EC2 Enclave で OnChainLoader 動作確認（aws_nitro、vsock proxy経由でArweaveからWASM取得成功）

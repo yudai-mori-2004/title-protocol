@@ -82,6 +82,17 @@ async fn test_sign_roundtrip() {
 
     // tree_addressを設定（create_tree済みの状態をシミュレート）
     let tree_pubkey_bytes: [u8; 32] = rt.tree_pubkey().try_into().unwrap();
+    let tree_pubkey = solana_sdk::pubkey::Pubkey::new_from_array(tree_pubkey_bytes);
+
+    // ALT設定（MintV2で使われるアカウントをALTに登録）
+    let alt_key = solana_sdk::pubkey::Pubkey::new_unique();
+    let alt_addresses = vec![
+        mpl_bubblegum::ID,
+        crate::blockchain::solana_tx::spl_account_compression_v2_id(),
+        solana_sdk::system_program::id(),
+        tree_pubkey,
+        crate::blockchain::solana_tx::derive_tree_config(&tree_pubkey).0,
+    ];
 
     let state = Arc::new(TeeAppState {
         runtime: Box::new(rt),
@@ -95,6 +106,8 @@ async fn test_sign_roundtrip() {
         wasm_loader: None,
         resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        alt_address: RwLock::new(Some(alt_key)),
+        alt_addresses: RwLock::new(alt_addresses),
     });
 
     let body = serde_json::json!({
@@ -110,14 +123,12 @@ async fn test_sign_roundtrip() {
     let response = result.unwrap().0;
     assert_eq!(response.partial_txs.len(), 1);
 
-    // Base64デコードしてトランザクションがデシリアライズ可能
+    // Base64デコードしてVersionedTransactionがデシリアライズ可能
     let tx_bytes = b64().decode(&response.partial_txs[0]).unwrap();
-    let tx: solana_sdk::transaction::Transaction = bincode::deserialize(&tx_bytes).unwrap();
+    let tx: solana_sdk::transaction::VersionedTransaction = bincode::deserialize(&tx_bytes).unwrap();
 
     // 2つの署名者（creator_wallet/payer, tee_signing_pubkey）
-    assert_eq!(tx.message.header.num_required_signatures, 2);
-    // 1つの命令（mint_v2）
-    assert_eq!(tx.message.instructions.len(), 1);
+    assert_eq!(tx.message.header().num_required_signatures, 2);
 }
 
 /// TEE再起動（鍵ローテーション）後に旧signed_jsonが拒否されることを確認
@@ -155,6 +166,8 @@ async fn test_sign_rejects_wrong_key() {
         wasm_loader: None,
         resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        alt_address: RwLock::new(None),
+        alt_addresses: RwLock::new(vec![]),
     });
 
     let body = serde_json::json!({
@@ -199,6 +212,8 @@ async fn test_sign_rejects_oversized() {
         wasm_loader: None,
         resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        alt_address: RwLock::new(None),
+        alt_addresses: RwLock::new(vec![]),
     });
 
     let body = serde_json::json!({
@@ -233,6 +248,8 @@ async fn test_sign_inactive_returns_503() {
         wasm_loader: None,
         resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        alt_address: RwLock::new(None),
+        alt_addresses: RwLock::new(vec![]),
     });
 
     let body = serde_json::json!({

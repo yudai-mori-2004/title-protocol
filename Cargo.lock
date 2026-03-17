@@ -6862,6 +6862,7 @@ dependencies = [
  "bincode",
  "c2pa",
  "ed25519-dalek 2.2.0",
+ "futures",
  "hex",
  "mpl-bubblegum",
  "rand 0.8.5",

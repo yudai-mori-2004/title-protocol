@@ -22,7 +22,7 @@ Every Title Protocol network has exactly **one GlobalConfig** — a single on-ch
                     |  ext_collection_mint       |
                     |  trusted_node_keys[]       |--+
                     |  trusted_tsa_keys[]        |  |
-                    |  trusted_wasm_modules[]    |  |
+                    |  trusted_wasm_ids[]        |  |
                     |  resource_limits           |  |
                     +----------------------------+  |
                                                     |  references
@@ -49,7 +49,7 @@ Every Title Protocol network has exactly **one GlobalConfig** — a single on-ch
 | `ext_collection_mint` | The MPL Core Collection for extension-attribute cNFTs (Layer 2). |
 | `trusted_node_keys` | List of TEE node signing pubkeys authorized to operate on this network. |
 | `trusted_tsa_keys` | Trusted TSA (Time Stamping Authority) certificate hashes for timestamp verification. |
-| `trusted_wasm_modules` | Registered WASM extension modules (extension\_id + SHA-256 hash of the binary). |
+| `trusted_wasm_ids` | Registered WASM extension IDs. Per-module version/hash is stored in separate WasmModuleAccount PDAs. |
 | `resource_limits` | On-chain resource limit ceiling (file size, concurrency, timeouts). Gateway clamps its defaults to never exceed these values. |
 
 **TeeNodeAccount** (one per TEE node) stores the node's full specification — its cryptographic keys, gateway endpoint, TEE platform type, and expected attestation measurements. This PDA is created by the TEE itself during registration, ensuring that the node's internal keys are cryptographically bound to the on-chain record.

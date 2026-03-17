@@ -148,6 +148,8 @@ async fn main() -> anyhow::Result<()> {
         wasm_loader,
         resource_pool,
         trusted_extension_ids,
+        alt_address: RwLock::new(None),
+        alt_addresses: RwLock::new(Vec::new()),
     });
 
     // Step 1: 鍵生成 (仕様書 §6.4)
@@ -168,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/register-node", axum::routing::post(endpoints::handle_register_node))
         .route("/verify", axum::routing::post(endpoints::handle_verify))
         .route("/sign", axum::routing::post(endpoints::handle_sign))
+        .route("/set-alt", axum::routing::post(endpoints::handle_set_alt))
         .with_state(shared_state);
 
     let addr = "0.0.0.0:4000";

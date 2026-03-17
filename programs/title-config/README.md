@@ -25,7 +25,7 @@ Each developer deploys their own program instance on devnet. This ensures comple
 
 ```bash
 mkdir -p programs/title-config/target/deploy
-solana-keygen new -o programs/title-config/target/deploy/title_config-keypair.json --force
+solana-keygen new -o programs/title-config/target/deploy/title_config-keypair.json --force --no-bip39-passphrase
 solana-keygen pubkey programs/title-config/target/deploy/title_config-keypair.json
 # Note this Program ID — you'll need it in the next step.
 ```
@@ -42,6 +42,7 @@ Update the Program ID in all of these files:
 | `crates/cli/src/anchor.rs` | test program IDs |
 | `crates/tee/src/endpoints/register_node.rs` | test program IDs |
 | `sdk/ts/src/chain.ts` | `TITLE_CONFIG_PROGRAM_ID` |
+| `crates/tee/src/main.rs` | `PROGRAM_ID` 環境変数のフォールバックデフォルト値 |
 
 ## Step 3: Build
 
@@ -87,13 +88,40 @@ This is **idempotent** — safe to run multiple times. It will:
 1. Load or create an authority keypair at `keys/authority.json`
 2. Create two MPL Core Collections (Core + Extension) if not already present
 3. Call `initialize` to create the GlobalConfig PDA (skipped if it already exists)
-4. Register the 4 built-in WASM modules via `add_wasm_module` (upsert — updates hash if already registered)
-5. Set default ResourceLimits on-chain via `set_resource_limits` (file size caps, timeouts, etc.)
-6. Write `network.json` to the project root
+4. Set default ResourceLimits on-chain via `set_resource_limits` (file size caps, timeouts, etc.)
+5. Write `network.json` to the project root
+
+WASM modules are registered separately via `title-cli register-wasm` (see Step 8 below).
 
 Both `keys/authority.json` and `network.json` are gitignored — they are local to your environment.
 
-## Step 8: Collection Authority Delegation (自動)
+## Step 8: Register WASM Modules
+
+WASM モジュールは `title-cli register-wasm` でオンチェーンに登録する。各モジュールに WasmModuleAccount PDA が作成され、バイナリの SHA-256 ハッシュと Arweave URL が記録される。
+
+```bash
+./target/release/title-cli register-wasm \
+  --extension-id image-phash \
+  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm
+./target/release/title-cli register-wasm \
+  --extension-id hardware-google \
+  --wasm-path wasm/hardware-google/target/wasm32-unknown-unknown/release/hardware_google.wasm
+./target/release/title-cli register-wasm \
+  --extension-id c2pa-training \
+  --wasm-path wasm/c2pa-training-v1/target/wasm32-unknown-unknown/release/c2pa_training_v1.wasm
+./target/release/title-cli register-wasm \
+  --extension-id c2pa-license \
+  --wasm-path wasm/c2pa-license-v1/target/wasm32-unknown-unknown/release/c2pa_license_v1.wasm
+```
+
+| Extension ID | WASM Module Directory | Description |
+|-------------|----------------------|-------------|
+| `image-phash` | `wasm/phash-v1` | Perceptual hash |
+| `hardware-google` | `wasm/hardware-google` | Hardware capture proof |
+| `c2pa-training` | `wasm/c2pa-training-v1` | AI training consent flag |
+| `c2pa-license` | `wasm/c2pa-license-v1` | License information |
+
+## Step 9: Collection Authority Delegation (自動)
 
 TEE ノードが cNFT をミントするには、コレクションの Authority 権限を TEE の `signing_pubkey` に委譲する必要がある。
 
@@ -132,5 +160,7 @@ Phase 1 完了後、プロジェクトルートに `network.json` が生成さ�
 | `initialize` | GlobalConfig PDA を作成 | Yes |
 | `register_tee_node` | TEE ノードを登録 + コレクション権限委譲（MPL Core CPI） | Yes |
 | `remove_tee_node` | TEE ノードを削除 + コレクション権限取り消し（MPL Core CPI） | Yes |
-| `add_wasm_module` | WASM モジュールを登録（upsert） | Yes |
+| `register_wasm_module` | WasmModuleAccount PDA を作成 + GlobalConfig の `trusted_wasm_ids` に追加 + 初期バージョン登録 | Yes |
+| `remove_wasm_module` | WasmModuleAccount PDA をクローズ + GlobalConfig の `trusted_wasm_ids` から除去 | Yes |
+| `add_wasm_version` | 既存 WasmModuleAccount に新バージョンを追加（PDA を realloc で拡張） | Yes |
 | `set_resource_limits` | ResourceLimits を設定 | Yes |

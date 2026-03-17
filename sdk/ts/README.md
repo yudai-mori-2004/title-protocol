@@ -98,6 +98,19 @@ const client = new TitleClient(globalConfig);
 | `delegateMint` | `boolean` | No | If true, Gateway broadcasts TX. Default: false |
 | `recentBlockhash` | `string` | No | Required when `delegateMint` is false |
 
+When `delegateMint` is false, `result.partialTxs` contains Base64-encoded `VersionedTransaction` (v0). Co-sign and broadcast:
+
+```typescript
+import { VersionedTransaction, Connection } from "@solana/web3.js";
+
+for (const txB64 of result.partialTxs!) {
+  const tx = VersionedTransaction.deserialize(Buffer.from(txB64, "base64"));
+  tx.sign([walletKeypair]);
+  const sig = await connection.sendRawTransaction(tx.serialize());
+  await connection.confirmTransaction(sig, "confirmed");
+}
+```
+
 ### Low-level Methods
 
 For advanced use cases, the underlying Gateway endpoints are available:
@@ -126,7 +139,7 @@ For advanced use cases, the underlying Gateway endpoints are available:
 
 The SDK automatically validates TEE responses inside `register()`:
 
-- **wasm_hash check**: Extension signed_json's `wasm_hash` is verified against GlobalConfig's `trusted_wasm_modules`
+- **wasm_hash check**: Extension signed_json's `wasm_hash` is verified against GlobalConfig's `trusted_wasm_ids`
 - **These checks can also be performed manually** by reading the on-chain GlobalConfig directly
 
 ## Encryption Protocol

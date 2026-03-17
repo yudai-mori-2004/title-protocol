@@ -82,9 +82,12 @@ Versioned Transaction (v0) + Address Lookup Table を導入し、MintV2 TX の�
 
 ## 完了条件
 
-- [ ] ALT がノードセットアップ時に自動作成される
-- [ ] /sign が VersionedTransaction (v0) を返す
-- [ ] 2 cNFT が ALT 参照で ~652 bytes の TX にパックされる
-- [ ] SDK が VersionedTransaction を正しく partialSign + broadcast できる
-- [ ] 6+ cNFT のパッキングテスト
-- [ ] 全既存テストがパスする
+- [x] ALT がノードセットアップ時に自動作成される（`title-cli create-alt`）
+- [x] /sign が VersionedTransaction (v0) を返す
+- [x] 2 cNFT が ALT 参照で ~750 bytes の TX にパックされる（本番URI）
+- [x] SDK が VersionedTransaction を正しく deserialize + sign できる
+- [x] 6+ cNFT のパッキングテスト（8 cNFT → 2 TX, 4 ix/TX）
+- [x] 全既存テストがパスする（58テスト）
+- 最大 cNFT/TX: 4（本番URI + Collection付き、ALTにより旧2から倍増）
+- 実測 TX サイズ: 842 bytes（2 cNFT, 本番URI）
+- コスト分析: [cost-analysis.md](cost-analysis.md)

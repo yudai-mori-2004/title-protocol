@@ -6,6 +6,7 @@
 
 pub mod create_tree;
 pub mod register_node;
+pub mod set_alt;
 pub mod sign;
 pub mod verify;
 
@@ -14,6 +15,7 @@ pub(crate) mod test_helpers;
 
 pub use create_tree::handle_create_tree;
 pub use register_node::handle_register_node;
+pub use set_alt::handle_set_alt;
 pub use sign::handle_sign;
 pub use verify::handle_verify;
 

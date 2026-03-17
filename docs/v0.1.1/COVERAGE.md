@@ -130,11 +130,48 @@ v0.1.1 Task 02 で導入した `MemoryPool`（セマフォB）と既存の `toki
 
 ---
 
+## §5.1 / §6.4 — Address Lookup Table (ALT) によるTX圧縮
+
+全トランザクションを VersionedTransaction (v0) に統一し、MintV2 TX に ALT を適用。
+
+### 効果
+
+| | 旧（Legacy TX） | 新（VersionedTransaction + ALT） |
+|---|---|---|
+| 2 cNFT TX サイズ | ~1,024 bytes | ~750 bytes |
+| 最大 cNFT/TX | 2 | 4 |
+| TX フォーマット | Legacy Transaction | VersionedTransaction (v0) |
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `crates/tee/src/blockchain/solana_tx.rs` | 全TX を VersionedTransaction (v0) に統一、ALT ビンパッキング |
+| `crates/tee/src/config.rs` | `alt_address`, `alt_addresses` 追加 |
+| `crates/tee/src/endpoints/sign/handler.rs` | ALT 参照、VersionedTransaction 返却 |
+| `crates/tee/src/endpoints/set_alt.rs` | `/set-alt` エンドポイント新設 |
+| `crates/tee/src/endpoints/create_tree.rs` | VersionedTransaction 対応 |
+| `crates/tee/src/endpoints/register_node.rs` | VersionedTransaction 対応 |
+| `crates/gateway/src/endpoints/sign_and_mint.rs` | VersionedTransaction 対応 |
+| `crates/cli/src/commands/create_alt.rs` | `title-cli create-alt` サブコマンド新設 |
+| `crates/cli/src/commands/register_node.rs` | VersionedTransaction 対応 |
+| `integration-tests/register-photo.ts` | VersionedTransaction deserialize/sign |
+| `deploy/local/setup.sh` | ALT 作成ステップ追加 |
+| `deploy/aws/setup-ec2.sh` | ALT 作成ステップ追加 |
+
+---
+
 ## タスク一覧
 
 | タスク | 内容 | 状態 |
 |-------|------|------|
-| [01-node-operator-docs](tasks/01-node-operator-docs/README.md) | ドキュメント体系再設計 + コレクション権限委譲統合 + 環境変数修正 | ドキュメント再現性テスト以外完了 |
+| [01-node-operator-docs](tasks/01-node-operator-docs/README.md) | ドキュメント体系再設計 + コレクション権限委譲統合 + 環境変数修正 | 完了 |
 | [02-wasm-decode-host](tasks/02-wasm-decode-host/README.md) | WASM ホスト側デコード + メモリプール + pHash (DCT) | 完了 |
 | [03-resource-pool-unification](tasks/03-resource-pool-unification/README.md) | ResourcePool統合 — セマフォアーキテクチャ統一 | 完了 |
 | [04-feature-host-functions](tasks/04-feature-host-functions/README.md) | Feature Host Functions — get_content_feature / get_decoded_feature | 完了 |
+| [05-signed-json-storage](tasks/05-signed-json-storage/README.md) | Gateway signed_json ストレージ委譲（sign-and-mint） | 完了 |
+| [06-exif-orientation](tasks/06-exif-orientation/README.md) | EXIF Orientation 正規化 | 完了 |
+| [07-wasm-pda-management](tasks/07-wasm-pda-management/README.md) | WASM モジュール PDA 管理 + OnChainLoader | 完了 |
+| [08-performance-optimization](tasks/08-performance-optimization/README.md) | パフォーマンス最適化（並列化・キャッシュ・ビンパッキング） | 完了 |
+| [09-address-lookup-table](tasks/09-address-lookup-table/README.md) | ALT による TX 圧縮 + VersionedTransaction 統一 | 完了 |
+| [10-release-preparation](tasks/10-release-preparation/README.md) | v0.1.1 リリース準備 — ドキュメント精査 + ゼロベース検証 | 進行中 |

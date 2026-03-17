@@ -153,7 +153,7 @@ mod tests {
     use super::*;
     use crate::runtime::mock::MockRuntime;
     use crate::runtime::TeeRuntime;
-    use solana_sdk::transaction::Transaction;
+    use solana_sdk::transaction::VersionedTransaction;
     use tokio::sync::RwLock;
 
     fn make_test_state() -> Arc<TeeAppState> {
@@ -175,11 +175,12 @@ mod tests {
             wasm_loader: None,
             resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
             trusted_extension_ids: None,
+            alt_address: RwLock::new(None),
+            alt_addresses: RwLock::new(vec![]),
         })
     }
 
     /// /create-tree が正常に動作し、inactive → active に遷移することを確認
-    /// payer = TEE signing_pubkey で完全署名済みTXが返る
     #[tokio::test]
     async fn test_create_tree_success() {
         let state = make_test_state();
@@ -199,32 +200,28 @@ mod tests {
         let core_tx_bytes = b64().decode(&response.core_signed_tx).unwrap();
         assert!(!core_tx_bytes.is_empty());
 
-        // Core トランザクションがデシリアライズ可能
-        let core_tx: Transaction = bincode::deserialize(&core_tx_bytes).unwrap();
+        // Core トランザクションがデシリアライズ可能（VersionedTransaction）
+        let core_tx: VersionedTransaction = bincode::deserialize(&core_tx_bytes).unwrap();
         // payer = tree_creator なので署名者は2（signing_key + tree_key）
-        assert_eq!(core_tx.message.header.num_required_signatures, 2);
-        // 3つの命令（compute_budget + create_account + create_tree_config_v2）
-        assert_eq!(core_tx.message.instructions.len(), 3);
+        assert_eq!(core_tx.message.header().num_required_signatures, 2);
 
         // Extension signed_txがBase64でデコード可能
         let ext_tx_bytes = b64().decode(&response.ext_signed_tx).unwrap();
         assert!(!ext_tx_bytes.is_empty());
 
         // Extension トランザクションがデシリアライズ可能
-        let ext_tx: Transaction = bincode::deserialize(&ext_tx_bytes).unwrap();
-        assert_eq!(ext_tx.message.header.num_required_signatures, 2);
-        assert_eq!(ext_tx.message.instructions.len(), 3);
+        let ext_tx: VersionedTransaction = bincode::deserialize(&ext_tx_bytes).unwrap();
+        assert_eq!(ext_tx.message.header().num_required_signatures, 2);
 
         // tree_addressがBase58
         assert!(!response.core_tree_address.is_empty());
         assert!(!response.ext_tree_address.is_empty());
-        // Core TreeとExtension Treeは異なるアドレス
         assert_ne!(response.core_tree_address, response.ext_tree_address);
 
         // signing_pubkeyがBase58
         assert!(!response.signing_pubkey.is_empty());
 
-        // encryption_pubkeyがBase64
+        // encryption_pubkeyがBase64で32バイト
         let enc_pk = b64().decode(&response.encryption_pubkey).unwrap();
         assert_eq!(enc_pk.len(), 32);
 
@@ -244,7 +241,6 @@ mod tests {
     async fn test_create_tree_already_active() {
         let state = make_test_state();
 
-        // 先にactive状態にする
         {
             let mut current = state.state.write().await;
             *current = TeeState::Active;

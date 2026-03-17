@@ -158,7 +158,7 @@ pub async fn handle_sign_and_mint(
             GatewayError::TeeRelay(format!("partial_txのBase64デコードに失敗: {e}"))
         })?;
 
-        let mut tx: solana_sdk::transaction::Transaction =
+        let mut tx: solana_sdk::transaction::VersionedTransaction =
             bincode::deserialize(&tx_bytes).map_err(|e| {
                 GatewayError::TeeRelay(format!(
                     "トランザクションのデシリアライズに失敗: {e}"
@@ -169,11 +169,9 @@ pub async fn handle_sign_and_mint(
         let gateway_pubkey = gateway_keypair.pubkey();
 
         // Gatewayの公開鍵に対応する署名スロットを特定
-        // 署名者はaccount_keysの先頭num_required_signatures個に限定される
-        let num_signers = tx.message.header.num_required_signatures as usize;
-        let sig_index = tx
-            .message
-            .account_keys
+        let num_signers = tx.message.header().num_required_signatures as usize;
+        let static_keys = tx.message.static_account_keys();
+        let sig_index = static_keys
             .iter()
             .take(num_signers)
             .position(|k| *k == gateway_pubkey)

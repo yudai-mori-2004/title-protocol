@@ -14,7 +14,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::Signature,
     signer::Signer,
-    transaction::Transaction,
+    transaction::VersionedTransaction,
 };
 
 use title_types::{RegisterNodeRequest, RegisterNodeResponse};
@@ -110,7 +110,7 @@ pub async fn run(
         let authority = config::load_keypair(&authority_key_path)?
             .ok_or_else(|| CliError::Config("Authority keypairのロードに失敗".into()))?;
 
-        let mut reg_tx: Transaction = bincode::deserialize(&tx_bytes)
+        let mut reg_tx: VersionedTransaction = bincode::deserialize(&tx_bytes)
             .map_err(|e| CliError::Transaction(format!("TXのデシリアライズに失敗: {e}")))?;
 
         // Authority部分署名を適用
@@ -200,18 +200,16 @@ fn derive_gateway_pubkey() -> Result<String, CliError> {
     Ok(solana_pubkey.to_string())
 }
 
-/// トランザクションに部分署名を適用する。
+/// VersionedTransaction に部分署名を適用する。
 fn apply_partial_signature(
-    tx: &mut Transaction,
+    tx: &mut VersionedTransaction,
     pubkey: &Pubkey,
     signature: &Signature,
 ) -> Result<(), CliError> {
-    let num_signers = tx.message.header.num_required_signatures as usize;
-    for (i, key) in tx.message.account_keys.iter().enumerate() {
-        if i >= num_signers {
-            break;
-        }
-        if key == pubkey {
+    let num_signers = tx.message.header().num_required_signatures as usize;
+    let static_keys = tx.message.static_account_keys();
+    for i in 0..num_signers {
+        if i < static_keys.len() && static_keys[i] == *pubkey {
             tx.signatures[i] = *signature;
             return Ok(());
         }

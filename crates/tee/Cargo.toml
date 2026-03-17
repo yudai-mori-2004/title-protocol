@@ -37,6 +37,7 @@ hex = { workspace = true }
 mpl-bubblegum = { workspace = true }
 
 serde_bytes = { workspace = true }
+futures = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aws-nitro-enclaves-nsm-api = { version = "0.4", optional = true }

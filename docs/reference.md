@@ -52,7 +52,7 @@
 | `CORE_COLLECTION_MINT` | Auto | Core cNFT Collection Mint address. **`network.json` から自動読み取り。** `.env` で明示設定した場合はそちらが優先。 |
 | `EXT_COLLECTION_MINT` | Auto | Extension cNFT Collection Mint address. **`network.json` から自動読み取り。** `.env` で明示設定した場合はそちらが優先。 |
 | `GATEWAY_PUBKEY` | No | Gateway 認証用 Ed25519 public key (Base58). 未設定時は Gateway 認証をスキップ（開発環境用）。 |
-| `TRUSTED_EXTENSIONS` | Auto | 信頼する WASM Extension のカンマ区切りリスト. Default: `phash-v1,hardware-google,c2pa-training-v1,c2pa-license-v1`. |
+| `TRUSTED_EXTENSIONS` | Auto | 信頼する WASM Extension のカンマ区切りリスト. Default: `image-phash,hardware-google,c2pa-training,c2pa-license`. |
 | `WASM_DIR` | Auto | WASM バイナリディレクトリ. Default: `/wasm-modules`. |
 
 ### Proxy (`crates/proxy`)
@@ -91,13 +91,7 @@
   "global_config_pda": "<Base58 GlobalConfig PDA address>",
   "authority": "<Base58 authority pubkey>",
   "core_collection_mint": "<Base58 Core Collection Mint address>",
-  "ext_collection_mint": "<Base58 Extension Collection Mint address>",
-  "wasm_modules": {
-    "phash-v1": { "hash": "<SHA-256 hex>" },
-    "hardware-google": { "hash": "<SHA-256 hex>" },
-    "c2pa-training-v1": { "hash": "<SHA-256 hex>" },
-    "c2pa-license-v1": { "hash": "<SHA-256 hex>" }
-  }
+  "ext_collection_mint": "<Base58 Extension Collection Mint address>"
 }
 ```
 
@@ -109,7 +103,6 @@
 | `authority` | `init-global` | `setup.sh` | Authority pubkey (for display) |
 | `core_collection_mint` | `init-global` | `setup.sh` → TEE `CORE_COLLECTION_MINT`, `register-node` | Core cNFT Collection address |
 | `ext_collection_mint` | `init-global` | `setup.sh` → TEE `EXT_COLLECTION_MINT`, `register-node` | Extension cNFT Collection address |
-| `wasm_modules` | `init-global` | — | Registered WASM module hashes (reference) |
 
 > **Note:** `network.json` はブートストラップ用。初期化後は、オンチェーン GlobalConfig が唯一の信頼できるソースとなる。
 
@@ -119,7 +112,7 @@
 
 ### `init-global`
 
-GlobalConfig PDA の初期化、MPL Core コレクション作成、WASM モジュール登録を行う。冪等（何度実行しても安全）。
+GlobalConfig PDA の初期化と MPL Core コレクション作成を行う。冪等（何度実行しても安全）。
 
 ```bash
 title-cli init-global --cluster devnet [--rpc <URL>] [--program-id <PUBKEY>]
@@ -135,9 +128,10 @@ title-cli init-global --cluster devnet [--rpc <URL>] [--program-id <PUBKEY>]
 1. `keys/authority.json` をロードまたは新規作成
 2. Core / Extension MPL Core Collection を作成（未作成の場合）
 3. `initialize` で GlobalConfig PDA を作成（既存の場合はスキップ）
-4. 4つの WASM モジュールを `add_wasm_module` で登録（upsert）
-5. `set_resource_limits` でデフォルトの ResourceLimits を設定
-6. `network.json` を出力
+4. `set_resource_limits` でデフォルトの ResourceLimits を設定
+5. `network.json` を出力
+
+WASM モジュールは `register-wasm` で個別に登録する（init-global とは別ステップ）。
 
 ### `register-node`
 
@@ -200,16 +194,15 @@ WASM モジュールをオンチェーンに登録する。WasmModuleAccount PDA
 
 ```bash
 title-cli register-wasm \
-  --extension-id phash \
-  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm \
-  --wasm-source "ar://..."
+  --extension-id image-phash \
+  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--extension-id` | Yes | Extension 識別子（例: `phash`, `hardware-google`） |
+| `--extension-id` | Yes | Extension 識別子（例: `image-phash`, `hardware-google`） |
 | `--wasm-path` | Yes | WASM バイナリファイルのパス |
-| `--wasm-source` | No | WASM 取得先 URL（例: `ar://...`）。省略時は空文字。 |
+| `--wasm-source` | No | WASM 取得先 URL。省略時は Irys 経由で Arweave に自動アップロードし、URL を記録する（`keys/operator.json` の SOL で支払い）。 |
 
 ### `add-wasm-version`
 
@@ -217,16 +210,27 @@ title-cli register-wasm \
 
 ```bash
 title-cli add-wasm-version \
-  --extension-id phash \
-  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm \
-  --wasm-source "ar://..."
+  --extension-id image-phash \
+  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--extension-id` | Yes | 対象 Extension 識別子 |
 | `--wasm-path` | Yes | WASM バイナリファイルのパス |
-| `--wasm-source` | No | WASM 取得先 URL。省略時は空文字。 |
+| `--wasm-source` | No | WASM 取得先 URL。省略時は Arweave に自動アップロード。 |
+
+### `remove-wasm`
+
+WASM モジュールをオンチェーンから削除する。WasmModuleAccount PDA をクローズし、GlobalConfig の `trusted_wasm_ids` から除去する。`keys/authority.json` が必須。
+
+```bash
+title-cli remove-wasm --extension-id <EXTENSION_ID>
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--extension-id` | Yes | 削除する Extension 識別子 |
 
 ### Global Options
 

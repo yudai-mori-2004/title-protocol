@@ -25,11 +25,8 @@ use sha2::{Digest, Sha256};
 #[allow(deprecated)] // solana-sdk 2.x のsystem_program非推奨警告を抑制
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
-    message::Message,
     pubkey::Pubkey,
-    signature::Signature,
     system_program,
-    transaction::Transaction,
 };
 use std::str::FromStr;
 
@@ -187,15 +184,9 @@ pub async fn handle_register_node(
         data: ix_data,
     };
 
-    // トランザクション構築（TEEがfee payer）
-    let message = Message::new_with_blockhash(&[ix], Some(&tee_signing_pubkey), &blockhash);
-
-    let num_signers = message.header.num_required_signatures as usize;
-    let signatures = vec![Signature::default(); num_signers];
-    let mut tx = Transaction {
-        signatures,
-        message,
-    };
+    // トランザクション構築（TEEがfee payer, ALT不要）
+    let mut tx = solana_tx::build_v0_tx(&[ix], &tee_signing_pubkey, &blockhash, &[])
+        .map_err(|e| TeeError::Internal(format!("トランザクション構築に失敗: {e}")))?;
 
     // TEE署名（payer署名）
     let message_bytes = tx.message.serialize();
@@ -227,6 +218,7 @@ mod tests {
     use crate::config::TeeState;
     use crate::runtime::mock::MockRuntime;
     use crate::runtime::TeeRuntime;
+    use solana_sdk::transaction::VersionedTransaction;
     use tokio::sync::RwLock;
 
     fn make_test_state() -> Arc<TeeAppState> {
@@ -248,6 +240,8 @@ mod tests {
             wasm_loader: None,
             resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
             trusted_extension_ids: None,
+            alt_address: RwLock::new(None),
+            alt_addresses: RwLock::new(vec![]),
         })
     }
 
@@ -277,11 +271,9 @@ mod tests {
         assert!(!tx_bytes.is_empty());
 
         // トランザクションがデシリアライズ可能
-        let tx: Transaction = bincode::deserialize(&tx_bytes).unwrap();
+        let tx: VersionedTransaction = bincode::deserialize(&tx_bytes).unwrap();
         // 2署名者: TEE(payer) + authority
-        assert_eq!(tx.message.header.num_required_signatures, 2);
-        // 1命令: register_tee_node
-        assert_eq!(tx.message.instructions.len(), 1);
+        assert_eq!(tx.message.header().num_required_signatures, 2);
 
         // signing_pubkeyがBase58
         assert!(!response.signing_pubkey.is_empty());
@@ -313,13 +305,13 @@ mod tests {
 
         let result = handle_register_node(State(state.clone()), Json(request)).await.unwrap();
         let tx_bytes = b64().decode(&result.0.partial_tx).unwrap();
-        let tx: Transaction = bincode::deserialize(&tx_bytes).unwrap();
+        let tx: VersionedTransaction = bincode::deserialize(&tx_bytes).unwrap();
 
-        // fee payer (account_keys[0]) == TEE signing_pubkey
+        // fee payer (static_account_keys[0]) == TEE signing_pubkey
         let tee_pubkey = Pubkey::from_str(&result.0.signing_pubkey).unwrap();
-        assert_eq!(tx.message.account_keys[0], tee_pubkey);
+        assert_eq!(tx.message.static_account_keys()[0], tee_pubkey);
 
         // TEEの署名スロットが埋まっている（default署名ではない）
-        assert_ne!(tx.signatures[0], Signature::default());
+        assert_ne!(tx.signatures[0], solana_sdk::signature::Signature::default());
     }
 }

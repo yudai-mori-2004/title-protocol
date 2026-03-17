@@ -49,7 +49,7 @@ import * as path from "node:path";
 import {
   Connection,
   Keypair,
-  Transaction,
+  VersionedTransaction,
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import bs58 from "bs58";
@@ -435,10 +435,10 @@ async function main() {
     );
 
     try {
-      const tx = Transaction.from(txBytes);
+      const tx = VersionedTransaction.deserialize(txBytes);
       log(
         "STEP 6",
-        `  tx[${i}] signers: ${tx.signatures.length}, instructions: ${tx.instructions.length}`
+        `  tx[${i}] signers: ${tx.signatures.length}, version: v0`
       );
     } catch (e: any) {
       log("STEP 6", `  tx[${i}] デシリアライズ失敗: ${e.message}`);
@@ -451,11 +451,11 @@ async function main() {
   if (args.broadcast) {
     log("STEP 7", `${signResponse.partial_txs.length} tx を並列ブロードキャスト中...`);
 
-    // 全TXを並列に署名+送信+確認
+    // 全TXを並列に署名+送信+確認（VersionedTransaction）
     const broadcastPromises = signResponse.partial_txs.map(async (txB64, i) => {
       const txBytes = Buffer.from(txB64, "base64");
-      const tx = Transaction.from(txBytes);
-      tx.partialSign(keypair);
+      const tx = VersionedTransaction.deserialize(txBytes);
+      tx.sign([keypair]);
 
       try {
         const rawTx = tx.serialize();

@@ -19,7 +19,8 @@
 #   7. S3バケットの確認
 #   8. TEEノード登録 (/register-node → DAO署名)
 #   9. Merkle Tree 作成 (/create-tree)
-#  10. ヘルスチェック
+#  10. Address Lookup Table (ALT) 作成
+#  11. ヘルスチェック
 #
 # Authority keypair が keys/authority.json に存在する場合:
 #   → register-node TX を自動で共同署名しブロードキャストする（devnet向け）
@@ -51,7 +52,7 @@ echo "=== Title Protocol ノード起動 ==="
 # ---------------------------------------------------------------------------
 # Step 0: .env + network.json 読み込み・検証
 # ---------------------------------------------------------------------------
-echo "[Step 0/10] 設定ファイルの読み込み..."
+echo "[Step 0/11] 設定ファイルの読み込み..."
 
 # .env
 if [ ! -f .env ]; then
@@ -228,7 +229,7 @@ ensure_env "GATEWAY_SOLANA_KEYPAIR" "$GATEWAY_SOLANA_KEYPAIR"
 # Step 1: WASMモジュールのビルド
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 1/10] WASMモジュールのビルド..."
+echo "[Step 1/11] WASMモジュールのビルド..."
 
 WASM_OUTPUT="$PROJECT_ROOT/wasm-modules"
 mkdir -p "$WASM_OUTPUT"
@@ -257,7 +258,7 @@ fi
 # Step 2: ホスト側バイナリのビルド
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 2/10] ホスト側バイナリのビルド..."
+echo "[Step 2/11] ホスト側バイナリのビルド..."
 
 if command -v cargo &>/dev/null; then
   if command -v nitro-cli &>/dev/null; then
@@ -278,7 +279,7 @@ fi
 # Step 3: Enclave イメージのビルド
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 3/10] Enclave イメージのビルド..."
+echo "[Step 3/11] Enclave イメージのビルド..."
 
 EIF_PATH="$PROJECT_ROOT/title-tee.eif"
 TEE_MEASUREMENTS="{}"
@@ -308,7 +309,7 @@ fi
 # Step 4: Enclave / TEE の起動
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 4/10] TEE の起動..."
+echo "[Step 4/11] TEE の起動..."
 
 ENCLAVE_CPU="${ENCLAVE_CPU_COUNT:-2}"
 ENCLAVE_MEM="${ENCLAVE_MEMORY_MIB:-1024}"
@@ -371,7 +372,7 @@ fi
 # Step 5: Proxy の起動
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 5/10] Proxy の起動..."
+echo "[Step 5/11] Proxy の起動..."
 
 if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
   if ! pgrep -f title-proxy &>/dev/null; then
@@ -392,7 +393,7 @@ fi
 # Step 6: Docker Compose (Gateway)
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 6/10] Docker Compose (Gateway) 起動..."
+echo "[Step 6/11] Docker Compose (Gateway) 起動..."
 
 docker compose -f deploy/aws/docker-compose.production.yml up -d --build
 echo "  Docker Compose 起動完了"
@@ -412,7 +413,7 @@ done
 # Step 7: S3バケットの確認
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 7/10] S3ストレージの確認..."
+echo "[Step 7/11] S3ストレージの確認..."
 
 BUCKET_NAME="${S3_BUCKET:-title-uploads}"
 if echo "$S3_ENDPOINT" | grep -q "s3.amazonaws.com\|s3\..*\.amazonaws\.com"; then
@@ -442,7 +443,7 @@ fi
 # 存在しない場合: DAOのガバナンスシステムに審査TXを送信（mainnet）
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 8/10] TEEノード登録..."
+echo "[Step 8/11] TEEノード登録..."
 
 # EC2メタデータから公開IPを自動取得（IMDSv2）
 if [ -z "${PUBLIC_ENDPOINT:-}" ]; then
@@ -471,7 +472,7 @@ fi
 # Step 9: Merkle Tree 作成
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 9/10] Merkle Tree 作成..."
+echo "[Step 9/11] Merkle Tree 作成..."
 
 ./target/release/title-cli create-tree \
   --tee-url http://localhost:4000 \
@@ -480,10 +481,20 @@ echo "[Step 9/10] Merkle Tree 作成..."
   2>&1 || true
 
 # ---------------------------------------------------------------------------
-# Step 10: ヘルスチェック
+# Step 10: Address Lookup Table (ALT) 作成
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 10/10] ヘルスチェック..."
+echo "[Step 10/11] Address Lookup Table (ALT) 作成..."
+
+./target/release/title-cli create-alt \
+  --tee-url http://localhost:4000 \
+  2>&1 | sed 's/^/  /' || true
+
+# ---------------------------------------------------------------------------
+# Step 11: ヘルスチェック
+# ---------------------------------------------------------------------------
+echo ""
+echo "[Step 11/11] ヘルスチェック..."
 
 # Solana RPC
 if curl -sf -X POST -H "Content-Type: application/json" \

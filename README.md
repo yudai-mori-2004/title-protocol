@@ -126,16 +126,16 @@ Both layers start from the same C2PA verification. They diverge at step 3: Core 
 
 **Core** builds a provenance graph — a DAG where nodes are content_hash values (SHA-256 of each Active Manifest's signature) and edges represent "used as ingredient" relationships. The graph records content relationships; the current owner of each node is resolved separately at query time by looking up cNFTs on-chain.
 
-**Extension** runs deterministic WASM modules against the raw content to produce objective attributes. Any WASM binary can be registered — the DAO maintains an on-chain allowlist (`trusted_wasm_modules` in GlobalConfig) of approved module URIs and their SHA-256 hashes. The TEE fetches the binary from the registered URI, verifies its hash, and executes it in a sandboxed wasmtime runtime.
+**Extension** runs deterministic WASM modules against the raw content to produce objective attributes. Any WASM binary can be registered — the DAO maintains an on-chain allowlist (`trusted_wasm_ids` in GlobalConfig) of approved extension IDs, each backed by a WasmModuleAccount PDA storing the binary's SHA-256 hash and Arweave URL. The TEE fetches the binary, verifies its hash, and executes it in a sandboxed wasmtime runtime.
 
 This repository includes four reference modules:
 
-| Module | Output |
-|--------|--------|
-| `phash-v1` | Perceptual hash for similarity search |
-| `hardware-google` | Hardware capture proof (Titan M2 chip detection) |
-| `c2pa-training-v1` | AI training consent flag (`c2pa.training-mining`) |
-| `c2pa-license-v1` | License information (Creative Commons, rights) |
+| Extension ID | WASM Module | Output |
+|--------------|-------------|--------|
+| `image-phash` | `wasm/phash-v1` | Perceptual hash for similarity search |
+| `hardware-google` | `wasm/hardware-google` | Hardware capture proof (Titan M2 chip detection) |
+| `c2pa-training` | `wasm/c2pa-training-v1` | AI training consent flag (`c2pa.training-mining`) |
+| `c2pa-license` | `wasm/c2pa-license-v1` | License information (Creative Commons, rights) |
 
 ---
 
@@ -197,10 +197,10 @@ crates/
   tee/            — TEE server: /verify, /sign, /register-node
   gateway/        — Gateway HTTP server: upload, relay, sign-and-mint
   proxy/          — HTTP proxy for TEE network isolation
-  cli/            — CLI: init-global, register-node, create-tree, remove-node
+  cli/            — CLI: init-global, register-node, create-tree, create-alt, remove-node, register-wasm, add-wasm-version, remove-wasm
 wasm/             — WASM modules (no_std): phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1
 programs/
-  title-config/   — Anchor program: GlobalConfig + TeeNodeAccount PDA management
+  title-config/   — Anchor program: GlobalConfig + TeeNodeAccount + WasmModuleAccount PDA management
 sdk/ts/           — TypeScript client SDK: E2EE, register, resolve
 indexer/          — cNFT indexer: webhook + poller + DAS API → PostgreSQL
 docker/           — Container images (Gateway, TEE, Proxy, Indexer)

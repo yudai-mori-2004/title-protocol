@@ -9,6 +9,7 @@ use axum::extract::State;
 use axum::Json;
 use base64::Engine;
 use ed25519_dalek::VerifyingKey;
+use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -72,121 +73,142 @@ pub async fn handle_sign(
     let global_timeout = security::compute_dynamic_timeout(&limits, total_content_estimate);
 
     let partial_txs = tokio::time::timeout(global_timeout, async {
+
+    // 全 item を並列にダウンロード + 検証 + instruction 構築
+    let futures: Vec<_> = request.requests.iter().map(|item| {
+        let state = &state;
+        let verifying_key = &verifying_key;
+        let tee_signing_pubkey = &tee_signing_pubkey;
+        let fee_payer_pubkey = &fee_payer_pubkey;
+        let limits = &limits;
+        let chunk_timeout = chunk_timeout;
+        async move {
+            // Step 1: signed_json_uriからJSONをフェッチ（Verify on Sign）
+            // 仕様書 §6.4 /signフェーズでの防御
+            let download_timeout =
+                security::compute_dynamic_timeout(limits, security::MAX_SIGNED_JSON_SIZE);
+            let (proxy_response, _sign_ticket) = tokio::time::timeout(
+                download_timeout,
+                security::proxy_get_secured(
+                    &state.proxy_addr,
+                    &item.signed_json_uri,
+                    security::MAX_SIGNED_JSON_SIZE,
+                    chunk_timeout,
+                    &state.resource_pool,
+                ),
+            )
+            .await
+            .map_err(|_| TeeError::Timeout)?
+            .map_err(|e| match &e {
+                SecurityError::PayloadTooLarge { .. } => TeeError::PayloadTooLarge(format!("signed_jsonのサイズが上限を超えています: {e}")),
+                SecurityError::MemoryLimitExceeded => TeeError::ServiceUnavailable(e.to_string()),
+                SecurityError::ChunkReadTimeout { .. } => TeeError::Timeout,
+                SecurityError::ProxyError(status) => {
+                    TeeError::BadGateway(format!("オフチェーンストレージがエラーを返しました: HTTP {status}"))
+                }
+                _ => TeeError::BadGateway(format!("signed_jsonの取得に失敗: {e}")),
+            })?;
+
+            let signed_json: SignedJson = serde_json::from_slice(&proxy_response.body)
+                .map_err(|e| TeeError::BadRequest(format!("signed_jsonのパースに失敗: {e}")))?;
+
+            // protocolに応じてTree/Collectionを選択（仕様書 §6.5）
+            let is_extension = signed_json.core.protocol == "Title-Extension-v1";
+            let tree_address_bytes = if is_extension {
+                let addr = state.ext_tree_address.read().await;
+                addr.ok_or(TeeError::Internal(
+                    "Extension Merkle Treeが未作成です。先に/create-treeを呼び出してください".into(),
+                ))?
+            } else {
+                let addr = state.core_tree_address.read().await;
+                addr.ok_or(TeeError::Internal(
+                    "Core Merkle Treeが未作成です。先に/create-treeを呼び出してください".into(),
+                ))?
+            };
+            let tree_pubkey = Pubkey::new_from_array(tree_address_bytes);
+            let collection_mint = if is_extension {
+                state.ext_collection_mint.as_ref()
+            } else {
+                state.core_collection_mint.as_ref()
+            };
+
+            // Step 2: tee_signatureを自身の公開鍵で検証
+            // 仕様書 §6.4: 自身が生成したsigned_jsonであることの確認
+            let sig_bytes = b64().decode(&signed_json.core.tee_signature)
+                .map_err(|e| TeeError::BadRequest(format!("tee_signatureのBase64デコードに失敗: {e}")))?;
+            let sig_arr: [u8; 64] = sig_bytes.try_into()
+                .map_err(|_| TeeError::BadRequest("tee_signatureは64バイトである必要があります".into()))?;
+            let ed_signature = ed25519_dalek::Signature::from_bytes(&sig_arr);
+
+            let sign_target = serde_json::json!({
+                "payload": signed_json.payload,
+                "attributes": signed_json.attributes,
+            });
+            let sign_bytes = serde_json::to_vec(&sign_target)
+                .map_err(|e| TeeError::Internal(format!("署名対象のシリアライズに失敗: {e}")))?;
+
+            verifying_key
+                .verify_strict(&sign_bytes, &ed_signature)
+                .map_err(|_| TeeError::Forbidden(
+                    "tee_signatureの検証に失敗しました。TEEが再起動した可能性があります".into(),
+                ))?;
+
+            // Step 3: Bubblegum V2 cNFT発行トランザクション構築
+            let creator_wallet_str = signed_json
+                .payload
+                .get("creator_wallet")
+                .and_then(|v| v.as_str())
+                .ok_or(TeeError::BadRequest("signed_json.payload.creator_walletが見つかりません".into()))?;
+            let creator_wallet = Pubkey::from_str(creator_wallet_str)
+                .map_err(|e| TeeError::BadRequest(format!("creator_walletのBase58デコードに失敗: {e}")))?;
+
+            let content_hash = signed_json
+                .payload
+                .get("content_hash")
+                .and_then(|v| v.as_str())
+                .ok_or(TeeError::BadRequest("signed_json.payload.content_hashが見つかりません".into()))?;
+
+            let payer = fee_payer_pubkey.as_ref().unwrap_or(&creator_wallet);
+            let ix = solana_tx::build_mint_v2_ix(
+                &tree_pubkey,
+                tee_signing_pubkey,
+                &creator_wallet,
+                content_hash,
+                &item.signed_json_uri,
+                collection_mint,
+                payer,
+            );
+            Ok::<_, TeeError>((ix, creator_wallet))
+        }
+    }).collect();
+
+    let results = futures::future::join_all(futures).await;
     let mut mint_instructions = Vec::new();
     let mut creator_pubkey: Option<Pubkey> = None;
-
-    for item in &request.requests {
-        // Step 1: signed_json_uriからJSONをフェッチ（セキュア化: サイズ制限+チャンクタイムアウト+セマフォ）
-        // 仕様書 §6.4 /signフェーズでの防御（Verify on Sign）
-        // ダウンロード全体にグローバルタイムアウトを適用
-        let download_timeout =
-            security::compute_dynamic_timeout(&limits, security::MAX_SIGNED_JSON_SIZE);
-        let (proxy_response, _sign_ticket) = tokio::time::timeout(
-            download_timeout,
-            security::proxy_get_secured(
-                &state.proxy_addr,
-                &item.signed_json_uri,
-                security::MAX_SIGNED_JSON_SIZE,
-                chunk_timeout,
-                &state.resource_pool,
-            ),
-        )
-        .await
-        .map_err(|_| TeeError::Timeout)?
-        .map_err(|e| match &e {
-            SecurityError::PayloadTooLarge { .. } => TeeError::PayloadTooLarge(format!("signed_jsonのサイズが上限を超えています: {e}")),
-            SecurityError::MemoryLimitExceeded => TeeError::ServiceUnavailable(e.to_string()),
-            SecurityError::ChunkReadTimeout { .. } => TeeError::Timeout,
-            SecurityError::ProxyError(status) => {
-                TeeError::BadGateway(format!("オフチェーンストレージがエラーを返しました: HTTP {status}"))
-            }
-            _ => TeeError::BadGateway(format!("signed_jsonの取得に失敗: {e}")),
-        })?;
-
-        // signed_jsonをパース
-        let signed_json: SignedJson = serde_json::from_slice(&proxy_response.body)
-            .map_err(|e| TeeError::BadRequest(format!("signed_jsonのパースに失敗: {e}")))?;
-
-        // protocolに応じてTree/Collectionを選択（仕様書 §6.5）
-        let is_extension = signed_json.core.protocol == "Title-Extension-v1";
-        let tree_address_bytes = if is_extension {
-            let addr = state.ext_tree_address.read().await;
-            addr.ok_or(TeeError::Internal(
-                "Extension Merkle Treeが未作成です。先に/create-treeを呼び出してください".into(),
-            ))?
-        } else {
-            let addr = state.core_tree_address.read().await;
-            addr.ok_or(TeeError::Internal(
-                "Core Merkle Treeが未作成です。先に/create-treeを呼び出してください".into(),
-            ))?
-        };
-        let tree_pubkey = Pubkey::new_from_array(tree_address_bytes);
-        let collection_mint = if is_extension {
-            state.ext_collection_mint.as_ref()
-        } else {
-            state.core_collection_mint.as_ref()
-        };
-
-        // Step 2: tee_signatureを自身の公開鍵で検証
-        // 仕様書 §6.4: 自身が生成したsigned_jsonであることの確認
-        // TEE再起動（鍵ローテーション）後は旧signed_jsonが自動的に拒否される
-        let sig_bytes = b64().decode(&signed_json.core.tee_signature)
-            .map_err(|e| TeeError::BadRequest(format!("tee_signatureのBase64デコードに失敗: {e}")))?;
-        let sig_arr: [u8; 64] = sig_bytes.try_into()
-            .map_err(|_| TeeError::BadRequest("tee_signatureは64バイトである必要があります".into()))?;
-        let ed_signature = ed25519_dalek::Signature::from_bytes(&sig_arr);
-
-        // 署名対象を再構築して検証
-        let sign_target = serde_json::json!({
-            "payload": signed_json.payload,
-            "attributes": signed_json.attributes,
-        });
-        let sign_bytes = serde_json::to_vec(&sign_target)
-            .map_err(|e| TeeError::Internal(format!("署名対象のシリアライズに失敗: {e}")))?;
-
-        verifying_key
-            .verify_strict(&sign_bytes, &ed_signature)
-            .map_err(|_| TeeError::Forbidden(
-                "tee_signatureの検証に失敗しました。TEEが再起動した可能性があります".into(),
-            ))?;
-
-        // Step 3: Bubblegum V2 cNFT発行トランザクション構築
-        // creator_walletを取得（仕様書 §5.1 Step 9）
-        let creator_wallet_str = signed_json
-            .payload
-            .get("creator_wallet")
-            .and_then(|v| v.as_str())
-            .ok_or(TeeError::BadRequest("signed_json.payload.creator_walletが見つかりません".into()))?;
-        let creator_wallet = Pubkey::from_str(creator_wallet_str)
-            .map_err(|e| TeeError::BadRequest(format!("creator_walletのBase58デコードに失敗: {e}")))?;
+    for result in results {
+        let (ix, creator_wallet) = result?;
         creator_pubkey.get_or_insert(creator_wallet);
-
-        // content_hashを取得
-        let content_hash = signed_json
-            .payload
-            .get("content_hash")
-            .and_then(|v| v.as_str())
-            .ok_or(TeeError::BadRequest("signed_json.payload.content_hashが見つかりません".into()))?;
-
-        // MintV2 instruction を生成（TXには後でパッキング）
-        let payer = fee_payer_pubkey.as_ref().unwrap_or(&creator_wallet);
-        let ix = solana_tx::build_mint_v2_ix(
-            &tree_pubkey,
-            &tee_signing_pubkey,
-            &creator_wallet,
-            content_hash,
-            &item.signed_json_uri,
-            collection_mint,
-            payer,
-        );
         mint_instructions.push(ix);
     }
 
-    // ビンパッキング: 可能な限り多くのMintV2を1つのTXに詰める
+    // ALT アカウント構築
+    let alt_key = {
+        let addr = state.alt_address.read().await;
+        addr.ok_or(TeeError::InvalidState(
+            "ALTが未設定です。先にALTを作成して /set-alt を呼び出してください".into(),
+        ))?
+    };
+    let alt_addresses = state.alt_addresses.read().await.clone();
+    let alt_account = AddressLookupTableAccount {
+        key: alt_key,
+        addresses: alt_addresses,
+    };
+
+    // ビンパッキング: VersionedTransaction (v0) + ALT で圧縮
     let tx_payer = fee_payer_pubkey.as_ref()
         .or(creator_pubkey.as_ref())
         .unwrap_or(&tee_signing_pubkey);
-    let packed_txs = solana_tx::pack_mint_txs(mint_instructions, tx_payer, &blockhash);
+    let packed_txs = solana_tx::pack_mint_txs(mint_instructions, tx_payer, &blockhash, &alt_account);
 
     // 各TXにTEE部分署名を適用
     let mut partial_txs = Vec::new();

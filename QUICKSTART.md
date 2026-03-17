@@ -13,7 +13,8 @@ Get a Title Protocol node running locally on Solana devnet and verify a C2PA-sig
 | [Rust](https://rustup.rs/) + wasm32 target | `rustup target add wasm32-unknown-unknown` |
 | [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) v2.0+ | Includes `cargo-build-sbf` and `solana-keygen` |
 | [Docker](https://docs.docker.com/get-docker/) (with Compose V2) | |
-| ~5 SOL on devnet | [faucet.solana.com](https://faucet.solana.com) or `solana airdrop 2 --url devnet` |
+| [Node.js](https://nodejs.org/) v20+ | Required for Indexer and integration tests |
+| ~5 SOL on devnet | ~4 SOL for program deploy, ~0.6 SOL for node setup. [faucet.solana.com](https://faucet.solana.com) |
 
 ---
 
@@ -25,7 +26,7 @@ Build the on-chain program, deploy it, and initialize GlobalConfig. This produce
 # 1. Generate a new program keypair
 mkdir -p programs/title-config/target/deploy
 solana-keygen new -o programs/title-config/target/deploy/title_config-keypair.json \
-  --no-bip39-passphrase
+  --force --no-bip39-passphrase
 
 # 2. Get the program ID from the keypair
 solana-keygen pubkey programs/title-config/target/deploy/title_config-keypair.json
@@ -50,11 +51,18 @@ cargo build --release -p title-cli
 ./target/release/title-cli init-global --cluster devnet
 
 # 7. Register WASM modules on-chain
-for module in phash hardware-google c2pa-training-v1 c2pa-license-v1; do
-  wasm_file="wasm/${module}/target/wasm32-unknown-unknown/release/${module//-/_}.wasm"
-  [ -f "$wasm_file" ] && ./target/release/title-cli register-wasm \
-    --extension-id "$module" --wasm-path "$wasm_file"
-done
+./target/release/title-cli register-wasm \
+  --extension-id image-phash \
+  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm
+./target/release/title-cli register-wasm \
+  --extension-id hardware-google \
+  --wasm-path wasm/hardware-google/target/wasm32-unknown-unknown/release/hardware_google.wasm
+./target/release/title-cli register-wasm \
+  --extension-id c2pa-training \
+  --wasm-path wasm/c2pa-training-v1/target/wasm32-unknown-unknown/release/c2pa_training_v1.wasm
+./target/release/title-cli register-wasm \
+  --extension-id c2pa-license \
+  --wasm-path wasm/c2pa-license-v1/target/wasm32-unknown-unknown/release/c2pa_license_v1.wasm
 ```
 
 > **Full details:** [`programs/title-config/README.md`](programs/title-config/README.md) — program ID update locations, network.json schema, and what init-global does.
@@ -79,14 +87,15 @@ What `setup.sh` does:
 
 | Step | Action |
 |------|--------|
-| 0 | Check prerequisites (Rust, Solana CLI, Docker, .env, network.json, SOL balance) |
+| 0 | Check prerequisites (Rust, Solana CLI, Docker, Node.js, .env, network.json, SOL balance) |
 | 1 | Build 4 WASM modules |
 | 2 | Build host binaries (TEE, Gateway, TempStorage, CLI) |
 | 3 | Start TEE (MockRuntime, port 4000) |
 | 4 | Start services (TempStorage :3001, Gateway :3000, PostgreSQL :5432, Indexer :5001) |
 | 5 | Register TEE node on-chain (auto-signs if `keys/authority.json` exists) |
 | 6 | Create Merkle Trees (Core + Extension, for cNFT minting) |
-| 7 | Health check all services |
+| 7 | Create Address Lookup Table (`title-cli create-alt`, TX compression for cNFT minting) |
+| 8 | Health check all services |
 
 > **AWS deployment:** [`deploy/aws/README.md`](deploy/aws/README.md) — Terraform, Nitro Enclaves, mainnet.
 

@@ -119,6 +119,8 @@ async fn test_verify_roundtrip() {
         wasm_loader: None,
         resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        alt_address: RwLock::new(None),
+        alt_addresses: RwLock::new(vec![]),
     });
 
     // 6. /verify 呼び出し
@@ -290,6 +292,8 @@ async fn test_verify_with_extension() {
         ))),
         resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        alt_address: RwLock::new(None),
+        alt_addresses: RwLock::new(vec![]),
     });
 
     // 4. /verify: core-c2pa + phash-v1
@@ -374,6 +378,8 @@ async fn test_verify_inactive_returns_503() {
         wasm_loader: None,
         resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: None,
+        alt_address: RwLock::new(None),
+        alt_addresses: RwLock::new(vec![]),
     });
 
     let body = serde_json::json!({
@@ -469,6 +475,8 @@ async fn test_verify_rejects_untrusted_extension() {
         ))),
         resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
         trusted_extension_ids: Some(trusted),
+        alt_address: RwLock::new(None),
+        alt_addresses: RwLock::new(vec![]),
     });
 
     // "evil-ext" を含む /verify リクエスト → 拒否されるべき

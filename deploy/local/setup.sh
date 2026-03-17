@@ -16,7 +16,8 @@
 #   4. TempStorage + Gateway + PostgreSQL + Indexer の起動
 #   5. TEEノード登録
 #   6. Merkle Tree 作成
-#   7. ヘルスチェック
+#   7. Address Lookup Table (ALT) 作成
+#   8. ヘルスチェック
 #
 # 使い方:
 #   cd ~/title-protocol
@@ -42,7 +43,7 @@ echo "=== Title Protocol ローカル開発 起動 ==="
 # Step 0: 前提条件チェック + 設定ファイル読み込み
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 0/7] 前提条件チェック..."
+echo "[Step 0/8] 前提条件チェック..."
 
 MISSING_DEPS=()
 command -v cargo    &>/dev/null || MISSING_DEPS+=("Rust (https://rustup.rs/)")
@@ -212,7 +213,7 @@ fi
 echo ""
 echo "  NOTE: 初回ビルドには10〜20分かかる場合があります（2回目以降はキャッシュが効きます）"
 echo ""
-echo "[Step 1/7] WASMモジュールのビルド..."
+echo "[Step 1/8] WASMモジュールのビルド..."
 
 WASM_OUTPUT="$PROJECT_ROOT/wasm-modules"
 mkdir -p "$WASM_OUTPUT"
@@ -230,7 +231,7 @@ ok "WASMモジュール → $WASM_OUTPUT/"
 # Step 2: ホスト側バイナリのビルド
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 2/7] ホスト側バイナリのビルド..."
+echo "[Step 2/8] ホスト側バイナリのビルド..."
 
 echo "  title-tee をビルド中..."
 cargo build --release --bin title-tee
@@ -250,7 +251,7 @@ ok "ビルド完了"
 # Step 3: TEE の起動
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 3/7] TEE の起動..."
+echo "[Step 3/8] TEE の起動..."
 
 TEE_PID=$(pgrep -f title-tee 2>/dev/null | head -1 || true)
 if [ -z "$TEE_PID" ]; then
@@ -275,7 +276,7 @@ fi
 # Step 4: TempStorage + Gateway + PostgreSQL + Indexer の起動
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 4/7] サービス起動..."
+echo "[Step 4/8] サービス起動..."
 
 # PostgreSQL (Docker)
 echo "  PostgreSQL (Docker Compose)..."
@@ -359,7 +360,7 @@ fi
 # Step 5: TEEノード登録
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 5/7] TEEノード登録..."
+echo "[Step 5/8] TEEノード登録..."
 
 REGISTER_OUTPUT=$(./target/release/title-cli register-node \
   --tee-url http://localhost:4000 \
@@ -382,7 +383,7 @@ fi
 # Step 6: Merkle Tree 作成
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 6/7] Merkle Tree 作成..."
+echo "[Step 6/8] Merkle Tree 作成..."
 
 TREE_OUTPUT=$(./target/release/title-cli create-tree \
   --tee-url http://localhost:4000 \
@@ -403,10 +404,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7: ヘルスチェック
+# Step 7: Address Lookup Table (ALT) 作成
 # ---------------------------------------------------------------------------
 echo ""
-echo "[Step 7/7] ヘルスチェック..."
+echo "[Step 7/8] Address Lookup Table (ALT) 作成..."
+
+ALT_OUTPUT=$(./target/release/title-cli create-alt \
+  --tee-url http://localhost:4000 \
+  2>&1) && ALT_OK=true || ALT_OK=false
+
+echo "$ALT_OUTPUT" | sed 's/^/  /'
+
+if [ "$ALT_OK" = true ]; then
+  ok "ALT OK"
+else
+  fail "ALT 作成に失敗"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 8: ヘルスチェック
+# ---------------------------------------------------------------------------
+echo ""
+echo "[Step 8/8] ヘルスチェック..."
 
 ALL_OK=true
 

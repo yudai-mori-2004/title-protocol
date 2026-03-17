@@ -89,6 +89,12 @@ enum Commands {
         #[arg(long)]
         extension_id: String,
     },
+    /// Address Lookup Table の作成（create-tree 後に実行）
+    CreateAlt {
+        /// TEE サーバーURL
+        #[arg(long, default_value = "http://localhost:4000")]
+        tee_url: String,
+    },
     /// 既存WASMモジュールに新バージョンを追加する
     AddWasmVersion {
         /// Extension ID（例: phash, hardware-google）
@@ -165,6 +171,9 @@ async fn main() {
         } => {
             commands::create_tree::run(&project_root, &keys_dir, &tee_url, max_depth, max_buffer_size)
                 .await
+        }
+        Commands::CreateAlt { tee_url } => {
+            commands::create_alt::run(&project_root, &keys_dir, &tee_url).await
         }
         Commands::RemoveNode { signing_pubkey } => {
             commands::remove_node::run(&project_root, &keys_dir, &signing_pubkey).await

@@ -71,6 +71,11 @@ impl SolanaRpc {
         }
     }
 
+    /// RPC URLを返す。
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
     /// JSON-RPCリクエストを送信する。
     async fn call<T: serde::de::DeserializeOwned>(
         &self,

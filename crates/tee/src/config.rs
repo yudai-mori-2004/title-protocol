@@ -61,4 +61,9 @@ pub struct TeeAppState {
     /// 仕様書 §6.4 不正WASMインジェクション防御
     /// Noneの場合は全Extension許可（開発環境用）、Someの場合は一覧にあるIDのみ許可。
     pub trusted_extension_ids: Option<HashSet<String>>,
+    /// Address Lookup Table（/create-tree 後にセットアップスクリプトから設定される）。
+    /// MintV2 TX のアカウント参照を圧縮し、1 TX あたりのパッキング密度を向上させる。
+    pub alt_address: RwLock<Option<Pubkey>>,
+    /// ALT に登録されたアカウント一覧。
+    pub alt_addresses: RwLock<Vec<Pubkey>>,
 }

@@ -138,7 +138,8 @@ What `setup-ec2.sh` does:
 | 7 | Verify S3 bucket access |
 | 8 | Register TEE node on-chain (auto-signs if `keys/authority.json` exists) |
 | 9 | Create Merkle Trees (Core + Extension) |
-| 10 | Health check all services |
+| 10 | Create Address Lookup Table (`title-cli create-alt`, TX compression) |
+| 11 | Health check all services |
 
 Values auto-configured by `setup-ec2.sh` (no manual setup needed):
 
@@ -207,6 +208,12 @@ Node operators do **not** run Phase 1 — the DAO has already deployed the progr
 ./target/release/title-cli create-tree \
   --tee-url http://localhost:4000 \
   --max-depth 14 --max-buffer-size 64
+```
+
+**5. Create Address Lookup Table** — After Merkle Trees are created:
+
+```bash
+./target/release/title-cli create-alt --tee-url http://localhost:4000
 ```
 
 ---

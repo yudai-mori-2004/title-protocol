@@ -11,9 +11,11 @@
 
 pub mod file;
 pub mod http;
+pub mod onchain;
 
 pub use file::FileLoader;
 pub use http::HttpLoader;
+pub use onchain::OnChainLoader;
 
 use std::future::Future;
 use std::pin::Pin;

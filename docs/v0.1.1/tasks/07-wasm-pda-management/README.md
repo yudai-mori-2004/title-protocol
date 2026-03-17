@@ -123,17 +123,71 @@ pub trusted_wasm_ids: Vec<[u8; 32]>,
 | `crates/gateway/src/onchain.rs` | GlobalConfig パース更新 |
 | `crates/tee/src/endpoints/verify/extension.rs` | WASM検証ロジック更新（必要に応じ） |
 
+## TEE側: OnChainLoader（オンチェーンPDAからWASMを動的取得）
+
+### 方針
+
+TEEは起動時にローカルファイルからWASMを読むのではなく、リクエスト時にオンチェーンPDAからwasm_source URLを解決し、Arweaveから動的に取得する。将来的にキャッシングレイヤーを追加する。
+
+### 通信経路
+
+既存の `proxy_client::proxy_request` を使用。GET/POST両対応済み。
+
+```
+TEE → proxy_request("POST", rpc_url, body) → socat TCP:8000 → vsock → Host Proxy → Solana RPC
+TEE → proxy_request("GET", arweave_url, []) → socat TCP:8000 → vsock → Host Proxy → Arweave
+```
+
+`PROXY_ADDR="direct"` の場合は reqwest 直接（開発用）。既存のvsockアーキテクチャに追加変更なし。
+
+### OnChainLoader フロー
+
+1. `proxy_post(rpc_url, getAccountInfo(wasm_module_pda))` → PDAバイナリ取得
+2. PDAデータをパース → 最新activeバージョンの `wasm_source` URL を抽出
+3. `proxy_get(wasm_source)` → WASMバイナリ取得
+4. `WasmBinary { bytes, source }` を返す
+
+### 変更ファイル（TEE側）
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `crates/tee/src/infra/proxy_client.rs` | `proxy_post` を公開関数として追加 |
+| `crates/tee/src/wasm_loader/onchain.rs` | OnChainLoader 実装（proxy_post/proxy_get 経由） |
+| `crates/tee/src/wasm_loader/mod.rs` | `onchain` モジュール追加 |
+| `crates/tee/src/main.rs` | デフォルトローダーを OnChainLoader に変更（`WASM_DIR` 設定時のみ FileLoader にフォールバック） |
+
+### ローダー選択ロジック
+
+```
+WASM_DIR が設定されている → FileLoader（開発用フォールバック）
+それ以外               → OnChainLoader（PDA → Arweave取得）
+```
+
+### キャッシング（将来）
+
+OnChainLoaderの上にキャッシングレイヤーを追加する形で拡張可能:
+- extension_id + version → WASMバイナリ をメモリまたはディスクにキャッシュ
+- PDA上のバージョン番号が変わらなければキャッシュヒット
+- 本タスクではキャッシュなし（毎回取得）
+
 ## テスト
 
 - プログラムビルド: `cd programs/title-config && cargo-build-sbf`
 - `cargo check --workspace && cargo test --workspace`
+- ローカルノード: `deploy/local/setup.sh` → 写真検証
+- EC2ノード: `deploy/aws/setup-ec2.sh` → 写真検証
 
 ## 完了条件
 
-- [ ] WasmModuleAccount PDA がバージョン管理付きで動作する
-- [ ] register/remove/add-version/update-version 4命令が動作する
-- [ ] GlobalConfig から旧 trusted_wasm_modules が削除されている
-- [ ] init-global が WASM 登録なしで動作する
-- [ ] CLI で Arweave アップロード + PDA 登録ができる
-- [ ] devnet/mainnet の authority 署名パターンが TEE と対称
-- [ ] 全既存テストがパスする（プログラム再デプロイ前提）
+- [x] WasmModuleAccount PDA がバージョン管理付きで動作する
+- [x] register/remove/add-version/update-version 4命令が動作する
+- [x] GlobalConfig から旧 trusted_wasm_modules が削除されている
+- [x] init-global が WASM 登録なしで動作する
+- [x] CLI で Arweave アップロード + PDA 登録ができる
+- [x] devnet/mainnet の authority 署名パターンが TEE と対称
+- [x] SDK が新レイアウト (trusted_wasm_ids) に対応している
+- [x] Extension ID 命名更新 (image-phash, c2pa-training, c2pa-license)
+- [ ] TEE OnChainLoader が proxy_post/proxy_get 経由でPDA読み取り + Arweave取得
+- [ ] WASM_DIR 未設定時に OnChainLoader がデフォルトで使用される
+- [ ] ローカル/EC2 の両方で動作確認
+- [ ] 全既存テストがパスする

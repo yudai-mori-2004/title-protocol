@@ -155,6 +155,9 @@ TEE → proxy_request("GET", arweave_url, []) → socat TCP:8000 → vsock → H
 | `crates/tee/src/wasm_loader/onchain.rs` | OnChainLoader 実装（proxy_post/proxy_get 経由） |
 | `crates/tee/src/wasm_loader/mod.rs` | `onchain` モジュール追加 |
 | `crates/tee/src/main.rs` | デフォルトローダーを OnChainLoader に変更（`WASM_DIR` 設定時のみ FileLoader にフォールバック） |
+| `deploy/aws/docker/entrypoint.sh` | `WASM_DIR` 強制上書きを削除（OnChainLoaderがデフォルト） |
+| `deploy/aws/setup-ec2.sh` | `PROGRAM_ID` を .env にベイク、MockRuntime時の `WASM_DIR` 強制を削除 |
+| `deploy/local/setup.sh` | 同上（`WASM_DIR` 強制削除 + `GATEWAY_SIGNING_KEY` 永続化 + `PROGRAM_ID` 渡し） |
 
 ### ローダー選択ロジック
 
@@ -187,7 +190,10 @@ OnChainLoaderの上にキャッシングレイヤーを追加する形で拡張�
 - [x] devnet/mainnet の authority 署名パターンが TEE と対称
 - [x] SDK が新レイアウト (trusted_wasm_ids) に対応している
 - [x] Extension ID 命名更新 (image-phash, c2pa-training, c2pa-license)
-- [ ] TEE OnChainLoader が proxy_post/proxy_get 経由でPDA読み取り + Arweave取得
-- [ ] WASM_DIR 未設定時に OnChainLoader がデフォルトで使用される
-- [ ] ローカル/EC2 の両方で動作確認
-- [ ] 全既存テストがパスする
+- [x] TEE OnChainLoader が proxy_post/proxy_get 経由でPDA読み取り + Arweave取得
+- [x] WASM_DIR 未設定時に OnChainLoader がデフォルトで使用される
+- [x] ローカルで動作確認済み（image-phash を Arweave から動的取得、pHash計算成功）
+- [x] setup.sh / setup-ec2.sh / entrypoint.sh から WASM_DIR 強制設定を削除
+- [x] PROGRAM_ID を .env にベイクする処理を追加（setup-ec2.sh）
+- [x] 全既存テストがパスする
+- [ ] EC2 Enclave で OnChainLoader 動作確認（プログラム再デプロイ後）

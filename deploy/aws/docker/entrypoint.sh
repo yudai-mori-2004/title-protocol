@@ -36,7 +36,8 @@ fi
 # Enclave固有の上書き（.envの値に関わらず強制）
 export TEE_RUNTIME=nitro
 export PROXY_ADDR=127.0.0.1:8000
-export WASM_DIR=/wasm-modules
+# WASM_DIR 未設定 → OnChainLoader（PDA → Arweave動的取得）がデフォルト
+# 開発時に WASM_DIR=/wasm-modules を .env に設定すれば FileLoader にフォールバック
 
 # インバウンドブリッジ: vsock port 4000 → TCP localhost:4000
 socat VSOCK-LISTEN:4000,fork TCP:127.0.0.1:4000 &

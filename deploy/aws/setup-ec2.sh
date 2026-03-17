@@ -197,6 +197,7 @@ ensure_env "GATEWAY_SIGNING_KEY" "$GATEWAY_SIGNING_KEY"
 ensure_env "GLOBAL_CONFIG_PDA" "$GLOBAL_CONFIG_PDA"
 ensure_env "CORE_COLLECTION_MINT" "$CORE_COLLECTION_MINT"
 ensure_env "EXT_COLLECTION_MINT" "$EXT_COLLECTION_MINT"
+ensure_env "PROGRAM_ID" "$PROGRAM_ID"
 
 # GATEWAY_SOLANA_KEYPAIR の自動設定（operator.json → Base58）
 # sign-and-mint および Irys sidecar が使用する Solana keypair
@@ -351,7 +352,8 @@ else
         EXT_COLLECTION_MINT="$EXT_COLLECTION_MINT" \
         GATEWAY_PUBKEY="${GATEWAY_PUBKEY:-}" \
         TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-image-phash,hardware-google,c2pa-training,c2pa-license}" \
-        WASM_DIR="$WASM_OUTPUT" \
+        PROGRAM_ID="$PROGRAM_ID" \
+        ${WASM_DIR:+WASM_DIR="$WASM_DIR"} \
         nohup ./target/release/title-tee > /tmp/title-tee.log 2>&1 &
       echo "  TEE起動 (MockRuntime, PID=$!)"
       sleep 2

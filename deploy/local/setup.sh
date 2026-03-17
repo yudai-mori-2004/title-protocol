@@ -148,6 +148,16 @@ if [ -z "${GATEWAY_SIGNING_KEY:-}" ]; then
 fi
 export GATEWAY_SIGNING_KEY
 
+# .envに永続化（再起動時も同じ鍵を使用）
+ensure_env() {
+  local key="$1" value="$2"
+  if ! grep -q "^${key}=" .env 2>/dev/null; then
+    echo "${key}=${value}" >> .env
+    echo "  .env に ${key} を追加"
+  fi
+}
+ensure_env "GATEWAY_SIGNING_KEY" "$GATEWAY_SIGNING_KEY"
+
 # keys/ ディレクトリ（キーペア管理の一元化）
 KEYS_DIR="$PROJECT_ROOT/keys"
 mkdir -p "$KEYS_DIR"
@@ -250,7 +260,8 @@ if [ -z "$TEE_PID" ]; then
     EXT_COLLECTION_MINT="$EXT_COLLECTION_MINT" \
     GATEWAY_PUBKEY="${GATEWAY_PUBKEY:-}" \
     TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-image-phash,hardware-google,c2pa-training,c2pa-license}" \
-    WASM_DIR="$WASM_OUTPUT" \
+    PROGRAM_ID="$PROGRAM_ID" \
+    ${WASM_DIR:+WASM_DIR="$WASM_DIR"} \
     nohup ./target/release/title-tee > /tmp/title-tee.log 2>&1 &
   TEE_PID=$!
   echo "$TEE_PID" > "$PID_DIR/tee.pid"

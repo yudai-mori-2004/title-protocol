@@ -230,7 +230,7 @@ pub fn pack_mint_txs(
     alt_account: &AddressLookupTableAccount,
 ) -> Vec<VersionedTransaction> {
     const MAX_TX_SIZE: usize = 1232;
-    let alt_accounts = &[alt_account.clone()];
+    let alt_accounts = std::slice::from_ref(alt_account);
 
     let mut txs = Vec::new();
     let mut current_ixs: Vec<solana_sdk::instruction::Instruction> = Vec::new();

@@ -43,7 +43,7 @@ async fn direct_http_request(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     let result = match method {
         "GET" => client.get(url).send().await,
@@ -67,14 +67,14 @@ async fn direct_http_request(
             let resp_body = resp
                 .bytes()
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                .map_err(std::io::Error::other)?
                 .to_vec();
             Ok(ProxyResponse {
                 status,
                 body: resp_body,
             })
         }
-        Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
+        Err(e) => Err(std::io::Error::other(e)),
     }
 }
 

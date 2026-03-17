@@ -237,12 +237,12 @@ async fn handle_existing_config(
     let core_acct = rpc.get_account_data(&core_mint).await?;
     let ext_acct = rpc.get_account_data(&ext_mint).await?;
 
-    if core_acct.is_some() && ext_acct.is_some() {
+    if let (Some(core_data), Some(ext_data)) = (core_acct.as_ref(), ext_acct.as_ref()) {
         // BubblegumV2プラグインの有無を確認。
         // BubblegumV2はコレクション作成時にのみ追加可能（permanent plugin）なため、
         // 不足している場合は新コレクションを作成しupdate_collectionsで更新する。
-        let core_has = has_bubblegum_v2_plugin(core_acct.as_ref().unwrap());
-        let ext_has = has_bubblegum_v2_plugin(ext_acct.as_ref().unwrap());
+        let core_has = has_bubblegum_v2_plugin(core_data);
+        let ext_has = has_bubblegum_v2_plugin(ext_data);
 
         if core_has && ext_has {
             println!("  既存のコレクションを使用:");

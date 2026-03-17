@@ -279,13 +279,13 @@ async fn proxy_get_secured_direct(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     let resp = client
         .get(url)
         .send()
         .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     let status = resp.status().as_u16() as u32;
     if status != 200 {
@@ -305,7 +305,7 @@ async fn proxy_get_secured_direct(
     let body = resp
         .bytes()
         .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+        .map_err(std::io::Error::other)?
         .to_vec();
 
     // サイズ制限の最終チェック

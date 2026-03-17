@@ -81,7 +81,6 @@ pub async fn handle_sign(
         let tee_signing_pubkey = &tee_signing_pubkey;
         let fee_payer_pubkey = &fee_payer_pubkey;
         let limits = &limits;
-        let chunk_timeout = chunk_timeout;
         async move {
             // Step 1: signed_json_uriからJSONをフェッチ（Verify on Sign）
             // 仕様書 §6.4 /signフェーズでの防御

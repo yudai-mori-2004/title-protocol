@@ -116,20 +116,14 @@ pub fn verify_measurements(
     expected_measurements: &BTreeMap<String, Vec<u8>>,
 ) -> bool {
     expected_measurements.iter().all(|(key, expected)| {
-        result
-            .measurements
-            .get(key)
-            .map_or(false, |actual| actual == expected)
+        result.measurements.get(key) == Some(expected)
     })
 }
 
 /// 公開鍵が期待値と一致するか確認する。
 /// 仕様書 §5.2 Step 4.1 — tee_pubkey との一致確認
 pub fn verify_public_key(result: &AttestationResult, expected_pubkey: &[u8]) -> bool {
-    result
-        .public_key
-        .as_ref()
-        .map_or(false, |pk| pk == expected_pubkey)
+    result.public_key.as_deref() == Some(expected_pubkey)
 }
 
 #[cfg(test)]

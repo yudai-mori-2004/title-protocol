@@ -127,20 +127,14 @@ pub fn verify_pcr_values(
     expected_pcrs: &BTreeMap<u32, Vec<u8>>,
 ) -> bool {
     expected_pcrs.iter().all(|(idx, expected)| {
-        result
-            .pcrs
-            .get(idx)
-            .map_or(false, |actual| actual == expected)
+        result.pcrs.get(idx) == Some(expected)
     })
 }
 
 /// 公開鍵が期待値と一致するか確認する。
 /// 仕様書 §5.2 Step 4.1 — 公開鍵フィールドの一致確認
 pub fn verify_public_key(result: &NitroAttestationResult, expected_pubkey: &[u8]) -> bool {
-    result
-        .public_key
-        .as_ref()
-        .map_or(false, |pk| pk == expected_pubkey)
+    result.public_key.as_deref() == Some(expected_pubkey)
 }
 
 // ─────────────────────────────────────────────

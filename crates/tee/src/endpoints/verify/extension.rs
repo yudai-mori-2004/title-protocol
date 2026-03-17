@@ -42,7 +42,7 @@ pub(crate) async fn process_extension(
 
     // Extension補助入力をシリアライズ
     let ext_input_bytes = extension_input
-        .map(|v| serde_json::to_vec(v))
+        .map(serde_json::to_vec)
         .transpose()
         .map_err(|e| format!("extension_inputのシリアライズに失敗: {e}"))?;
 

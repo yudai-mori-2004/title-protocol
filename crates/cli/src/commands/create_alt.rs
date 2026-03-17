@@ -196,7 +196,7 @@ async fn get_recent_slot(rpc: &SolanaRpc) -> Result<u64, CliError> {
     // getSlot RPC を直接呼ぶ
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!("{}", rpc.url()))
+        .post(rpc.url().to_string())
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,

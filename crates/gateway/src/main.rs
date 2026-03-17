@@ -17,6 +17,7 @@
 //! - `POST /verify` — TEEへのリクエスト中継 + Gateway認証署名付与
 //! - `POST /sign` — TEEへのリクエスト中継
 //! - `POST /sign-and-mint` — sign + ブロードキャスト代行
+//!
 //! NOTE: ノード情報はオンチェーン (GlobalConfig + TeeNodeAccount PDA) で管理。§6.2
 
 mod auth;

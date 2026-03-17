@@ -27,7 +27,6 @@ pub fn find_global_config_pda(program_id: &Pubkey) -> (Pubkey, u8) {
 }
 
 /// TeeNodeAccount PDA導出。seeds = [b"tee-node", &signing_pubkey]
-#[allow(dead_code)]
 pub fn find_tee_node_pda(signing_pubkey: &[u8; 32], program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"tee-node", signing_pubkey.as_ref()], program_id)
 }

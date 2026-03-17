@@ -1,7 +1,7 @@
 {
-  "signing_pubkey": "3FQ1GcXyC1rHneeVqWVUcoThZTtbS8FEf4tzHWra4w7d",
-  "encryption_pubkey": "E2OSJdc6slhsFMFmwFab1pU7dlyYndN/FepmfpZh3nw=",
-  "tee_node_pda": "GbeugYfACeK4fEPpBxk2VWgY2RBCyHF5F6WbzmBF6e7W",
-  "core_tree_address": "AZaWrsvyx1CZ5fTcZ2Ycn7rC3CZ9vhKi3ndrwZyLxhMS",
-  "ext_tree_address": "CNgqyKhCSJPJxMjwTbXdcb6djca9YyDRQRdYqFux8NBw"
+  "signing_pubkey": "H3qMCpfZRp2hSVUBf36GZNXZyx4Amq1AptFoUsTYoUcN",
+  "encryption_pubkey": "PjOoyTPY4fA2sPWX9g+s5IKQ97GD8qqLj/an/IgMvkA=",
+  "tee_node_pda": "gFuL4QjB6Jbuj618nG72fvscUnxgjgw8ndAGEog1Bzx",
+  "core_tree_address": "2TsWpM8LYcN6ycejgqWhyp1W2SzCPoA2AXVgdZE8jiXW",
+  "ext_tree_address": "BmGxpq6aRPjyKVjD2GhuH9pTqgvGo2kuabRzGf1VStUC"
 }

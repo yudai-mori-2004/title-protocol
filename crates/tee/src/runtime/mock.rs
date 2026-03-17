@@ -76,7 +76,7 @@ impl TeeRuntime for MockRuntime {
     /// メモリ内でX25519暗号化用キーペアを生成する。
     /// 仕様書 §6.4 Step 1
     fn generate_encryption_keypair(&self) {
-        let secret = StaticSecret::random_from_rng(&mut rand::rngs::OsRng);
+        let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
         let mut guard = self.encryption_secret.write().unwrap();
         *guard = Some(secret);
     }

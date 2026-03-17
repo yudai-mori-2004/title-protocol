@@ -211,7 +211,7 @@ pub async fn handle_verify(
             let result = handle
                 .await
                 .map_err(|e| TeeError::Internal(format!("プロセッサタスクエラー: {e}")))?
-                .map_err(|e| TeeError::ProcessingFailed(e))?;
+                .map_err(TeeError::ProcessingFailed)?;
             results.push(result);
         }
 

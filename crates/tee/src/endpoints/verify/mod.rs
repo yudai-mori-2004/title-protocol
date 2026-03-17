@@ -16,17 +16,12 @@ mod extension;
 pub use handler::handle_verify;
 
 /// コンテンツのMIMEタイプをマジックバイトから検出する。
+/// `infer` クレートに委譲し、対応形式の追従をライブラリに任せる。
 /// 仕様書 §2.1
-pub(crate) fn detect_mime_type(data: &[u8]) -> &str {
-    if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        "image/jpeg"
-    } else if data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-        "image/png"
-    } else if data.len() >= 12 && data[8..12] == *b"WEBP" {
-        "image/webp"
-    } else {
-        "application/octet-stream"
-    }
+pub(crate) fn detect_mime_type(data: &[u8]) -> String {
+    infer::get(data)
+        .map(|t| t.mime_type().to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string())
 }
 
 /// content_hashを「0x」プレフィックス付きhex文字列に変換する。

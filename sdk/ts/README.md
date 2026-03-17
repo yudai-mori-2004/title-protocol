@@ -33,6 +33,29 @@ const result = await client.register({
 // result.txSignatures — already on-chain
 ```
 
+### Specific Node
+
+```typescript
+// By gateway endpoint URL
+const result = await client.register({
+  content: imageBuffer,
+  ownerWallet: "YourSolana...",
+  processorIds: ["core-c2pa"],
+  delegateMint: true,
+  gatewayEndpoint: "http://54.250.143.52:3000",
+});
+
+// Or via selectNodeByEndpoint
+const node = await client.selectNodeByEndpoint("http://54.250.143.52:3000");
+const result = await client.register({
+  content: imageBuffer,
+  ownerWallet: "YourSolana...",
+  processorIds: ["core-c2pa"],
+  delegateMint: true,
+  node,
+});
+```
+
 ### Custom RPC
 
 ```typescript
@@ -84,6 +107,7 @@ const client = new TitleClient(globalConfig);
 |--------|-------------|
 | `register(options)` | Full registration flow: encrypt → upload → verify → store → sign |
 | `selectNode()` | Select a healthy TEE node (health-check + random selection) |
+| `selectNodeByEndpoint(url)` | Select a node by gateway endpoint URL (health-checked) |
 
 #### RegisterOptions
 
@@ -95,6 +119,7 @@ const client = new TitleClient(globalConfig);
 | `storeSignedJson` | `(json: string) => Promise<string>` | No | Callback to persist signed_json. Optional if Gateway supports `store_signed_json`. |
 | `extensionInputs` | `Record<string, unknown>` | No | Auxiliary inputs for WASM extensions |
 | `node` | `TeeSession` | No | Specific node to use (auto-selected if omitted) |
+| `gatewayEndpoint` | `string` | No | Gateway URL to select a specific node (e.g. `"http://54.250.143.52:3000"`) |
 | `delegateMint` | `boolean` | No | If true, Gateway broadcasts TX. Default: false |
 | `recentBlockhash` | `string` | No | Required when `delegateMint` is false |
 

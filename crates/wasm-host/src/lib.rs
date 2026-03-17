@@ -88,6 +88,8 @@ struct DecodedContent {
 struct InnerHostState {
     /// コンテンツの生データ
     content: Vec<u8>,
+    /// コンテンツのMIMEタイプ
+    mime_type: String,
     /// Extension補助入力
     extension_input: Option<Vec<u8>>,
     /// メモリ制限
@@ -158,6 +160,7 @@ impl WasmRunner {
         &self,
         wasm_bytes: &[u8],
         content: &[u8],
+        mime_type: &str,
         extension_input: Option<&[u8]>,
         export_name: &str,
     ) -> Result<ExtensionResult, WasmError> {
@@ -166,6 +169,7 @@ impl WasmRunner {
         let resource_pool = self.resource_pool.clone();
         let wasm_bytes = wasm_bytes.to_vec();
         let content = content.to_vec();
+        let mime_type = mime_type.to_string();
         let extension_input = extension_input.map(|v| v.to_vec());
         let export_name = export_name.to_string();
 
@@ -177,6 +181,7 @@ impl WasmRunner {
                 resource_pool,
                 &wasm_bytes,
                 content,
+                mime_type,
                 extension_input,
                 &export_name,
             )
@@ -216,6 +221,7 @@ impl WasmRunner {
         resource_pool: Option<Arc<ResourcePool>>,
         wasm_bytes: &[u8],
         content: Vec<u8>,
+        mime_type: String,
         extension_input: Option<Vec<u8>>,
         export_name: &str,
     ) -> Result<ExtensionResult, WasmError> {
@@ -233,6 +239,7 @@ impl WasmRunner {
 
         let inner_state = InnerHostState {
             content,
+            mime_type,
             extension_input,
             limiter,
             decoded: None,
@@ -424,8 +431,8 @@ impl WasmRunner {
                                 Some(s) => s,
                                 None => return -1,
                             };
-                            // 証明書チェーン検証はコンテンツ全体が必要
-                            match c2pa_cert::verify_active_cert_chain(&state.content, root_spki_hex) {
+                            // 証明書チェーン検証はコンテンツ全体が必要（MIME依存のJUMBF抽出）
+                            match c2pa_cert::verify_active_cert_chain_with_mime(&state.content, root_spki_hex, &state.mime_type) {
                                 Ok(true) => vec![0x01],
                                 Ok(false) => vec![0x00],
                                 Err(_) => return -5, // C2PA構造エラー
@@ -893,7 +900,7 @@ mod tests {
         let ext_input = b"{\"key\": \"value\"}";
 
         let result = runner
-            .execute(&wasm, content, Some(ext_input), "compute_phash")
+            .execute(&wasm, content, "image/jpeg", Some(ext_input), "compute_phash")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["result"], "ok");
@@ -923,7 +930,7 @@ mod tests {
 
         // 極小のFuel制限
         let runner = WasmRunner::new(100, 16 * 1024 * 1024);
-        let result = runner.execute(&wasm, b"content", None, "compute_phash");
+        let result = runner.execute(&wasm, b"content", "application/octet-stream", None, "compute_phash");
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -954,7 +961,7 @@ mod tests {
         .unwrap();
 
         let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
-        let result = runner.execute(&wasm, b"content", None, "compute_phash");
+        let result = runner.execute(&wasm, b"content", "application/octet-stream", None, "compute_phash");
 
         assert!(result.is_err());
         // ExecutionErrorとして捕捉される（catch_unwindの内側でwasmtimeがエラーを返す）
@@ -998,7 +1005,7 @@ mod tests {
         let content = vec![0u8; 42]; // 42バイトのコンテンツ
 
         let result = runner
-            .execute(&wasm, &content, None, "compute_phash")
+            .execute(&wasm, &content, "application/octet-stream", None, "compute_phash")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["len"], 42);
@@ -1043,7 +1050,7 @@ mod tests {
 
         let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
         let result = runner
-            .execute(&wasm, b"test data for hashing", None, "compute_phash")
+            .execute(&wasm, b"test data for hashing", "application/octet-stream", None, "compute_phash")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["hash_size"], 32);
@@ -1091,7 +1098,7 @@ mod tests {
 
         let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
         let result = runner
-            .execute(&wasm, b"test data for hmac", None, "compute_phash")
+            .execute(&wasm, b"test data for hmac", "application/octet-stream", None, "compute_phash")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["hmac_size"], 32);
@@ -1101,7 +1108,7 @@ mod tests {
     #[test]
     fn test_invalid_wasm_binary() {
         let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
-        let result = runner.execute(b"not wasm", b"content", None, "process");
+        let result = runner.execute(b"not wasm", b"content", "application/octet-stream", None, "process");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), WasmError::CompileError(_)));
     }
@@ -1122,7 +1129,7 @@ mod tests {
         .unwrap();
 
         let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
-        let result = runner.execute(&wasm, b"content", None, "nonexistent_func");
+        let result = runner.execute(&wasm, b"content", "application/octet-stream", None, "nonexistent_func");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), WasmError::ExecutionError(_)));
     }
@@ -1146,7 +1153,7 @@ mod tests {
         .unwrap();
 
         let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
-        let result = runner.execute(&wasm, b"content", None, "process");
+        let result = runner.execute(&wasm, b"content", "application/octet-stream", None, "process");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), WasmError::ExecutionError(_)));
     }
@@ -1172,7 +1179,7 @@ mod tests {
         .unwrap();
 
         let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
-        let result = runner.execute(&wasm, b"content", None, "process");
+        let result = runner.execute(&wasm, b"content", "application/octet-stream", None, "process");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), WasmError::ExecutionError(_)));
     }
@@ -1227,7 +1234,7 @@ mod tests {
 
         let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
         let result = runner
-            .execute(&wasm, content, None, "process")
+            .execute(&wasm, content, "image/jpeg", None, "process")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["ok"], 1);
@@ -1243,7 +1250,7 @@ mod tests {
 
         let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
         let result = runner
-            .execute(&wasm, content, None, "process")
+            .execute(&wasm, content, "image/jpeg", None, "process")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["ok"], 0);
@@ -1260,7 +1267,7 @@ mod tests {
         let pool = Arc::new(ResourcePool::new(1));
         let runner = WasmRunner::with_resource_pool(100_000_000, 64 * 1024 * 1024, pool);
         let result = runner
-            .execute(&wasm, content, None, "process")
+            .execute(&wasm, content, "image/jpeg", None, "process")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["ok"], 0);
@@ -1308,7 +1315,7 @@ mod tests {
 
         let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
         let result = runner
-            .execute(&wasm, b"some content", None, "process")
+            .execute(&wasm, b"some content", "application/octet-stream", None, "process")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["pre"], 0);
@@ -1352,7 +1359,7 @@ mod tests {
         let wasm = decode_test_wat();
         let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
         let result = runner
-            .execute(&wasm, &c2pa_content, None, "process")
+            .execute(&wasm, &c2pa_content, "image/jpeg", None, "process")
             .expect("C2PA署名済みJPEGのデコードに成功するべき");
 
         assert_eq!(
@@ -1413,7 +1420,7 @@ mod tests {
         let content = include_bytes!("../../../tests/fixtures/test_2x2.png");
         let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
         let result = runner
-            .execute(&wasm, content, None, "process")
+            .execute(&wasm, content, "image/jpeg", None, "process")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["size"], 1024);
@@ -1458,7 +1465,7 @@ mod tests {
 
         let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
         let result = runner
-            .execute(&wasm, b"some content", None, "process")
+            .execute(&wasm, b"some content", "application/octet-stream", None, "process")
             .expect("WASM実行に成功するべき");
 
         assert_eq!(result.output["rc"], -4);
@@ -1477,7 +1484,7 @@ mod tests {
         // 実行前: 使用量0
         assert_eq!(pool.total_used(), 0);
 
-        let _result = runner.execute(&wasm, content, None, "process").unwrap();
+        let _result = runner.execute(&wasm, content, "image/jpeg", None, "process").unwrap();
 
         // 実行後: InnerHostState がDropされ、Ticketが解放済み
         assert_eq!(pool.total_used(), 0);

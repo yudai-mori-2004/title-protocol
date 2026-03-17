@@ -270,7 +270,7 @@ async function main() {
   // ---------------------------------------------------------------------------
   const client = new TitleClient(globalConfig);
 
-  const session = await client.selectNode();
+  const session = await client.selectNodeByEndpoint(gatewayUrl);
   log("STEP 1", `signing_pubkey: ${session.signingPubkey}`);
   log("STEP 1", `gateway_endpoint: ${session.gatewayUrl}`);
 

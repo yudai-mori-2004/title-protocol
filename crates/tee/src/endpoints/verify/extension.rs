@@ -64,6 +64,7 @@ pub(crate) async fn process_extension(
         .execute(
             &wasm_binary.bytes,
             content_bytes,
+            mime_type,
             ext_input_bytes.as_deref(),
             crate::wasm_loader::STANDARD_EXPORT_NAME,
         )

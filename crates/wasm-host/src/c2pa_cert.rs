@@ -18,6 +18,16 @@ use der::Decode;
 // JPEG APP11 → JUMBF 抽出
 // ---------------------------------------------------------------------------
 
+/// コンテンツからJUMBFデータを抽出する（形式自動判定）。
+/// JPEG は APP11 セグメント、その他は c2pa crate のパーサーを使用。
+pub fn extract_jumbf(content: &[u8], mime_type: &str) -> Option<Vec<u8>> {
+    if mime_type == "image/jpeg" {
+        return extract_jumbf_from_jpeg(content);
+    }
+    // JPEG以外: c2pa crate の jumbf_io を使用
+    c2pa::jumbf_io::load_jumbf_from_memory(mime_type, content).ok()
+}
+
 /// JPEG APP11マーカーからJUMBFデータを抽出する。
 ///
 /// C2PA JUMBF はJPEGのAPP11 (0xFFEB) セグメントに埋め込まれている。
@@ -417,10 +427,16 @@ pub fn verify_cert_chain(
 /// * `Ok(false)` - チェーン検証失敗
 /// * `Err` - 構造エラー（C2PAデータなし等）
 pub fn verify_active_cert_chain(content: &[u8], root_spki_hex: &str) -> Result<bool, String> {
+    verify_active_cert_chain_with_mime(content, root_spki_hex, "image/jpeg")
+}
+
+/// コンテンツのMIMEタイプを指定して証明書チェーンを検証する。
+/// JPEG以外のコンテナ形式（MP4, PDF等）にも対応。
+pub fn verify_active_cert_chain_with_mime(content: &[u8], root_spki_hex: &str, mime_type: &str) -> Result<bool, String> {
     let root_spki = hex::decode(root_spki_hex)
         .map_err(|e| format!("root_spki_hexのデコードに失敗: {e}"))?;
 
-    let jumbf = extract_jumbf_from_jpeg(content)
+    let jumbf = extract_jumbf(content, mime_type)
         .ok_or_else(|| "JUMBFデータが見つかりません".to_string())?;
 
     let cose_cbor = find_active_cose_sign1(&jumbf)

@@ -68,6 +68,7 @@ terraform output nodes                     # Node IPs + SSH commands
 terraform output -raw s3_access_key_id
 terraform output -raw s3_secret_access_key
 terraform output -raw s3_bucket_name
+terraform output -raw signed_json_s3_bucket_name
 cd ../../..
 ```
 
@@ -78,6 +79,10 @@ cd ../../..
 | `S3_BUCKET` | `terraform output -raw s3_bucket_name` |
 | `S3_ACCESS_KEY` | `terraform output -raw s3_access_key_id` |
 | `S3_SECRET_KEY` | `terraform output -raw s3_secret_access_key` |
+| `S3_REGION` | AWS region (e.g. `ap-northeast-1`) |
+| `SIGNED_JSON_S3_BUCKET` | `terraform output -raw signed_json_s3_bucket_name` |
+
+`SIGNED_JSON_S3_BUCKET` は Extension signed_json の保存先。Terraform が `title-signed-json-devnet` バケットを作成済み。ストレージルーティングの詳細は reference.md を参照。
 
 > All environment variables: [docs/reference.md](../../docs/reference.md)
 
@@ -95,7 +100,7 @@ ssh -i deploy/aws/keys/title-protocol-devnet.pem ec2-user@NODE_IP
 git clone https://github.com/yudai-mori-2004/title-protocol.git ~/title-protocol
 cd ~/title-protocol
 cp .env.example .env
-vim .env   # Set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY
+vim .env   # Set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY, S3_REGION, SIGNED_JSON_S3_BUCKET
 ```
 
 Copy keys from your local machine:

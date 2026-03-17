@@ -59,6 +59,8 @@ export interface RegisterOptions {
   storeSignedJson?: StoreSignedJsonFn;
   /** Use a specific node instead of auto-selecting. */
   node?: TeeSession;
+  /** Gateway endpoint URL to select a specific node (e.g. "http://54.250.143.52:3000"). */
+  gatewayEndpoint?: string;
   /** If true, Gateway broadcasts the TX. Default: false. */
   delegateMint?: boolean;
   /** Solana recent blockhash (required when delegateMint is false). */
@@ -147,6 +149,49 @@ export class TitleClient {
   }
 
   /**
+   * Select a TEE node by gateway endpoint URL.
+   * Finds a node whose `gateway_endpoint` matches the given URL,
+   * performs a health-check, and returns a TeeSession.
+   *
+   * @param endpoint - Gateway URL (e.g. "http://54.250.143.52:3000")
+   */
+  async selectNodeByEndpoint(endpoint: string): Promise<TeeSession> {
+    const normalized = endpoint.replace(/\/$/, "");
+    const node = this.availableNodes.find(
+      (n) => n.gateway_endpoint.replace(/\/$/, "") === normalized
+    );
+    if (!node) {
+      throw new Error(
+        `No node registered with gateway_endpoint "${endpoint}"`
+      );
+    }
+
+    const base = node.gateway_endpoint.replace(/\/$/, "");
+    try {
+      const res = await fetch(`${base}/health`);
+      let capabilities: NodeCapabilities | undefined;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const body = (await res.json()) as any;
+        if (body.capabilities) {
+          capabilities = body.capabilities as NodeCapabilities;
+        }
+      } catch {
+        // health returned non-JSON — ignore capabilities
+      }
+
+      return {
+        gatewayUrl: base,
+        encryptionPubkey: node.encryption_pubkey,
+        signingPubkey: node.signing_pubkey,
+        capabilities,
+      };
+    } catch (e) {
+      throw new Error(`Node at "${endpoint}" is not reachable: ${e}`);
+    }
+  }
+
+  /**
    * Register content: encrypt → upload → verify → store → sign.
    * Spec §6.7
    */
@@ -162,7 +207,11 @@ export class TitleClient {
     } = options;
 
     // 1. Node selection
-    const node = options.node ?? (await this.selectNode());
+    const node =
+      options.node ??
+      (options.gatewayEndpoint
+        ? await this.selectNodeByEndpoint(options.gatewayEndpoint)
+        : await this.selectNode());
 
     // 2-3. Encrypt + upload
     const contentB64 = Buffer.from(content).toString("base64");

@@ -34,6 +34,32 @@
 | `S3_BUCKET` | AWS only | Bucket name for temp uploads |
 | `S3_REGION` | No | S3 region |
 
+### Gateway — signed_json Storage (optional)
+
+Gateway がクライアントに代わって signed_json を保存する機能。`/health` の `capabilities.store_signed_json` で有効/無効を公開する。
+
+signed_json の保存先はプロトコルが強制するものではない。`SignedJsonStorage` trait を実装すれば任意のバックエンドを使用できる。`SignedJsonStorageRouter` が `processor_id` ごとに異なるストレージへルーティングする。
+
+**現在のビルトイン実装:**
+- **Irys (Arweave)** — `vendor-irys` feature。永続保証。
+- **S3 互換** — `vendor-aws` feature。バケットのライフサイクル設定次第。
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SIGNED_JSON_S3_BUCKET` | No | S3 バケット名。未設定時は S3 ストレージ無効。 |
+| `SIGNED_JSON_S3_PUBLIC_URL` | No | パブリック URL ベース。省略時は `https://{bucket}.s3.{region}.amazonaws.com` から自動構築。 |
+| `IRYS_UPLOADER_URL` | No | Irys sidecar URL（例: `http://irys-uploader:3001`）。 |
+| `IRYS_PROCESSOR_IDS` | No | Irys にルーティングする processor_id（カンマ区切り）。Default: `core-c2pa`。 |
+
+**ルーティングの仕組み:**
+1. `IRYS_PROCESSOR_IDS` に該当する processor_id → Irys
+2. それ以外 → `default_storage`（S3 が設定されていればS3）
+3. どちらにもマッチしない → 400 エラー（クライアントが自分で `signed_json_uri` を指定する必要あり）
+
+**AWS 参照実装のルーティング例:**
+- `core-c2pa` → Irys（Arweave 永続保存）
+- `image-phash` 等 Extension → S3（`title-signed-json-devnet` バケット、Terraform でプロビジョニング済み）
+
 ### Gateway — TempStorage (vendor-local)
 
 | Variable | Required | Description |

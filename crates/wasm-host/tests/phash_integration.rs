@@ -31,7 +31,7 @@ fn load_phash_wasm() -> Option<Vec<u8>> {
 fn run_phash(wasm: &[u8], image_bytes: &[u8]) -> u64 {
     let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
     let result = runner
-        .execute(wasm, image_bytes, None, "process")
+        .execute(wasm, image_bytes, "image/jpeg", None, "process")
         .expect("phash-v1 WASM実行に失敗");
 
     let hash_str = result.output["phash"]

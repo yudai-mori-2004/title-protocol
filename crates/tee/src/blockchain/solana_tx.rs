@@ -155,6 +155,7 @@ pub fn build_mint_v2_ix(
     content_hash: &str,
     signed_json_uri: &str,
     core_collection: Option<&Pubkey>,
+    payer: &Pubkey,
 ) -> solana_sdk::instruction::Instruction {
     let (tree_config, _) = derive_tree_config(tree_pubkey);
 
@@ -184,7 +185,7 @@ pub fn build_mint_v2_ix(
     let mut builder = MintV2Builder::new();
     builder
         .tree_config(tree_config)
-        .payer(Pubkey::default()) // payer はTX構築時に設定
+        .payer(*payer)
         .tree_creator_or_delegate(Some(*tee_signing_pubkey))
         .leaf_owner(*creator_wallet)
         .merkle_tree(*tree_pubkey)
@@ -353,7 +354,7 @@ mod tests {
 
         let ix = build_mint_v2_ix(
             &tree, &tee_signer, &creator,
-            "0x1234abcdef567890", "ar://test_uri", None,
+            "0x1234abcdef567890", "ar://test_uri", None, &creator,
         );
         let txs = pack_mint_txs(vec![ix], &creator, &blockhash);
 
@@ -373,19 +374,21 @@ mod tests {
 
         let ix1 = build_mint_v2_ix(
             &tree1, &tee_signer, &creator,
-            "0x1234abcdef567890", "ar://u1", Some(&col1),
+            "0x1234abcdef567890", "ar://u1", Some(&col1), &creator,
         );
         let ix2 = build_mint_v2_ix(
             &tree2, &tee_signer, &creator,
-            "0x1234abcdef567890", "ar://u2", Some(&col2),
+            "0x1234abcdef567890", "ar://u2", Some(&col2), &creator,
         );
         let txs = pack_mint_txs(vec![ix1, ix2], &creator, &blockhash);
 
-        // 2つのMintV2が1つのTXに収まるか（収まらなければ2つに分割）
         let total_ixs: usize = txs.iter().map(|t| t.message.instructions.len()).sum();
         assert_eq!(total_ixs, 2);
-        // TXが1つなら最適、2つでも正しい
-        assert!(txs.len() <= 2);
+        for (i, tx) in txs.iter().enumerate() {
+            let size = bincode::serialize(tx).unwrap().len();
+            eprintln!("tx[{i}]: {} instructions, {} bytes", tx.message.instructions.len(), size);
+        }
+        eprintln!("packed into {} TX(s)", txs.len());
     }
 
     #[test]

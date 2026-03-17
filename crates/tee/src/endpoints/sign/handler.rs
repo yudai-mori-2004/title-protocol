@@ -73,6 +73,7 @@ pub async fn handle_sign(
 
     let partial_txs = tokio::time::timeout(global_timeout, async {
     let mut mint_instructions = Vec::new();
+    let payer = fee_payer_pubkey.as_ref().unwrap_or(&tee_signing_pubkey);
 
     for item in &request.requests {
         // Step 1: signed_json_uriからJSONをフェッチ（セキュア化: サイズ制限+チャンクタイムアウト+セマフォ）
@@ -174,12 +175,12 @@ pub async fn handle_sign(
             content_hash,
             &item.signed_json_uri,
             collection_mint,
+            payer,
         );
         mint_instructions.push(ix);
     }
 
     // ビンパッキング: 可能な限り多くのMintV2を1つのTXに詰める
-    let payer = fee_payer_pubkey.as_ref().unwrap_or(&tee_signing_pubkey);
     let packed_txs = solana_tx::pack_mint_txs(mint_instructions, payer, &blockhash);
 
     // 各TXにTEE部分署名を適用

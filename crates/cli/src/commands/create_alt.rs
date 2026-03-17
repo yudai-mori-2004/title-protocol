@@ -125,12 +125,8 @@ pub async fn run(
     match rpc.send_and_confirm(&tx_bytes).await {
         Ok(sig) => println!("  ALT 作成完了: {sig}"),
         Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("already in use") {
-                println!("  ALT: 既に存在（スキップ）");
-            } else {
-                return Err(CliError::Transaction(format!("ALT 作成失敗: {e}")));
-            }
+            // ALT が既に存在する場合は create が失敗するが、extend は可能
+            println!("  ALT 作成スキップ（既存の可能性）: {e}");
         }
     }
 

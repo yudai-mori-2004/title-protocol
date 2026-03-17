@@ -396,22 +396,15 @@ async function main() {
   const irysBalance = await irys.getBalance();
   log("STEP 5", `Irys残高: ${irys.utils.fromAtomic(irysBalance)} SOL`);
 
-  const signRequests: { signed_json_uri: string }[] = [];
-  for (const result of verifyResponse.results) {
+  // 全signed_jsonを並列アップロード
+  log("STEP 5", `${verifyResponse.results.length} 件を並列アップロード中...`);
+  const uploadPromises = verifyResponse.results.map(async (result) => {
     const jsonStr = JSON.stringify(result.signed_json);
-    log(
-      "STEP 5",
-      `${result.processor_id} をArweaveにアップロード中 (${(Buffer.byteLength(jsonStr) / 1024).toFixed(1)} KB)...`
-    );
-
-    const arweaveUrl = await uploadToIrys(
-      irys,
-      jsonStr,
-      "application/json"
-    );
-    signRequests.push({ signed_json_uri: arweaveUrl });
-    log("STEP 5", `  → ${arweaveUrl}`);
-  }
+    const url = await uploadToIrys(irys, jsonStr, "application/json");
+    log("STEP 5", `  ${result.processor_id} → ${url}`);
+    return { signed_json_uri: url };
+  });
+  const signRequests = await Promise.all(uploadPromises);
 
   // ---------------------------------------------------------------------------
   // Step 6: /sign
@@ -456,16 +449,14 @@ async function main() {
   // Step 7: broadcast (optional)
   // ---------------------------------------------------------------------------
   if (args.broadcast) {
-    log("STEP 7", "トランザクションをブロードキャスト中...");
+    log("STEP 7", `${signResponse.partial_txs.length} tx を並列ブロードキャスト中...`);
 
-    for (let i = 0; i < signResponse.partial_txs.length; i++) {
-      const txBytes = Buffer.from(signResponse.partial_txs[i], "base64");
+    // 全TXを並列に署名+送信+確認
+    const broadcastPromises = signResponse.partial_txs.map(async (txB64, i) => {
+      const txBytes = Buffer.from(txB64, "base64");
       const tx = Transaction.from(txBytes);
-
-      // ユーザーwalletで共同署名（partialSignでTEEの既存署名を保持）
       tx.partialSign(keypair);
 
-      log("STEP 7", `  tx[${i}] をSolanaに送信中...`);
       try {
         const rawTx = tx.serialize();
         const sig = await connection.sendRawTransaction(rawTx, {
@@ -473,14 +464,14 @@ async function main() {
           preflightCommitment: "confirmed",
         });
         log("STEP 7", `  tx[${i}] 送信完了: ${sig}`);
-        log("STEP 7", `  確認待ち...`);
         await connection.confirmTransaction(sig, "confirmed");
         log("STEP 7", `  tx[${i}] 確認済み!`);
         log("STEP 7", `  https://explorer.solana.com/tx/${sig}?cluster=devnet`);
       } catch (e: any) {
         log("ERROR", `  tx[${i}] ブロードキャスト失敗: ${e.message}`);
       }
-    }
+    });
+    await Promise.all(broadcastPromises);
   }
 
   // ---------------------------------------------------------------------------

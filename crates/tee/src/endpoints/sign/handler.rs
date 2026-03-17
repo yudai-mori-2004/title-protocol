@@ -72,7 +72,7 @@ pub async fn handle_sign(
     let global_timeout = security::compute_dynamic_timeout(&limits, total_content_estimate);
 
     let partial_txs = tokio::time::timeout(global_timeout, async {
-    let mut partial_txs = Vec::new();
+    let mut mint_instructions = Vec::new();
 
     for item in &request.requests {
         // Step 1: signed_json_uriからJSONをフェッチ（セキュア化: サイズ制限+チャンクタイムアウト+セマフォ）
@@ -166,26 +166,31 @@ pub async fn handle_sign(
             .and_then(|v| v.as_str())
             .ok_or(TeeError::BadRequest("signed_json.payload.content_hashが見つかりません".into()))?;
 
-        // Bubblegum V2 MintV2 トランザクション構築（仕様書 §5.1 Step 9-10）
-        let mut tx = solana_tx::build_mint_v2_tx(
+        // MintV2 instruction を生成（TXには後でパッキング）
+        let ix = solana_tx::build_mint_v2_ix(
             &tree_pubkey,
             &tee_signing_pubkey,
             &creator_wallet,
             content_hash,
             &item.signed_json_uri,
             collection_mint,
-            &blockhash,
-            fee_payer_pubkey.as_ref(),
         );
+        mint_instructions.push(ix);
+    }
 
-        // Step 4: TEE秘密鍵で部分署名
+    // ビンパッキング: 可能な限り多くのMintV2を1つのTXに詰める
+    let payer = fee_payer_pubkey.as_ref().unwrap_or(&tee_signing_pubkey);
+    let packed_txs = solana_tx::pack_mint_txs(mint_instructions, payer, &blockhash);
+
+    // 各TXにTEE部分署名を適用
+    let mut partial_txs = Vec::new();
+    for mut tx in packed_txs {
         let message_bytes = tx.message.serialize();
         let tee_sig = state.runtime.sign(&message_bytes);
 
         solana_tx::apply_partial_signature(&mut tx, &tee_signing_pubkey, &tee_sig)
             .map_err(|e| TeeError::Internal(format!("TEE署名の適用に失敗: {e}")))?;
 
-        // Step 5: 部分署名済みトランザクションを返却
         let tx_bytes = solana_tx::serialize_transaction(&tx)
             .map_err(|e| TeeError::Internal(format!("トランザクションのシリアライズに失敗: {e}")))?;
 

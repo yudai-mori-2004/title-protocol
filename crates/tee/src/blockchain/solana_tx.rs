@@ -146,31 +146,18 @@ pub fn build_create_tree_tx(
 // mint V2 トランザクション構築
 // ---------------------------------------------------------------------------
 
-/// Bubblegum V2 MintV2 トランザクションを構築する。
-/// 仕様書 §5.1 Step 9-10, §6.5 Merkle Tree
-///
-/// core_collectionが指定された場合、MPL-Coreコレクションへのミントを行う。
-/// TEEがcollection_authorityとtree_creator_or_delegateの両方を兼ねる。
-///
-/// `fee_payer`が指定された場合、そのアドレスがfee payerとなる（sign-and-mint用）。
-/// 省略時はcreator_walletがfee payerを兼ねる。
-///
-/// 署名者: fee_payer (fee payer), tee_signing_pubkey (tree delegate + collection authority)
-/// TEEはtee_signing_pubkeyで部分署名する。fee_payerは後から署名を追加する。
-pub fn build_mint_v2_tx(
+/// Bubblegum V2 MintV2 Instruction を1つ生成する。
+/// 仕様書 §5.1 Step 9-10, §6.5
+pub fn build_mint_v2_ix(
     tree_pubkey: &Pubkey,
     tee_signing_pubkey: &Pubkey,
     creator_wallet: &Pubkey,
     content_hash: &str,
     signed_json_uri: &str,
     core_collection: Option<&Pubkey>,
-    blockhash: &solana_sdk::hash::Hash,
-    fee_payer: Option<&Pubkey>,
-) -> Transaction {
-    let payer = fee_payer.unwrap_or(creator_wallet);
+) -> solana_sdk::instruction::Instruction {
     let (tree_config, _) = derive_tree_config(tree_pubkey);
 
-    // cNFTメタデータ構築（仕様書 §5.1 Step 11）
     let hash_suffix = if content_hash.len() > 2 {
         &content_hash[2..content_hash.len().min(10)]
     } else {
@@ -197,13 +184,12 @@ pub fn build_mint_v2_tx(
     let mut builder = MintV2Builder::new();
     builder
         .tree_config(tree_config)
-        .payer(*payer)
+        .payer(Pubkey::default()) // payer はTX構築時に設定
         .tree_creator_or_delegate(Some(*tee_signing_pubkey))
         .leaf_owner(*creator_wallet)
         .merkle_tree(*tree_pubkey)
         .metadata(metadata);
 
-    // コレクション付きミント（仕様書 §5.1 Step 11）
     if let Some(collection) = core_collection {
         let (mpl_core_cpi_signer, _) = derive_mpl_core_cpi_signer();
         builder
@@ -212,22 +198,65 @@ pub fn build_mint_v2_tx(
             .mpl_core_cpi_signer(Some(mpl_core_cpi_signer));
     }
 
-    let mint_ix = builder.instruction();
-
-    let message = Message::new_with_blockhash(
-        &[mint_ix],
-        Some(payer),
-        blockhash,
-    );
-
-    let num_signers = message.header.num_required_signatures as usize;
-    let signatures = vec![Signature::default(); num_signers];
-
-    Transaction {
-        signatures,
-        message,
-    }
+    builder.instruction()
 }
+
+/// 複数の MintV2 instruction を Solana TX サイズ制限内にビンパッキングする。
+/// 仕様書 §5.1 Step 9-10
+///
+/// 可能な限り多くの instruction を1つのTXに詰め、
+/// サイズ上限（1232 bytes）を超えたら次のTXに分割する。
+pub fn pack_mint_txs(
+    instructions: Vec<solana_sdk::instruction::Instruction>,
+    payer: &Pubkey,
+    blockhash: &solana_sdk::hash::Hash,
+) -> Vec<Transaction> {
+    const MAX_TX_SIZE: usize = 1232;
+
+    let mut txs = Vec::new();
+    let mut current_ixs: Vec<solana_sdk::instruction::Instruction> = Vec::new();
+
+    for ix in instructions {
+        // 現在の命令群 + 新しい命令を試す
+        current_ixs.push(ix);
+
+        let message = Message::new_with_blockhash(&current_ixs, Some(payer), blockhash);
+        let num_signers = message.header.num_required_signatures as usize;
+        let sigs = vec![Signature::default(); num_signers];
+        let tx = Transaction { signatures: sigs, message };
+
+        if let Ok(serialized) = bincode::serialize(&tx) {
+            if serialized.len() <= MAX_TX_SIZE {
+                // まだ収まる — 継続
+                continue;
+            }
+        }
+
+        // 収まらない → 最後の1つを除いてTXを確定
+        let overflow = current_ixs.pop().unwrap();
+
+        if !current_ixs.is_empty() {
+            let message = Message::new_with_blockhash(&current_ixs, Some(payer), blockhash);
+            let num_signers = message.header.num_required_signatures as usize;
+            let sigs = vec![Signature::default(); num_signers];
+            txs.push(Transaction { signatures: sigs, message });
+        }
+
+        // 溢れた命令を次のバッチの先頭に
+        current_ixs = vec![overflow];
+    }
+
+    // 残りを最後のTXに
+    if !current_ixs.is_empty() {
+        let message = Message::new_with_blockhash(&current_ixs, Some(payer), blockhash);
+        let num_signers = message.header.num_required_signatures as usize;
+        let sigs = vec![Signature::default(); num_signers];
+        txs.push(Transaction { signatures: sigs, message });
+    }
+
+    txs
+}
+
 
 // ---------------------------------------------------------------------------
 // 部分署名ヘルパー
@@ -316,53 +345,47 @@ mod tests {
     }
 
     #[test]
-    fn test_build_mint_v2_tx_without_collection() {
+    fn test_pack_single_mint() {
         let tree = Pubkey::new_unique();
         let tee_signer = Pubkey::new_unique();
         let creator = Pubkey::new_unique();
         let blockhash = solana_sdk::hash::Hash::new_unique();
 
-        let tx = build_mint_v2_tx(
-            &tree,
-            &tee_signer,
-            &creator,
-            "0x1234abcdef567890",
-            "ar://test_uri",
-            None,
-            &blockhash,
-            None,
+        let ix = build_mint_v2_ix(
+            &tree, &tee_signer, &creator,
+            "0x1234abcdef567890", "ar://test_uri", None,
         );
+        let txs = pack_mint_txs(vec![ix], &creator, &blockhash);
 
-        // 2つの署名者（creator/payer, tee_signer）
-        assert_eq!(tx.message.header.num_required_signatures, 2);
-        // 1つの命令（mint_v2）
-        assert_eq!(tx.message.instructions.len(), 1);
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0].message.instructions.len(), 1);
     }
 
     #[test]
-    fn test_build_mint_v2_tx_with_collection() {
-        let tree = Pubkey::new_unique();
+    fn test_pack_two_mints_same_tx() {
+        let tree1 = Pubkey::new_unique();
+        let tree2 = Pubkey::new_unique();
         let tee_signer = Pubkey::new_unique();
         let creator = Pubkey::new_unique();
-        let collection = Pubkey::new_unique();
+        let col1 = Pubkey::new_unique();
+        let col2 = Pubkey::new_unique();
         let blockhash = solana_sdk::hash::Hash::new_unique();
 
-        let tx = build_mint_v2_tx(
-            &tree,
-            &tee_signer,
-            &creator,
-            "0x1234abcdef567890",
-            "ar://test_uri",
-            Some(&collection),
-            &blockhash,
-            None,
+        let ix1 = build_mint_v2_ix(
+            &tree1, &tee_signer, &creator,
+            "0x1234abcdef567890", "ar://u1", Some(&col1),
         );
+        let ix2 = build_mint_v2_ix(
+            &tree2, &tee_signer, &creator,
+            "0x1234abcdef567890", "ar://u2", Some(&col2),
+        );
+        let txs = pack_mint_txs(vec![ix1, ix2], &creator, &blockhash);
 
-        // 2つの署名者（creator/payer, tee_signer）
-        // tee_signerはtree_creator_or_delegateとcollection_authorityを兼ねるため重複排除
-        assert_eq!(tx.message.header.num_required_signatures, 2);
-        // 1つの命令（mint_v2）
-        assert_eq!(tx.message.instructions.len(), 1);
+        // 2つのMintV2が1つのTXに収まるか（収まらなければ2つに分割）
+        let total_ixs: usize = txs.iter().map(|t| t.message.instructions.len()).sum();
+        assert_eq!(total_ixs, 2);
+        // TXが1つなら最適、2つでも正しい
+        assert!(txs.len() <= 2);
     }
 
     #[test]

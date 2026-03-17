@@ -107,12 +107,14 @@ async fn main() -> anyhow::Result<()> {
             let program_id_pubkey: solana_sdk::pubkey::Pubkey = program_id_str.parse()
                 .expect("PROGRAM_ID のパースに失敗");
             let program_id_bytes = program_id_pubkey.to_bytes();
-            tracing::info!(program_id = %program_id_str, rpc = %solana_rpc, "オンチェーン WASMローダーを使用します");
-            Some(Box::new(wasm_loader::OnChainLoader::new(
+            tracing::info!(program_id = %program_id_str, rpc = %solana_rpc, "オンチェーン WASMローダーを使用します（キャッシュ付き）");
+            let inner = Box::new(wasm_loader::OnChainLoader::new(
                 solana_rpc,
                 program_id_bytes,
                 proxy_addr.clone(),
-            )))
+            ));
+            let ttl = std::time::Duration::from_secs(3600); // 1時間キャッシュ
+            Some(Box::new(wasm_loader::CachedWasmLoader::new(inner, ttl)))
         };
 
     // ResourcePool（仕様書 §6.4, §7.1 統合リソースプール）

@@ -154,60 +154,65 @@ pub async fn handle_verify(
     // 動的グローバルタイムアウト適用（仕様書 §6.4）
     let global_timeout = security::compute_dynamic_timeout(&limits, content_bytes.len() as u64);
 
-    // Step 5. processor_idsに基づくCore/Extension実行（タイムアウト付き）
+    // Step 5. processor_idsに基づくCore/Extension並列実行（タイムアウト付き）
     // 仕様書 §5.1 Step 4-5
+    // 各プロセッサはステートレスに独立動作し、並列実行する。
     let processing_result = tokio::time::timeout(global_timeout, async {
-        let mut results = Vec::new();
-
-        for processor_id in &request.processor_ids {
-            if processor_id == CORE_PROCESSOR_ID {
-                // Core: C2PA検証 + 来歴グラフ構築
-                let signed_json = super::core::process_core(
-                    &state,
-                    &content_bytes,
-                    mime_type,
-                    &client_payload.owner_wallet,
-                    limits.c2pa_max_graph_size,
-                )
-                .map_err(|e| TeeError::ProcessingFailed(format!("Core処理に失敗: {e}")))?;
-
-                results.push(ProcessorResult {
-                    processor_id: processor_id.clone(),
-                    signed_json: serde_json::to_value(&signed_json)
-                        .map_err(|e| TeeError::Internal(format!("signed_jsonのシリアライズに失敗: {e}")))?,
-                });
-            } else {
-                // Extension: WASM実行
-                // 仕様書 §6.4 不正WASMインジェクション防御
-                if let Some(ref trusted) = state.trusted_extension_ids {
-                    if !trusted.contains(processor_id.as_str()) {
-                        return Err(TeeError::Forbidden(format!(
-                            "信頼されていないExtension IDです: {processor_id}。\
-                             TRUSTED_EXTENSIONS環境変数で許可してください"
-                        )));
-                    }
+        // Extension IDの事前検証（不正IDは早期エラー）
+        if let Some(ref trusted) = state.trusted_extension_ids {
+            for processor_id in &request.processor_ids {
+                if processor_id != CORE_PROCESSOR_ID && !trusted.contains(processor_id.as_str()) {
+                    return Err(TeeError::Forbidden(format!(
+                        "信頼されていないExtension IDです: {processor_id}。\
+                         TRUSTED_EXTENSIONS環境変数で許可してください"
+                    )));
                 }
-
-                // 仕様書 §5.1 Step 5, §7.1
-                let signed_json = super::extension::process_extension(
-                    &state,
-                    &content_bytes,
-                    mime_type,
-                    &client_payload.owner_wallet,
-                    processor_id,
-                    client_payload
-                        .extension_inputs
-                        .as_ref()
-                        .and_then(|m| m.get(processor_id)),
-                )
-                .await
-                .map_err(|e| TeeError::ProcessingFailed(format!("Extension処理に失敗 ({}): {e}", processor_id)))?;
-
-                results.push(ProcessorResult {
-                    processor_id: processor_id.clone(),
-                    signed_json,
-                });
             }
+        }
+
+        // 全プロセッサを並列起動
+        let mut handles = Vec::new();
+        for processor_id in &request.processor_ids {
+            let state = std::sync::Arc::clone(&state);
+            let content = content_bytes.clone();
+            let mime = mime_type.to_string();
+            let wallet = client_payload.owner_wallet.clone();
+            let pid = processor_id.clone();
+            let ext_inputs = client_payload.extension_inputs.clone();
+            let max_graph = limits.c2pa_max_graph_size;
+
+            let handle = tokio::spawn(async move {
+                let signed_json = if pid == CORE_PROCESSOR_ID {
+                    let sj = super::core::process_core(
+                        &state, &content, &mime, &wallet, max_graph,
+                    )
+                    .map_err(|e| format!("Core処理に失敗: {e}"))?;
+                    serde_json::to_value(&sj)
+                        .map_err(|e| format!("signed_jsonのシリアライズに失敗: {e}"))?
+                } else {
+                    super::extension::process_extension(
+                        &state, &content, &mime, &wallet, &pid,
+                        ext_inputs.as_ref().and_then(|m| m.get(&pid)),
+                    )
+                    .await
+                    .map_err(|e| format!("Extension処理に失敗 ({}): {e}", pid))?
+                };
+                Ok::<ProcessorResult, String>(ProcessorResult {
+                    processor_id: pid,
+                    signed_json,
+                })
+            });
+            handles.push(handle);
+        }
+
+        // 全結果を収集（順序保持）
+        let mut results = Vec::new();
+        for handle in handles {
+            let result = handle
+                .await
+                .map_err(|e| TeeError::Internal(format!("プロセッサタスクエラー: {e}")))?
+                .map_err(|e| TeeError::ProcessingFailed(e))?;
+            results.push(result);
         }
 
         Ok::<Vec<ProcessorResult>, TeeError>(results)

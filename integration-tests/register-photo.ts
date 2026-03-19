@@ -61,6 +61,7 @@ import {
   type TrustedTeeNode,
   type VerifyResponse,
   encryptPayload,
+  buildPlaintext,
   decryptResponse,
   fetchGlobalConfig,
 } from "@title-protocol/sdk";
@@ -289,23 +290,19 @@ async function main() {
   // ---------------------------------------------------------------------------
   log("STEP 3", "ペイロードを暗号化中...");
 
-  const contentB64 = Buffer.from(imageBytes).toString("base64");
-  const clientPayload = {
-    owner_wallet: keypair.publicKey.toBase58(),
-    content: contentB64,
-  };
-  const payloadJson = new TextEncoder().encode(
-    JSON.stringify(clientPayload)
+  const plaintext = buildPlaintext(
+    { owner_wallet: keypair.publicKey.toBase58() },
+    new Uint8Array(imageBytes),
   );
 
   const teeEncPubkeyBytes = Buffer.from(encryptionPubkey, "base64");
-  const { symmetricKey, encryptedPayload } = await encryptPayload(
+  const { symmetricKey, payload: encryptedPayload } = await encryptPayload(
     new Uint8Array(teeEncPubkeyBytes),
-    payloadJson
+    plaintext
   );
   log(
     "STEP 3",
-    `暗号化完了 (ciphertext: ${(encryptedPayload.ciphertext.length / 1024).toFixed(1)} KB base64)`
+    `暗号化完了 (payload: ${(encryptedPayload.length / 1024).toFixed(1)} KB binary)`
   );
 
   log("STEP 3", "Temporary Storageにアップロード中...");

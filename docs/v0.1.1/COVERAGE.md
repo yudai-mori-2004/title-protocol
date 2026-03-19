@@ -161,6 +161,38 @@ v0.1.1 Task 02 で導入した `MemoryPool`（セマフォB）と既存の `toki
 
 ---
 
+## §6.7 — SDK ノード選択改善 + CryptoProvider 抽象化
+
+### selectNode() 並列レース化
+
+| | 旧 | 新 |
+|---|---|---|
+| アルゴリズム | ランダム逐次（1ノードずつ） | `Promise.any` 並列レース（バッチ単位） |
+| 死んだノードに当たった場合 | ~10秒待ち（fetch タイムアウト） | 影響なし（生きたノードが即勝つ） |
+| 同時リクエスト上限 | 1 | `HEALTH_CHECK_BATCH_SIZE = 8` |
+| 個別タイムアウト | なし | `HEALTH_CHECK_TIMEOUT_MS = 5000` |
+
+### CryptoProvider インターフェース
+
+AES-256-GCM + Base64 をプラットフォーム非依存に抽象化。デフォルトは `crypto.subtle` + `Buffer`（Web標準）。
+
+| メソッド | 役割 |
+|----------|------|
+| `encrypt(key, plaintext)` | AES-256-GCM 暗号化（12バイトnonce自動生成） |
+| `decrypt(key, nonce, ciphertext)` | AES-256-GCM 復号 |
+| `toBase64(bytes)` | バイト列→Base64文字列 |
+| `fromBase64(str)` | Base64文字列→バイト列 |
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `sdk/ts/src/crypto.ts` | `CryptoProvider` IF + `defaultCryptoProvider` + 全関数にprovider引数 |
+| `sdk/ts/src/client.ts` | `TitleClientOptions` + `selectNode()` 並列化 + `register()` でprovider使用 |
+| `sdk/ts/package.json` | `0.1.6` → `0.1.7` |
+
+---
+
 ## タスク一覧
 
 | タスク | 内容 | 状態 |
@@ -175,3 +207,62 @@ v0.1.1 Task 02 で導入した `MemoryPool`（セマフォB）と既存の `toki
 | [08-performance-optimization](tasks/08-performance-optimization/README.md) | パフォーマンス最適化（並列化・キャッシュ・ビンパッキング） | 完了 |
 | [09-address-lookup-table](tasks/09-address-lookup-table/README.md) | ALT による TX 圧縮 + VersionedTransaction 統一 | 完了 |
 | [10-release-preparation](tasks/10-release-preparation/README.md) | v0.1.1 リリース準備 — ドキュメント精査 + ゼロベース検証 | 進行中 |
+| [11-sdk-node-selection-crypto-provider](tasks/11-sdk-node-selection-crypto-provider/README.md) | SDK ノード選択改善 + CryptoProvider 抽象化 | 完了 |
+| [12-binary-encrypted-payload](tasks/12-binary-encrypted-payload/README.md) | 暗号化ペイロードのバイナリプロトコル化（Base64膨張排除） | 完了 |
+
+---
+
+## §5.1 — 暗号化ペイロードのバイナリプロトコル
+
+JSON + Base64 を全廃し、暗号化ペイロードを完全バイナリ化。
+
+### ワイヤーフォーマット（S3上）
+
+```
+[32B: ephemeral_pubkey (X25519)]
+[12B: nonce (AES-GCM)]
+[remaining: AES-GCM ciphertext + 16B auth tag]
+```
+
+Content-Type: `application/octet-stream`
+
+### 平文フォーマット（復号後）
+
+```
+[4B: metadata_len (big-endian u32)]
+[metadata_len bytes: JSON {"owner_wallet":"...","extension_inputs":{...}}]
+[remaining: raw content bytes]
+```
+
+### 効果
+
+| | 旧（JSON + Base64） | 新（バイナリ） |
+|---|---|---|
+| 5MB content のペイロードサイズ | ~17MB | ~5MB |
+| SDK側 Base64 変換回数 | 3回 | 0回 |
+| TEE側 Base64 デコード回数 | 4回 | 0回 |
+
+### 型の変更
+
+| 旧 | 新 | 備考 |
+|---|---|---|
+| `EncryptedPayload` (struct/interface) | 削除 | バイナリは `parse_encrypted_payload()` でパース |
+| `ClientPayload` (Rust) | `ClientMetadata` | `content: String` を除去、メタデータのみ |
+| `ClientPayload` (TS) | `ClientMetadata` | 同上 |
+| `encryptPayload()` → `EncryptedPayload` | → `Uint8Array` | バイナリblob返却 |
+| `upload(EncryptedPayload)` | `upload(Uint8Array)` | `application/octet-stream` |
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `crates/types/src/lib.rs` | `EncryptedPayload` 削除、`ClientPayload` → `ClientMetadata`、`parse_encrypted_payload()` / `parse_plaintext_payload()` 追加 |
+| `crates/tee/src/endpoints/verify/handler.rs` | バイナリヘッダパース + 平文パース、Base64デコード全廃 |
+| `crates/tee/src/endpoints/verify/tests.rs` | バイナリ形式でペイロード構築 |
+| `sdk/ts/src/types.ts` | `EncryptedPayload` → 削除、`ClientPayload` → `ClientMetadata` |
+| `sdk/ts/src/crypto.ts` | `encryptPayload()` → `Uint8Array` 返却、`buildPlaintext()` 追加 |
+| `sdk/ts/src/client.ts` | `register()` バイナリ平文構築、`upload()` → `application/octet-stream` |
+| `sdk/ts/src/__tests__/crypto.test.ts` | バイナリE2Eテスト + `buildPlaintext` テスト |
+| `sdk/ts/package.json` | `0.1.8` → `0.1.9` |
+| `integration-tests/register-photo.ts` | バイナリ形式に対応 |
+| `integration-tests/stress-test.ts` | 全暗号テストをバイナリ形式に対応 |

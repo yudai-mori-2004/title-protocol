@@ -136,25 +136,27 @@ export interface TrustedWasmModule {
 // ---------------------------------------------------------------------------
 // Encrypted payload (Spec §5.1 Step 2)
 // ---------------------------------------------------------------------------
+//
+// Encrypted payload is a binary format stored in Temporary Storage.
+// Content-Type: application/octet-stream
+//
+// Wire format:
+//   [32B: ephemeral_pubkey (X25519)]
+//   [12B: nonce (AES-GCM)]
+//   [remaining: AES-GCM ciphertext + 16B auth tag]
+//
+// Plaintext format (after decryption):
+//   [4B: metadata_len (big-endian u32)]
+//   [metadata_len bytes: JSON ClientMetadata]
+//   [remaining: raw content bytes]
 
-/** Encrypted payload. Spec §5.1 Step 2 */
-export interface EncryptedPayload {
-  /** Ephemeral X25519 public key (Base64). */
-  ephemeral_pubkey: string;
-  /** AES-GCM nonce (Base64). */
-  nonce: string;
-  /** Ciphertext (Base64). */
-  ciphertext: string;
-}
+/** Size of the encrypted binary header (ephemeral_pubkey + nonce). */
+export const ENCRYPTED_HEADER_SIZE = 32 + 12;
 
-/** Client-constructed payload (before encryption). Spec §5.1 Step 1 */
-export interface ClientPayload {
+/** Client-constructed metadata (plaintext header before raw content). Spec §5.1 Step 1 */
+export interface ClientMetadata {
   /** Solana wallet address (Base58). */
   owner_wallet: string;
-  /** Content binary (Base64). */
-  content: string;
-  /** C2PA sidecar manifest (Base64, optional). */
-  sidecar_manifest?: string;
   extension_inputs?: Record<string, unknown>;
 }
 

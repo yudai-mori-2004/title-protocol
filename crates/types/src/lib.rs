@@ -194,30 +194,88 @@ pub struct TrustedWasmModule {
 // ---------------------------------------------------------------------------
 // 暗号化ペイロード (仕様書 §5.1 Step 2)
 // ---------------------------------------------------------------------------
+//
+// 暗号化ペイロードはバイナリ形式でTemporary Storageに保存される。
+// Content-Type: application/octet-stream
+//
+// ## ワイヤーフォーマット
+// ```text
+// [32B: ephemeral_pubkey (X25519)]
+// [12B: nonce (AES-GCM)]
+// [remaining: AES-GCM ciphertext + 16B auth tag]
+// ```
+//
+// ## 平文フォーマット（復号後）
+// ```text
+// [4B: metadata_len (big-endian u32)]
+// [metadata_len bytes: JSON ClientMetadata]
+// [remaining: raw content bytes]
+// ```
+//
+// JSON/Base64を一切使わないことで、5MBファイルが17MB→5MBに削減される。
 
-/// 暗号化されたペイロード。Temporary Storageに保存される。
+/// 暗号化ペイロードのヘッダサイズ（ephemeral_pubkey 32B + nonce 12B）。
 /// 仕様書 §5.1 Step 2
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EncryptedPayload {
-    /// Base64エンコードされたX25519公開鍵（32バイト）
-    pub ephemeral_pubkey: String,
-    /// Base64エンコードされたAES-GCM nonce（12バイト）
-    pub nonce: String,
-    /// Base64エンコードされた暗号文
-    pub ciphertext: String,
+pub const ENCRYPTED_HEADER_SIZE: usize = 32 + 12;
+
+/// 暗号化ペイロードのバイナリヘッダをパースする。
+/// 仕様書 §5.1 Step 2
+///
+/// 戻り値: `(ephemeral_pubkey, nonce, ciphertext)`
+pub fn parse_encrypted_payload(data: &[u8]) -> Result<([u8; 32], [u8; 12], &[u8]), String> {
+    if data.len() < ENCRYPTED_HEADER_SIZE {
+        return Err(format!(
+            "暗号化ペイロードが短すぎます: {}B (最低{}B必要)",
+            data.len(),
+            ENCRYPTED_HEADER_SIZE,
+        ));
+    }
+    let eph_pubkey: [u8; 32] = data[..32]
+        .try_into()
+        .map_err(|_| "ephemeral_pubkeyの読み取りに失敗".to_string())?;
+    let nonce: [u8; 12] = data[32..44]
+        .try_into()
+        .map_err(|_| "nonceの読み取りに失敗".to_string())?;
+    let ciphertext = &data[44..];
+    Ok((eph_pubkey, nonce, ciphertext))
 }
 
-/// クライアントが構築するペイロード（暗号化前）。
+/// 復号後の平文をメタデータとコンテンツに分離する。
+/// 仕様書 §5.1 Step 2
+///
+/// 戻り値: `(metadata, content_offset)` — content は `plaintext[content_offset..]`
+pub fn parse_plaintext_payload(plaintext: &[u8]) -> Result<(ClientMetadata, usize), String> {
+    if plaintext.len() < 4 {
+        return Err(format!(
+            "平文ペイロードが短すぎます: {}B (最低4B必要)",
+            plaintext.len(),
+        ));
+    }
+    let metadata_len = u32::from_be_bytes(
+        plaintext[..4].try_into().unwrap(),
+    ) as usize;
+    if plaintext.len() < 4 + metadata_len {
+        return Err(format!(
+            "メタデータ長が不正: 宣言{}B, 実データ{}B",
+            metadata_len,
+            plaintext.len() - 4,
+        ));
+    }
+    let metadata: ClientMetadata =
+        serde_json::from_slice(&plaintext[4..4 + metadata_len])
+            .map_err(|e| format!("ClientMetadataのパースに失敗: {e}"))?;
+    Ok((metadata, 4 + metadata_len))
+}
+
+/// クライアントが構築するメタデータ（暗号化前の平文ヘッダ部分）。
 /// 仕様書 §5.1 Step 1
+///
+/// バイナリ平文の先頭 `[4B: len][len bytes: JSON]` 部分にシリアライズされる。
+/// コンテンツ本体はメタデータの後にraw bytesとして結合される。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClientPayload {
+pub struct ClientMetadata {
     /// Base58エンコードされたSolanaウォレットアドレス
     pub owner_wallet: String,
-    /// Base64エンコードされたコンテンツバイナリ
-    pub content: String,
-    /// Base64エンコードされた.c2paファイル（Optional）
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sidecar_manifest: Option<String>,
     /// Extension補助入力（Optional）。キーはextension_id。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extension_inputs: Option<serde_json::Map<String, serde_json::Value>>,
@@ -710,14 +768,58 @@ mod tests {
     }
 
     #[test]
-    fn test_encrypted_payload_roundtrip() {
-        let ep = EncryptedPayload {
-            ephemeral_pubkey: "cGsi".into(),
-            nonce: "bm9uY2U=".into(),
-            ciphertext: "Y2lwaGVy".into(),
+    fn test_parse_encrypted_payload() {
+        let mut data = Vec::new();
+        let eph_pk = [0xAA_u8; 32];
+        let nonce = [0xBB_u8; 12];
+        let ct = b"ciphertext_data";
+        data.extend_from_slice(&eph_pk);
+        data.extend_from_slice(&nonce);
+        data.extend_from_slice(ct);
+
+        let (pk, n, c) = parse_encrypted_payload(&data).unwrap();
+        assert_eq!(pk, eph_pk);
+        assert_eq!(n, nonce);
+        assert_eq!(c, ct);
+    }
+
+    #[test]
+    fn test_parse_encrypted_payload_too_short() {
+        let data = [0u8; 30]; // < 44
+        assert!(parse_encrypted_payload(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_plaintext_payload() {
+        let metadata = ClientMetadata {
+            owner_wallet: "Wa11et".into(),
+            extension_inputs: None,
         };
-        let json_str = serde_json::to_string(&ep).unwrap();
-        let restored: EncryptedPayload = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(ep, restored);
+        let meta_json = serde_json::to_vec(&metadata).unwrap();
+        let content = b"raw image bytes";
+
+        let mut plaintext = Vec::new();
+        plaintext.extend_from_slice(&(meta_json.len() as u32).to_be_bytes());
+        plaintext.extend_from_slice(&meta_json);
+        plaintext.extend_from_slice(content);
+
+        let (parsed, offset) = parse_plaintext_payload(&plaintext).unwrap();
+        assert_eq!(parsed.owner_wallet, "Wa11et");
+        assert_eq!(&plaintext[offset..], content);
+    }
+
+    #[test]
+    fn test_parse_plaintext_payload_too_short() {
+        let data = [0u8; 2]; // < 4
+        assert!(parse_plaintext_payload(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_plaintext_payload_truncated_metadata() {
+        // metadata_len=100 but only 10 bytes after header
+        let mut data = Vec::new();
+        data.extend_from_slice(&100u32.to_be_bytes());
+        data.extend_from_slice(&[0u8; 10]);
+        assert!(parse_plaintext_payload(&data).is_err());
     }
 }

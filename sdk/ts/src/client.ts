@@ -13,10 +13,15 @@ import type {
   VerifyResponse,
   SignRequest,
   SignResponse,
-  EncryptedPayload,
   ExtensionPayload,
 } from "./types";
-import { encryptPayload, decryptResponse } from "./crypto";
+import {
+  encryptPayload,
+  buildPlaintext,
+  decryptResponse,
+  defaultCryptoProvider,
+} from "./crypto";
+import type { CryptoProvider } from "./crypto";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,16 +91,32 @@ export interface RegisterResult {
 }
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Max nodes to health-check concurrently in selectNode(). */
+const HEALTH_CHECK_BATCH_SIZE = 8;
+const HEALTH_CHECK_TIMEOUT_MS = 5000;
+
+// ---------------------------------------------------------------------------
 // TitleClient
 // ---------------------------------------------------------------------------
+
+/** Options for TitleClient constructor. */
+export interface TitleClientOptions {
+  /** Custom CryptoProvider for AES-GCM operations. */
+  crypto?: CryptoProvider;
+}
 
 export class TitleClient {
   readonly globalConfig: GlobalConfig;
   private availableNodes: TrustedTeeNode[];
+  private crypto: CryptoProvider;
 
-  constructor(globalConfig: GlobalConfig) {
+  constructor(globalConfig: GlobalConfig, options?: TitleClientOptions) {
     this.globalConfig = globalConfig;
     this.availableNodes = [...globalConfig.trusted_tee_nodes];
+    this.crypto = options?.crypto ?? defaultCryptoProvider;
   }
 
   /**
@@ -110,38 +131,25 @@ export class TitleClient {
     }
 
     const candidates = [...byEndpoint.values()];
-    while (candidates.length > 0) {
-      const idx = Math.floor(Math.random() * candidates.length);
-      const node = candidates[idx];
-      const base = node.gateway_endpoint.replace(/\/$/, "");
+    if (candidates.length === 0) {
+      throw new Error("No healthy TEE node found");
+    }
+
+    // Shuffle to distribute load across nodes.
+    for (let i = candidates.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+    }
+
+    // Race in batches — first healthy response wins.
+    for (let i = 0; i < candidates.length; i += HEALTH_CHECK_BATCH_SIZE) {
+      const batch = candidates.slice(i, i + HEALTH_CHECK_BATCH_SIZE);
+      const racePromises = batch.map((node) => this.healthCheck(node));
 
       try {
-        const res = await fetch(`${base}/health`);
-        if (res.status === 404) {
-          candidates.splice(idx, 1);
-          continue;
-        }
-
-        let capabilities: NodeCapabilities | undefined;
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const body = (await res.json()) as any;
-          if (body.capabilities) {
-            capabilities = body.capabilities as NodeCapabilities;
-          }
-        } catch {
-          // health returned non-JSON — ignore capabilities
-        }
-
-        return {
-          gatewayUrl: base,
-          encryptionPubkey: node.encryption_pubkey,
-          signingPubkey: node.signing_pubkey,
-          capabilities,
-        };
+        return await Promise.any(racePromises);
       } catch {
-        candidates.splice(idx, 1);
-        continue;
+        // All in this batch failed — try next batch.
       }
     }
 
@@ -166,29 +174,45 @@ export class TitleClient {
       );
     }
 
-    const base = node.gateway_endpoint.replace(/\/$/, "");
     try {
-      const res = await fetch(`${base}/health`);
-      let capabilities: NodeCapabilities | undefined;
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const body = (await res.json()) as any;
-        if (body.capabilities) {
-          capabilities = body.capabilities as NodeCapabilities;
-        }
-      } catch {
-        // health returned non-JSON — ignore capabilities
-      }
-
-      return {
-        gatewayUrl: base,
-        encryptionPubkey: node.encryption_pubkey,
-        signingPubkey: node.signing_pubkey,
-        capabilities,
-      };
+      return await this.healthCheck(node);
     } catch (e) {
       throw new Error(`Node at "${endpoint}" is not reachable: ${e}`);
     }
+  }
+
+  /** Health-check a single node. Rejects on failure. */
+  private async healthCheck(node: TrustedTeeNode): Promise<TeeSession> {
+    const base = node.gateway_endpoint.replace(/\/$/, "");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${base}/health`, { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 404) {
+      throw new Error("404");
+    }
+
+    let capabilities: NodeCapabilities | undefined;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = (await res.json()) as any;
+      if (body.capabilities) {
+        capabilities = body.capabilities as NodeCapabilities;
+      }
+    } catch {
+      // health returned non-JSON — ignore capabilities
+    }
+
+    return {
+      gatewayUrl: base,
+      encryptionPubkey: node.encryption_pubkey,
+      signingPubkey: node.signing_pubkey,
+      capabilities,
+    };
   }
 
   /**
@@ -213,24 +237,20 @@ export class TitleClient {
         ? await this.selectNodeByEndpoint(options.gatewayEndpoint)
         : await this.selectNode());
 
-    // 2-3. Encrypt + upload
-    const contentB64 = Buffer.from(content).toString("base64");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const clientPayload: any = {
+    // 2-3. Build binary plaintext, encrypt, upload
+    const metadata: { owner_wallet: string; extension_inputs?: Record<string, unknown> } = {
       owner_wallet: ownerWallet,
-      content: contentB64,
     };
     if (extensionInputs) {
-      clientPayload.extension_inputs = extensionInputs;
+      metadata.extension_inputs = extensionInputs;
     }
+    const plaintext = buildPlaintext(metadata, content);
 
-    const payloadJson = new TextEncoder().encode(
-      JSON.stringify(clientPayload)
-    );
-    const teeEncPubkey = Buffer.from(node.encryptionPubkey, "base64");
-    const { symmetricKey, encryptedPayload } = await encryptPayload(
-      new Uint8Array(teeEncPubkey),
-      payloadJson
+    const teeEncPubkey = this.crypto.fromBase64(node.encryptionPubkey);
+    const { symmetricKey, payload: encryptedPayload } = await encryptPayload(
+      teeEncPubkey,
+      plaintext,
+      this.crypto,
     );
 
     const { downloadUrl } = await this.upload(
@@ -247,7 +267,8 @@ export class TitleClient {
     const responsePlaintext = await decryptResponse(
       symmetricKey,
       encryptedResponse.nonce,
-      encryptedResponse.ciphertext
+      encryptedResponse.ciphertext,
+      this.crypto,
     );
     const verifyResponse: VerifyResponse = JSON.parse(
       new TextDecoder().decode(responsePlaintext)
@@ -339,25 +360,21 @@ export class TitleClient {
     };
   }
 
-  /** Upload an encrypted payload to temporary storage. */
+  /** Upload an encrypted binary payload to temporary storage. */
   async upload(
     gatewayUrl: string,
-    encryptedPayload: EncryptedPayload
+    payload: Uint8Array
   ): Promise<{ downloadUrl: string; sizeBytes: number }> {
-    const payloadBytes = new TextEncoder().encode(
-      JSON.stringify(encryptedPayload)
-    );
-
     const { uploadUrl, downloadUrl } = await this.getUploadUrl(
       gatewayUrl,
-      payloadBytes.length,
-      "application/json"
+      payload.length,
+      "application/octet-stream"
     );
 
     const putRes = await fetch(uploadUrl, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: payloadBytes,
+      headers: { "Content-Type": "application/octet-stream" },
+      body: payload,
     });
     if (!putRes.ok) {
       throw new Error(
@@ -365,7 +382,7 @@ export class TitleClient {
       );
     }
 
-    return { downloadUrl, sizeBytes: payloadBytes.length };
+    return { downloadUrl, sizeBytes: payload.length };
   }
 
   /** Call /verify (returns encrypted response). */

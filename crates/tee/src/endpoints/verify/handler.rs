@@ -21,7 +21,7 @@ use base64::Engine;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 use title_types::{
-    EncryptedPayload, EncryptedResponse, ProcessorResult, VerifyRequest, VerifyResponse,
+    EncryptedResponse, ProcessorResult, VerifyRequest, VerifyResponse,
 };
 
 use crate::config::{TeeAppState, TeeState};
@@ -85,18 +85,13 @@ pub async fn handle_verify(
         _ => TeeError::BadGateway(format!("暗号化ペイロードの取得に失敗: {e}")),
     })?;
 
-    let encrypted_payload: EncryptedPayload =
-        serde_json::from_slice(&proxy_response.body)
-            .map_err(|e| TeeError::BadGateway(format!("暗号化ペイロードのパースに失敗: {e}")))?;
-    drop(proxy_response); // JSONボディのメモリを早期解放
-
-    // Step 4. ペイロード復号（ECDH + HKDF + AES-GCM）
-    // 仕様書 §6.4 ハイブリッド暗号化 Step 6-7
-    let eph_pubkey_bytes = b64()
-        .decode(&encrypted_payload.ephemeral_pubkey)
-        .map_err(|e| TeeError::BadRequest(format!("ephemeral_pubkeyのBase64デコードに失敗: {e}")))?;
-    let eph_pubkey_arr: [u8; 32] = eph_pubkey_bytes.try_into()
-        .map_err(|_| TeeError::BadRequest("ephemeral_pubkeyは32バイトである必要があります".into()))?;
+    // Step 4. バイナリペイロード復号（ECDH + HKDF + AES-GCM）
+    // 仕様書 §5.1 Step 2, §6.4 ハイブリッド暗号化 Step 6-7
+    //
+    // ワイヤーフォーマット: [32B: eph_pk][12B: nonce][remaining: ciphertext]
+    let (eph_pubkey_arr, nonce, ciphertext) =
+        title_types::parse_encrypted_payload(&proxy_response.body)
+            .map_err(|e| TeeError::BadRequest(e))?;
     let eph_pubkey = X25519PublicKey::from(eph_pubkey_arr);
 
     let tee_secret_bytes: [u8; 32] = state
@@ -112,31 +107,17 @@ pub async fn handle_verify(
     let symmetric_key = title_crypto::hkdf_derive_key(&shared_secret)
         .map_err(|e| TeeError::Internal(format!("対称鍵の導出に失敗: {e}")))?;
 
-    let nonce_bytes = b64().decode(&encrypted_payload.nonce)
-        .map_err(|e| TeeError::BadRequest(format!("nonceのBase64デコードに失敗: {e}")))?;
-    let nonce: [u8; 12] = nonce_bytes.try_into()
-        .map_err(|_| TeeError::BadRequest("nonceは12バイトである必要があります".into()))?;
-
-    let ciphertext = b64()
-        .decode(&encrypted_payload.ciphertext)
-        .map_err(|e| TeeError::BadRequest(format!("ciphertextのBase64デコードに失敗: {e}")))?;
-    drop(encrypted_payload); // EncryptedPayloadのメモリを早期解放
-
     // AES-GCM復号
-    let plaintext = title_crypto::aes_gcm_decrypt(&symmetric_key, &nonce, &ciphertext)
+    let plaintext = title_crypto::aes_gcm_decrypt(&symmetric_key, &nonce, ciphertext)
         .map_err(|e| TeeError::BadRequest(format!("ペイロードの復号に失敗: {e}")))?;
-    drop(ciphertext); // 暗号文のメモリを早期解放
+    drop(proxy_response); // ダウンロードデータのメモリを早期解放
 
-    // ClientPayloadをパース
-    let mut client_payload: title_types::ClientPayload = serde_json::from_slice(&plaintext)
-        .map_err(|e| TeeError::BadRequest(format!("ClientPayloadのパースに失敗: {e}")))?;
-    drop(plaintext); // 平文JSONのメモリを早期解放
-
-    // コンテンツをBase64デコード（content文字列のメモリを早期解放）
-    let content_string = std::mem::take(&mut client_payload.content);
-    let content_bytes = b64().decode(&content_string)
-        .map_err(|e| TeeError::BadRequest(format!("contentのBase64デコードに失敗: {e}")))?;
-    drop(content_string);
+    // 平文フォーマット: [4B: metadata_len][metadata JSON][raw content bytes]
+    let (client_metadata, content_offset) =
+        title_types::parse_plaintext_payload(&plaintext)
+            .map_err(|e| TeeError::BadRequest(e))?;
+    let content_bytes = plaintext[content_offset..].to_vec();
+    drop(plaintext); // 平文バッファのメモリを早期解放
 
     // MIMEタイプを検出
     let mime_type = detect_mime_type(&content_bytes);
@@ -176,9 +157,9 @@ pub async fn handle_verify(
             let state = std::sync::Arc::clone(&state);
             let content = content_bytes.clone();
             let mime = mime_type.to_string();
-            let wallet = client_payload.owner_wallet.clone();
+            let wallet = client_metadata.owner_wallet.clone();
             let pid = processor_id.clone();
-            let ext_inputs = client_payload.extension_inputs.clone();
+            let ext_inputs = client_metadata.extension_inputs.clone();
             let max_graph = limits.c2pa_max_graph_size;
 
             let handle = tokio::spawn(async move {

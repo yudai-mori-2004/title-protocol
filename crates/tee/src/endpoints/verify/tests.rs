@@ -4,11 +4,10 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
-use base64::Engine;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 use title_types::{
-    CorePayload, EncryptedPayload, SignedJson, VerifyRequest, VerifyResponse,
+    CorePayload, SignedJson, VerifyRequest, VerifyResponse,
 };
 
 use crate::config::{TeeAppState, TeeState};
@@ -18,10 +17,52 @@ use crate::runtime::TeeRuntime;
 use crate::endpoints::test_helpers::{start_mock_storage, start_inline_proxy};
 
 use super::handle_verify;
-use crate::endpoints::b64;
 
 use std::io::Cursor;
 use tokio::sync::RwLock;
+
+/// バイナリ暗号化ペイロードを構築するテストヘルパー。
+///
+/// 平文: [4B: metadata_len][metadata JSON][raw content]
+/// ワイヤー: [32B: eph_pk][12B: nonce][AES-GCM ciphertext]
+fn build_binary_payload(
+    content: &[u8],
+    owner_wallet: &str,
+    tee_enc_pubkey: &X25519PublicKey,
+) -> (Vec<u8>, [u8; 32]) {
+    // メタデータJSON
+    let metadata = title_types::ClientMetadata {
+        owner_wallet: owner_wallet.to_string(),
+        extension_inputs: None,
+    };
+    let metadata_json = serde_json::to_vec(&metadata).unwrap();
+
+    // 平文: [4B metadata_len][metadata JSON][raw content]
+    let mut plaintext = Vec::new();
+    plaintext.extend_from_slice(&(metadata_json.len() as u32).to_be_bytes());
+    plaintext.extend_from_slice(&metadata_json);
+    plaintext.extend_from_slice(content);
+
+    // ECDH + HKDF + AES-GCM
+    let eph_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let eph_pubkey = X25519PublicKey::from(&eph_secret);
+    let shared_secret =
+        title_crypto::ecdh_derive_shared_secret(&eph_secret, tee_enc_pubkey);
+    let symmetric_key = title_crypto::hkdf_derive_key(&shared_secret).unwrap();
+
+    let mut nonce = [0u8; 12];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+    let ciphertext =
+        title_crypto::aes_gcm_encrypt(&symmetric_key, &nonce, &plaintext).unwrap();
+
+    // ワイヤーフォーマット: [32B eph_pk][12B nonce][ciphertext]
+    let mut wire = Vec::new();
+    wire.extend_from_slice(eph_pubkey.as_bytes());
+    wire.extend_from_slice(&nonce);
+    wire.extend_from_slice(&ciphertext);
+
+    (wire, symmetric_key)
+}
 
 // テストフィクスチャ（共有テストフィクスチャディレクトリ）
 const CERTS: &[u8] = include_bytes!("../../../../../tests/fixtures/certs/chain.pem");
@@ -70,40 +111,16 @@ async fn test_verify_roundtrip() {
     let tee_enc_pubkey_bytes: [u8; 32] = rt.encryption_pubkey().try_into().unwrap();
     let tee_enc_pubkey = X25519PublicKey::from(tee_enc_pubkey_bytes);
 
-    // 2. クライアント側: C2PA署名済みコンテンツを作成
+    // 2. クライアント側: C2PA署名済みコンテンツを作成・暗号化
     let signed_content = create_signed_content();
-    let content_b64 = b64().encode(&signed_content);
+    let (payload_bytes, symmetric_key) = build_binary_payload(
+        &signed_content,
+        "MockWa11etAddress123456789012345678901234",
+        &tee_enc_pubkey,
+    );
 
-    let client_payload = title_types::ClientPayload {
-        owner_wallet: "MockWa11etAddress123456789012345678901234".to_string(),
-        content: content_b64,
-        sidecar_manifest: None,
-        extension_inputs: None,
-    };
-    let payload_json = serde_json::to_vec(&client_payload).unwrap();
-
-    // 3. クライアント側: ペイロードを暗号化
-    let eph_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let eph_pubkey = X25519PublicKey::from(&eph_secret);
-
-    let shared_secret =
-        title_crypto::ecdh_derive_shared_secret(&eph_secret, &tee_enc_pubkey);
-    let symmetric_key = title_crypto::hkdf_derive_key(&shared_secret).unwrap();
-
-    let mut nonce = [0u8; 12];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-    let ciphertext =
-        title_crypto::aes_gcm_encrypt(&symmetric_key, &nonce, &payload_json).unwrap();
-
-    let encrypted_payload = EncryptedPayload {
-        ephemeral_pubkey: b64().encode(eph_pubkey.as_bytes()),
-        nonce: b64().encode(nonce),
-        ciphertext: b64().encode(&ciphertext),
-    };
-    let encrypted_payload_bytes = serde_json::to_vec(&encrypted_payload).unwrap();
-
-    // 4. モックTemporary StorageとインラインProxyを起動
-    let mock_port = start_mock_storage("/payload", encrypted_payload_bytes).await;
+    // 3. モックTemporary StorageとインラインProxyを起動
+    let mock_port = start_mock_storage("/payload", payload_bytes).await;
     let proxy_port = start_inline_proxy().await;
 
     // 5. TeeAppState構築
@@ -136,9 +153,11 @@ async fn test_verify_roundtrip() {
     let encrypted_response = result.unwrap().0;
 
     // 7. レスポンス復号
-    let resp_nonce_bytes = b64().decode(&encrypted_response.nonce).unwrap();
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let resp_nonce_bytes = b64.decode(&encrypted_response.nonce).unwrap();
     let resp_nonce: [u8; 12] = resp_nonce_bytes.try_into().unwrap();
-    let resp_ct = b64().decode(&encrypted_response.ciphertext).unwrap();
+    let resp_ct = b64.decode(&encrypted_response.ciphertext).unwrap();
 
     let resp_plaintext =
         title_crypto::aes_gcm_decrypt(&symmetric_key, &resp_nonce, &resp_ct).unwrap();
@@ -162,7 +181,7 @@ async fn test_verify_roundtrip() {
     )
     .expect("有効なEd25519公開鍵");
 
-    let sig_bytes = b64().decode(&signed_json.core.tee_signature).unwrap();
+    let sig_bytes = b64.decode(&signed_json.core.tee_signature).unwrap();
     let signature = ed25519_dalek::Signature::from_bytes(
         &sig_bytes.try_into().expect("署名は64バイト"),
     );
@@ -246,35 +265,13 @@ async fn test_verify_with_extension() {
 
     // 2. C2PA署名済みコンテンツ作成・暗号化
     let signed_content = create_signed_content();
-    let content_b64 = b64().encode(&signed_content);
+    let (payload_bytes, symmetric_key) = build_binary_payload(
+        &signed_content,
+        "MockWa11etAddress123456789012345678901234",
+        &tee_enc_pubkey,
+    );
 
-    let client_payload = title_types::ClientPayload {
-        owner_wallet: "MockWa11etAddress123456789012345678901234".to_string(),
-        content: content_b64,
-        sidecar_manifest: None,
-        extension_inputs: None,
-    };
-    let payload_json = serde_json::to_vec(&client_payload).unwrap();
-
-    let eph_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let eph_pubkey = X25519PublicKey::from(&eph_secret);
-    let shared_secret =
-        title_crypto::ecdh_derive_shared_secret(&eph_secret, &tee_enc_pubkey);
-    let symmetric_key = title_crypto::hkdf_derive_key(&shared_secret).unwrap();
-
-    let mut nonce = [0u8; 12];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-    let ciphertext =
-        title_crypto::aes_gcm_encrypt(&symmetric_key, &nonce, &payload_json).unwrap();
-
-    let encrypted_payload = EncryptedPayload {
-        ephemeral_pubkey: b64().encode(eph_pubkey.as_bytes()),
-        nonce: b64().encode(nonce),
-        ciphertext: b64().encode(&ciphertext),
-    };
-    let encrypted_payload_bytes = serde_json::to_vec(&encrypted_payload).unwrap();
-
-    let mock_port = start_mock_storage("/payload", encrypted_payload_bytes).await;
+    let mock_port = start_mock_storage("/payload", payload_bytes).await;
     let proxy_port = start_inline_proxy().await;
 
     // 3. TeeAppState構築（wasm_dir指定あり）
@@ -313,9 +310,11 @@ async fn test_verify_with_extension() {
     let encrypted_response = result.unwrap().0;
 
     // 5. レスポンス復号
-    let resp_nonce_bytes = b64().decode(&encrypted_response.nonce).unwrap();
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let resp_nonce_bytes = b64.decode(&encrypted_response.nonce).unwrap();
     let resp_nonce: [u8; 12] = resp_nonce_bytes.try_into().unwrap();
-    let resp_ct = b64().decode(&encrypted_response.ciphertext).unwrap();
+    let resp_ct = b64.decode(&encrypted_response.ciphertext).unwrap();
     let resp_plaintext =
         title_crypto::aes_gcm_decrypt(&symmetric_key, &resp_nonce, &resp_ct).unwrap();
     let verify_response: VerifyResponse =
@@ -426,35 +425,13 @@ async fn test_verify_rejects_untrusted_extension() {
     let tee_enc_pubkey = X25519PublicKey::from(tee_enc_pubkey_bytes);
 
     let signed_content = create_signed_content();
-    let content_b64 = b64().encode(&signed_content);
+    let (payload_bytes, _symmetric_key) = build_binary_payload(
+        &signed_content,
+        "MockWa11etAddress123456789012345678901234",
+        &tee_enc_pubkey,
+    );
 
-    let client_payload = title_types::ClientPayload {
-        owner_wallet: "MockWa11etAddress123456789012345678901234".to_string(),
-        content: content_b64,
-        sidecar_manifest: None,
-        extension_inputs: None,
-    };
-    let payload_json = serde_json::to_vec(&client_payload).unwrap();
-
-    let eph_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let eph_pubkey = X25519PublicKey::from(&eph_secret);
-    let shared_secret =
-        title_crypto::ecdh_derive_shared_secret(&eph_secret, &tee_enc_pubkey);
-    let symmetric_key = title_crypto::hkdf_derive_key(&shared_secret).unwrap();
-
-    let mut nonce = [0u8; 12];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-    let ciphertext =
-        title_crypto::aes_gcm_encrypt(&symmetric_key, &nonce, &payload_json).unwrap();
-
-    let encrypted_payload = EncryptedPayload {
-        ephemeral_pubkey: b64().encode(eph_pubkey.as_bytes()),
-        nonce: b64().encode(nonce),
-        ciphertext: b64().encode(&ciphertext),
-    };
-    let encrypted_payload_bytes = serde_json::to_vec(&encrypted_payload).unwrap();
-
-    let mock_port = start_mock_storage("/payload", encrypted_payload_bytes).await;
+    let mock_port = start_mock_storage("/payload", payload_bytes).await;
     let proxy_port = start_inline_proxy().await;
 
     // trusted_extension_idsに "phash-v1" のみ許可（"evil-ext" は不許可）

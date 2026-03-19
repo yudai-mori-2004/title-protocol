@@ -36,8 +36,10 @@ import {
   type GlobalConfig,
   type TrustedTeeNode,
   encryptPayload,
+  buildPlaintext,
   decryptResponse,
   fetchGlobalConfig,
+  ENCRYPTED_HEADER_SIZE,
 } from "@title-protocol/sdk";
 
 // ---------------------------------------------------------------------------
@@ -151,15 +153,13 @@ async function doNormalVerify(): Promise<{
   symmetricKey: Uint8Array;
   downloadUrl: string;
 }> {
-  const contentB64 = Buffer.from(imageBytes).toString("base64");
-  const payload = {
-    owner_wallet: keypair.publicKey.toBase58(),
-    content: contentB64,
-  };
-  const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-  const { symmetricKey, encryptedPayload } = await encryptPayload(
+  const plaintext = buildPlaintext(
+    { owner_wallet: keypair.publicKey.toBase58() },
+    new Uint8Array(imageBytes),
+  );
+  const { symmetricKey, payload: encryptedPayload } = await encryptPayload(
     encPubkeyBytes,
-    payloadJson
+    plaintext
   );
   const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
 
@@ -188,15 +188,13 @@ async function uploadEncrypted(): Promise<{
   downloadUrl: string;
   symmetricKey: Uint8Array;
 }> {
-  const contentB64 = Buffer.from(imageBytes).toString("base64");
-  const payload = {
-    owner_wallet: keypair.publicKey.toBase58(),
-    content: contentB64,
-  };
-  const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-  const { symmetricKey, encryptedPayload } = await encryptPayload(
+  const plaintext = buildPlaintext(
+    { owner_wallet: keypair.publicKey.toBase58() },
+    new Uint8Array(imageBytes),
+  );
+  const { symmetricKey, payload: encryptedPayload } = await encryptPayload(
     encPubkeyBytes,
-    payloadJson
+    plaintext
   );
   const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
   return { downloadUrl, symmetricKey };
@@ -372,15 +370,14 @@ async function testLargePayload() {
   // 3-1: 10MB ランダムバイナリ
   {
     const size = 10 * 1024 * 1024;
-    const bigData = Buffer.alloc(size, 0x42); // 10MB of 'B'
-    const payload = {
-      owner_wallet: keypair.publicKey.toBase58(),
-      content: bigData.toString("base64"),
-    };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { symmetricKey, encryptedPayload } = await encryptPayload(
+    const bigData = new Uint8Array(size).fill(0x42); // 10MB of 'B'
+    const plaintext = buildPlaintext(
+      { owner_wallet: keypair.publicKey.toBase58() },
+      bigData,
+    );
+    const { symmetricKey, payload: encryptedPayload } = await encryptPayload(
       encPubkeyBytes,
-      payloadJson
+      plaintext
     );
     const t0 = Date.now();
     try {
@@ -417,15 +414,14 @@ async function testLargePayload() {
   // 3-2: 50MB ランダムバイナリ
   {
     const size = 50 * 1024 * 1024;
-    const bigData = Buffer.alloc(size, 0x43);
-    const payload = {
-      owner_wallet: keypair.publicKey.toBase58(),
-      content: bigData.toString("base64"),
-    };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { symmetricKey, encryptedPayload } = await encryptPayload(
+    const bigData = new Uint8Array(size).fill(0x43);
+    const plaintext = buildPlaintext(
+      { owner_wallet: keypair.publicKey.toBase58() },
+      bigData,
+    );
+    const { symmetricKey, payload: encryptedPayload } = await encryptPayload(
       encPubkeyBytes,
-      payloadJson
+      plaintext
     );
     const t0 = Date.now();
     try {
@@ -1079,13 +1075,11 @@ async function testCryptoAttacks() {
     const fakeKey = new Uint8Array(32);
     crypto.getRandomValues(fakeKey);
 
-    const contentB64 = Buffer.from(imageBytes).toString("base64");
-    const payload = {
-      owner_wallet: keypair.publicKey.toBase58(),
-      content: contentB64,
-    };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(fakeKey, payloadJson);
+    const plaintext = buildPlaintext(
+      { owner_wallet: keypair.publicKey.toBase58() },
+      new Uint8Array(imageBytes),
+    );
+    const { payload: encryptedPayload } = await encryptPayload(fakeKey, plaintext);
 
     const t0 = Date.now();
     try {
@@ -1119,30 +1113,24 @@ async function testCryptoAttacks() {
 
   // 8-2: 改竄された ciphertext
   {
-    const contentB64 = Buffer.from(imageBytes).toString("base64");
-    const payload = {
-      owner_wallet: keypair.publicKey.toBase58(),
-      content: contentB64,
-    };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(
+    const plaintext = buildPlaintext(
+      { owner_wallet: keypair.publicKey.toBase58() },
+      new Uint8Array(imageBytes),
+    );
+    const { payload: encryptedPayload } = await encryptPayload(
       encPubkeyBytes,
-      payloadJson
+      plaintext
     );
 
-    // ciphertextの一部を改変
-    const tampered = Buffer.from(encryptedPayload.ciphertext, "base64");
-    tampered[0] ^= 0xff;
-    tampered[10] ^= 0xff;
+    // ciphertext部分（offset 44以降）を改変
+    const tampered = new Uint8Array(encryptedPayload);
+    tampered[ENCRYPTED_HEADER_SIZE] ^= 0xff;
+    tampered[ENCRYPTED_HEADER_SIZE + 10] ^= 0xff;
     tampered[tampered.length - 1] ^= 0xff;
-    const tamperedPayload = {
-      ...encryptedPayload,
-      ciphertext: tampered.toString("base64"),
-    };
 
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, tamperedPayload);
+      const { downloadUrl } = await client.upload(gatewayUrl, tampered);
       const encResp = await client.verify(gatewayUrl, {
         download_url: downloadUrl,
         processor_ids: ["core-c2pa"],
@@ -1169,28 +1157,22 @@ async function testCryptoAttacks() {
 
   // 8-3: 改竄された nonce
   {
-    const contentB64 = Buffer.from(imageBytes).toString("base64");
-    const payload = {
-      owner_wallet: keypair.publicKey.toBase58(),
-      content: contentB64,
-    };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(
+    const plaintext = buildPlaintext(
+      { owner_wallet: keypair.publicKey.toBase58() },
+      new Uint8Array(imageBytes),
+    );
+    const { payload: encryptedPayload } = await encryptPayload(
       encPubkeyBytes,
-      payloadJson
+      plaintext
     );
 
-    // nonceを改変
-    const nonceBuf = Buffer.from(encryptedPayload.nonce, "base64");
-    nonceBuf[0] ^= 0xff;
-    const tamperedPayload = {
-      ...encryptedPayload,
-      nonce: nonceBuf.toString("base64"),
-    };
+    // nonce部分（offset 32-43）を改変
+    const tampered = new Uint8Array(encryptedPayload);
+    tampered[32] ^= 0xff;
 
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, tamperedPayload);
+      const { downloadUrl } = await client.upload(gatewayUrl, tampered);
       const encResp = await client.verify(gatewayUrl, {
         download_url: downloadUrl,
         processor_ids: ["core-c2pa"],
@@ -1215,43 +1197,40 @@ async function testCryptoAttacks() {
     }
   }
 
-  // 8-4: 空のephemeral_pubkey
+  // 8-4: ephemeral_pubkeyを全ゼロに改変
   {
-    const contentB64 = Buffer.from(imageBytes).toString("base64");
-    const payload = {
-      owner_wallet: keypair.publicKey.toBase58(),
-      content: contentB64,
-    };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(
+    const plaintext = buildPlaintext(
+      { owner_wallet: keypair.publicKey.toBase58() },
+      new Uint8Array(imageBytes),
+    );
+    const { payload: encryptedPayload } = await encryptPayload(
       encPubkeyBytes,
-      payloadJson
+      plaintext
     );
 
-    const tamperedPayload = {
-      ...encryptedPayload,
-      ephemeral_pubkey: "", // 空
-    };
+    // ephemeral_pubkey（先頭32B）を全ゼロに
+    const tampered = new Uint8Array(encryptedPayload);
+    tampered.fill(0, 0, 32);
 
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, tamperedPayload);
+      const { downloadUrl } = await client.upload(gatewayUrl, tampered);
       const encResp = await client.verify(gatewayUrl, {
         download_url: downloadUrl,
         processor_ids: ["core-c2pa"],
       });
       record({
         category: "crypto",
-        name: "/verify empty ephemeral_pubkey",
+        name: "/verify zeroed ephemeral_pubkey",
         status: "FAIL",
         duration_ms: Date.now() - t0,
-        details: "TEE accepted empty ephemeral pubkey",
+        details: "TEE accepted zeroed ephemeral pubkey",
         expected: "ECDH failure → rejection",
       });
     } catch (e: any) {
       record({
         category: "crypto",
-        name: "/verify empty ephemeral_pubkey",
+        name: "/verify zeroed ephemeral_pubkey",
         status: "PASS",
         duration_ms: Date.now() - t0,
         details: `rejected: ${e.message.slice(0, 100)}`,
@@ -1410,12 +1389,11 @@ async function testProtocolAbuse() {
 
   // 10-1: owner_walletが空文字
   {
-    const payload = { owner_wallet: "", content: Buffer.from(imageBytes).toString("base64") };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
+    const pt = buildPlaintext({ owner_wallet: "" }, new Uint8Array(imageBytes));
+    const { payload: ep } = await encryptPayload(encPubkeyBytes, pt);
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
+      const { downloadUrl } = await client.upload(gatewayUrl, ep);
       const encResp = await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
       record({ category: "protocol", name: "empty owner_wallet", status: "PASS", duration_ms: Date.now() - t0,
         details: "TEE processed (owner_wallet validation may be client-side)", expected: "graceful handling" });
@@ -1427,12 +1405,11 @@ async function testProtocolAbuse() {
 
   // 10-2: owner_walletにSQLインジェクション文字列
   {
-    const payload = { owner_wallet: "'; DROP TABLE titles; --", content: Buffer.from(imageBytes).toString("base64") };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
+    const pt = buildPlaintext({ owner_wallet: "'; DROP TABLE titles; --" }, new Uint8Array(imageBytes));
+    const { payload: ep } = await encryptPayload(encPubkeyBytes, pt);
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
+      const { downloadUrl } = await client.upload(gatewayUrl, ep);
       const encResp = await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
       record({ category: "protocol", name: "SQL injection in owner_wallet", status: "PASS", duration_ms: Date.now() - t0,
         details: "TEE processed without SQL injection", expected: "no SQL execution" });
@@ -1442,45 +1419,43 @@ async function testProtocolAbuse() {
     }
   }
 
-  // 10-3: contentフィールドが不正Base64
+  // 10-3: contentが不正データ（ランダムバイト）
   {
-    const payload = { owner_wallet: keypair.publicKey.toBase58(), content: "!!!NOT-BASE64@@@" };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
+    const randomContent = new Uint8Array(1024);
+    crypto.getRandomValues(randomContent);
+    const pt = buildPlaintext({ owner_wallet: keypair.publicKey.toBase58() }, randomContent);
+    const { payload: ep } = await encryptPayload(encPubkeyBytes, pt);
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
+      const { downloadUrl } = await client.upload(gatewayUrl, ep);
       await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
-      record({ category: "protocol", name: "invalid base64 content", status: "PASS", duration_ms: Date.now() - t0,
+      record({ category: "protocol", name: "random content bytes", status: "PASS", duration_ms: Date.now() - t0,
         details: "processed (may fail at C2PA parse)", expected: "graceful rejection" });
     } catch (e: any) {
-      record({ category: "protocol", name: "invalid base64 content", status: "PASS", duration_ms: Date.now() - t0,
+      record({ category: "protocol", name: "random content bytes", status: "PASS", duration_ms: Date.now() - t0,
         details: `rejected: ${e.message.slice(0, 100)}`, expected: "graceful rejection" });
     }
   }
 
-  // 10-4: 暗号化ペイロード内のJSONに余分なフィールド注入
+  // 10-4: メタデータJSONに余分なフィールド注入
   {
-    const payload = {
+    const metadata = {
       owner_wallet: keypair.publicKey.toBase58(),
-      content: Buffer.from(imageBytes).toString("base64"),
-      __proto__: { admin: true },
-      constructor: { prototype: { isAdmin: true } },
       tee_signing_key: "AAAA",
       gateway_signature: "forged",
     };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload, symmetricKey } = await encryptPayload(encPubkeyBytes, payloadJson);
+    const pt = buildPlaintext(metadata as any, new Uint8Array(imageBytes));
+    const { payload: ep, symmetricKey } = await encryptPayload(encPubkeyBytes, pt);
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
+      const { downloadUrl } = await client.upload(gatewayUrl, ep);
       const encResp = await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
       const plain = await decryptResponse(symmetricKey, encResp.nonce, encResp.ciphertext);
       const parsed = JSON.parse(new TextDecoder().decode(plain));
-      record({ category: "protocol", name: "prototype pollution + field injection", status: "PASS", duration_ms: Date.now() - t0,
+      record({ category: "protocol", name: "field injection in metadata", status: "PASS", duration_ms: Date.now() - t0,
         details: `processed safely, results=${parsed.results?.length}`, expected: "extra fields ignored" });
     } catch (e: any) {
-      record({ category: "protocol", name: "prototype pollution + field injection", status: "PASS", duration_ms: Date.now() - t0,
+      record({ category: "protocol", name: "field injection in metadata", status: "PASS", duration_ms: Date.now() - t0,
         details: `rejected: ${e.message.slice(0, 100)}`, expected: "extra fields ignored or rejected" });
     }
   }
@@ -1811,10 +1786,9 @@ async function testTimingSideChannel() {
   for (let i = 0; i < trials; i++) {
     // 有効: 正しい鍵で暗号化
     {
-      const payload = { owner_wallet: keypair.publicKey.toBase58(), content: Buffer.from(imageBytes).toString("base64") };
-      const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-      const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
-      const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
+      const pt = buildPlaintext({ owner_wallet: keypair.publicKey.toBase58() }, new Uint8Array(imageBytes));
+      const { payload: ep } = await encryptPayload(encPubkeyBytes, pt);
+      const { downloadUrl } = await client.upload(gatewayUrl, ep);
       const t0 = Date.now();
       try { await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] }); } catch {}
       validTimes.push(Date.now() - t0);
@@ -1823,10 +1797,9 @@ async function testTimingSideChannel() {
     {
       const fakeKey = new Uint8Array(32);
       crypto.getRandomValues(fakeKey);
-      const payload = { owner_wallet: keypair.publicKey.toBase58(), content: Buffer.from(imageBytes).toString("base64") };
-      const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-      const { encryptedPayload } = await encryptPayload(fakeKey, payloadJson);
-      const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
+      const pt = buildPlaintext({ owner_wallet: keypair.publicKey.toBase58() }, new Uint8Array(imageBytes));
+      const { payload: ep } = await encryptPayload(fakeKey, pt);
+      const { downloadUrl } = await client.upload(gatewayUrl, ep);
       const t0 = Date.now();
       try { await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] }); } catch {}
       invalidTimes.push(Date.now() - t0);
@@ -1887,62 +1860,58 @@ async function testPayloadConfusion() {
 
   // 16-1: 二重暗号化（暗号化ペイロードをさらに暗号化）
   {
-    const payload = { owner_wallet: keypair.publicKey.toBase58(), content: Buffer.from(imageBytes).toString("base64") };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload: inner } = await encryptPayload(encPubkeyBytes, payloadJson);
-    // innerをJSON化してもう一度暗号化
-    const innerJson = new TextEncoder().encode(JSON.stringify(inner));
-    const { encryptedPayload: outer } = await encryptPayload(encPubkeyBytes, innerJson);
+    const pt = buildPlaintext({ owner_wallet: keypair.publicKey.toBase58() }, new Uint8Array(imageBytes));
+    const { payload: inner } = await encryptPayload(encPubkeyBytes, pt);
+    // innerバイナリ全体を「コンテンツ」として再暗号化
+    const { payload: outer } = await encryptPayload(encPubkeyBytes, inner);
 
     const t0 = Date.now();
     try {
       const { downloadUrl } = await client.upload(gatewayUrl, outer);
       await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
       record({ category: "confusion", name: "double encryption (matryoshka)", status: "PASS", duration_ms: Date.now() - t0,
-        details: "TEE processed (inner decryption yields JSON, not image)", expected: "rejection at C2PA parse" });
+        details: "TEE processed (inner decryption yields binary, not valid plaintext)", expected: "rejection at plaintext parse" });
     } catch (e: any) {
       record({ category: "confusion", name: "double encryption (matryoshka)", status: "PASS", duration_ms: Date.now() - t0,
-        details: `rejected: ${e.message.slice(0, 100)}`, expected: "rejection at C2PA parse or decryption" });
+        details: `rejected: ${e.message.slice(0, 100)}`, expected: "rejection at plaintext parse or decryption" });
     }
   }
 
-  // 16-2: 超巨大JSON (10万キー)
+  // 16-2: 超巨大メタデータ (10万キー)
   {
-    const megaObj: Record<string, string> = {};
+    const megaObj: Record<string, string> = { owner_wallet: keypair.publicKey.toBase58() };
     for (let i = 0; i < 100_000; i++) megaObj[`key_${i}`] = `val_${i}`;
-    const megaJson = JSON.stringify(megaObj);
-    const payloadJson = new TextEncoder().encode(megaJson);
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
+    const pt = buildPlaintext(megaObj as any, new Uint8Array(imageBytes));
+    const { payload: ep } = await encryptPayload(encPubkeyBytes, pt);
 
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
+      const { downloadUrl } = await client.upload(gatewayUrl, ep);
       await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
-      record({ category: "confusion", name: "100K-key JSON payload (3MB+)", status: "PASS", duration_ms: Date.now() - t0,
-        details: "TEE processed (giant JSON, no content field)", expected: "rejection" });
+      record({ category: "confusion", name: "100K-key metadata (3MB+)", status: "PASS", duration_ms: Date.now() - t0,
+        details: "TEE processed (giant metadata, extra fields ignored)", expected: "rejection or graceful handling" });
     } catch (e: any) {
-      record({ category: "confusion", name: "100K-key JSON payload (3MB+)", status: "PASS", duration_ms: Date.now() - t0,
+      record({ category: "confusion", name: "100K-key metadata (3MB+)", status: "PASS", duration_ms: Date.now() - t0,
         details: `rejected: ${e.message.slice(0, 100)}`, expected: "rejection" });
     }
   }
 
-  // 16-3: null bytes埋め込みファイル名
+  // 16-3: null bytes埋め込みフィールド
   {
-    const payload = {
+    const metadata = {
       owner_wallet: keypair.publicKey.toBase58(),
-      content: Buffer.from(imageBytes).toString("base64"),
       filename: "image.jpg\x00.exe",
     };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
+    const pt = buildPlaintext(metadata as any, new Uint8Array(imageBytes));
+    const { payload: ep } = await encryptPayload(encPubkeyBytes, pt);
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, encryptedPayload);
+      const { downloadUrl } = await client.upload(gatewayUrl, ep);
       await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
-      record({ category: "confusion", name: "null byte in filename field", status: "PASS", duration_ms: Date.now() - t0,
+      record({ category: "confusion", name: "null byte in metadata field", status: "PASS", duration_ms: Date.now() - t0,
         details: "TEE handled null byte safely", expected: "no path truncation exploit" });
     } catch (e: any) {
-      record({ category: "confusion", name: "null byte in filename field", status: "PASS", duration_ms: Date.now() - t0,
+      record({ category: "confusion", name: "null byte in metadata field", status: "PASS", duration_ms: Date.now() - t0,
         details: `rejected: ${e.message.slice(0, 100)}`, expected: "handled safely" });
     }
   }
@@ -1979,15 +1948,12 @@ async function testCryptoEdgeCases() {
   log("CAT 17", "=== X25519暗号エッジケース（ホワイトボックス） ===");
 
   // 17-1: 全ゼロ ephemeral_pubkey (X25519 low-order point → shared_secret = 0)
-  // X25519は入力がsmall subgroup pointでもpanicしない設計だが、
-  // shared_secret=0 → HKDF → 有効な対称鍵 → TEEが復号を試みる
   {
-    const payload = { owner_wallet: keypair.publicKey.toBase58(), content: Buffer.from(imageBytes).toString("base64") };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
-    // ephemeral_pubkeyを全ゼロに置換（X25519 identity point）
-    const zeroKey = Buffer.alloc(32, 0).toString("base64");
-    const tampered = { ...encryptedPayload, ephemeral_pubkey: zeroKey };
+    const pt = buildPlaintext({ owner_wallet: keypair.publicKey.toBase58() }, new Uint8Array(imageBytes));
+    const { payload: ep } = await encryptPayload(encPubkeyBytes, pt);
+    // 先頭32Bを全ゼロに置換
+    const tampered = new Uint8Array(ep);
+    tampered.fill(0, 0, 32);
     const t0 = Date.now();
     try {
       const { downloadUrl } = await client.upload(gatewayUrl, tampered);
@@ -2000,13 +1966,12 @@ async function testCryptoEdgeCases() {
     }
   }
 
-  // 17-2: 全0xFF ephemeral_pubkey（大きなスカラー）
+  // 17-2: 全0xFF ephemeral_pubkey
   {
-    const payload = { owner_wallet: keypair.publicKey.toBase58(), content: Buffer.from(imageBytes).toString("base64") };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
-    const ffKey = Buffer.alloc(32, 0xff).toString("base64");
-    const tampered = { ...encryptedPayload, ephemeral_pubkey: ffKey };
+    const pt = buildPlaintext({ owner_wallet: keypair.publicKey.toBase58() }, new Uint8Array(imageBytes));
+    const { payload: ep } = await encryptPayload(encPubkeyBytes, pt);
+    const tampered = new Uint8Array(ep);
+    tampered.fill(0xff, 0, 32);
     const t0 = Date.now();
     try {
       const { downloadUrl } = await client.upload(gatewayUrl, tampered);
@@ -2019,54 +1984,47 @@ async function testCryptoEdgeCases() {
     }
   }
 
-  // 17-3: ephemeral_pubkeyが31バイト（短すぎ）
+  // 17-3: ペイロードが43バイト（ヘッダ44バイト未満）
   {
-    const payload = { owner_wallet: keypair.publicKey.toBase58(), content: Buffer.from(imageBytes).toString("base64") };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
-    const shortKey = Buffer.alloc(31, 0x42).toString("base64");
-    const tampered = { ...encryptedPayload, ephemeral_pubkey: shortKey };
+    const shortPayload = new Uint8Array(43); // header requires 44B minimum
+    crypto.getRandomValues(shortPayload);
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, tampered);
+      const { downloadUrl } = await client.upload(gatewayUrl, shortPayload);
       await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
-      record({ category: "crypto_edge", name: "31-byte ephemeral_pubkey (short)", status: "FAIL",
-        duration_ms: Date.now() - t0, details: "TEE accepted truncated key!", expected: "rejection" });
+      record({ category: "crypto_edge", name: "43-byte payload (too short for header)", status: "FAIL",
+        duration_ms: Date.now() - t0, details: "TEE accepted truncated payload!", expected: "rejection" });
     } catch (e: any) {
-      record({ category: "crypto_edge", name: "31-byte ephemeral_pubkey (short)", status: "PASS",
+      record({ category: "crypto_edge", name: "43-byte payload (too short for header)", status: "PASS",
         duration_ms: Date.now() - t0, details: `rejected: ${e.message.slice(0, 100)}`, expected: "rejection" });
     }
   }
 
-  // 17-4: ephemeral_pubkeyが33バイト（長すぎ）
+  // 17-4: ペイロード全体がランダムバイト（44B+）
   {
-    const payload = { owner_wallet: keypair.publicKey.toBase58(), content: Buffer.from(imageBytes).toString("base64") };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
-    const longKey = Buffer.alloc(33, 0x42).toString("base64");
-    const tampered = { ...encryptedPayload, ephemeral_pubkey: longKey };
+    const randomPayload = new Uint8Array(200);
+    crypto.getRandomValues(randomPayload);
     const t0 = Date.now();
     try {
-      const { downloadUrl } = await client.upload(gatewayUrl, tampered);
+      const { downloadUrl } = await client.upload(gatewayUrl, randomPayload);
       await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
-      record({ category: "crypto_edge", name: "33-byte ephemeral_pubkey (long)", status: "FAIL",
-        duration_ms: Date.now() - t0, details: "TEE accepted oversized key!", expected: "rejection" });
+      record({ category: "crypto_edge", name: "random 200-byte payload (garbage)", status: "FAIL",
+        duration_ms: Date.now() - t0, details: "TEE accepted garbage!", expected: "rejection" });
     } catch (e: any) {
-      record({ category: "crypto_edge", name: "33-byte ephemeral_pubkey (long)", status: "PASS",
+      record({ category: "crypto_edge", name: "random 200-byte payload (garbage)", status: "PASS",
         duration_ms: Date.now() - t0, details: `rejected: ${e.message.slice(0, 100)}`, expected: "rejection" });
     }
   }
 
-  // 17-5: 同一ephemeral_pubkey再利用 — 同じ暗号ペイロードを2回送り、
+  // 17-5: 同一暗号ペイロード再利用 — 同じバイナリを2回送り、
   // レスポンスのnonceが異なることを確認（AES-GCM nonce reuse防止）
   {
-    const payload = { owner_wallet: keypair.publicKey.toBase58(), content: Buffer.from(imageBytes).toString("base64") };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { symmetricKey, encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
+    const pt = buildPlaintext({ owner_wallet: keypair.publicKey.toBase58() }, new Uint8Array(imageBytes));
+    const { symmetricKey, payload: ep } = await encryptPayload(encPubkeyBytes, pt);
 
     // 同じ暗号文を2回アップロード → 同じephemeral_pubkeyから同じ対称鍵を導出
-    const { downloadUrl: url1 } = await client.upload(gatewayUrl, encryptedPayload);
-    const { downloadUrl: url2 } = await client.upload(gatewayUrl, encryptedPayload);
+    const { downloadUrl: url1 } = await client.upload(gatewayUrl, ep);
+    const { downloadUrl: url2 } = await client.upload(gatewayUrl, ep);
 
     const t0 = Date.now();
     try {
@@ -2091,21 +2049,21 @@ async function testCryptoEdgeCases() {
     }
   }
 
-  // 17-6: nonceが11バイト（AES-GCM標準の12バイトより短い）
+  // 17-6: nonce部分を改変（バイナリの32-43バイト目）
   {
-    const payload = { owner_wallet: keypair.publicKey.toBase58(), content: Buffer.from(imageBytes).toString("base64") };
-    const payloadJson = new TextEncoder().encode(JSON.stringify(payload));
-    const { encryptedPayload } = await encryptPayload(encPubkeyBytes, payloadJson);
-    const shortNonce = Buffer.alloc(11, 0x42).toString("base64");
-    const tampered = { ...encryptedPayload, nonce: shortNonce };
+    const pt = buildPlaintext({ owner_wallet: keypair.publicKey.toBase58() }, new Uint8Array(imageBytes));
+    const { payload: ep } = await encryptPayload(encPubkeyBytes, pt);
+    // nonce領域を全0x42に書き換え
+    const tampered = new Uint8Array(ep);
+    tampered.fill(0x42, 32, 44);
     const t0 = Date.now();
     try {
       const { downloadUrl } = await client.upload(gatewayUrl, tampered);
       await client.verify(gatewayUrl, { download_url: downloadUrl, processor_ids: ["core-c2pa"] });
-      record({ category: "crypto_edge", name: "11-byte nonce (too short for AES-GCM)", status: "FAIL",
-        duration_ms: Date.now() - t0, details: "TEE accepted short nonce!", expected: "rejection" });
+      record({ category: "crypto_edge", name: "tampered nonce in binary header", status: "FAIL",
+        duration_ms: Date.now() - t0, details: "TEE accepted tampered nonce!", expected: "rejection" });
     } catch (e: any) {
-      record({ category: "crypto_edge", name: "11-byte nonce (too short for AES-GCM)", status: "PASS",
+      record({ category: "crypto_edge", name: "tampered nonce in binary header", status: "PASS",
         duration_ms: Date.now() - t0, details: `rejected: ${e.message.slice(0, 100)}`, expected: "rejection" });
     }
   }

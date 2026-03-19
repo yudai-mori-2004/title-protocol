@@ -18,8 +18,10 @@ import {
   encrypt,
   decrypt,
   encryptPayload,
+  buildPlaintext,
   decryptResponse,
 } from "../crypto";
+import { ENCRYPTED_HEADER_SIZE } from "../types";
 import { x25519 } from "@noble/curves/ed25519";
 
 describe("crypto", () => {
@@ -126,39 +128,49 @@ describe("crypto", () => {
   });
 
   describe("encryptPayload / decryptResponse", () => {
-    it("E2EEフルフロー: encrypt → Base64 → decrypt", async () => {
+    it("E2EEフルフロー: binary encrypt → parse → decrypt", async () => {
       // TEEのキーペア生成
       const teeSecret = x25519.utils.randomPrivateKey();
       const teePubkey = x25519.getPublicKey(teeSecret);
 
-      const payload = JSON.stringify({
-        owner_wallet: "SomeBase58Address",
-        content: "SGVsbG8=", // "Hello" in Base64
-      });
-      const payloadBytes = new TextEncoder().encode(payload);
+      // クライアント側: バイナリ平文を構築
+      const content = new TextEncoder().encode("Hello, Title Protocol!");
+      const plaintext = buildPlaintext(
+        { owner_wallet: "SomeBase58Address" },
+        content,
+      );
 
       // クライアント側: 暗号化
-      const { symmetricKey, encryptedPayload } = await encryptPayload(
+      const { symmetricKey, payload } = await encryptPayload(
         teePubkey,
-        payloadBytes
+        plaintext
       );
 
+      // バイナリフォーマットの検証
+      assert.ok(payload.length >= ENCRYPTED_HEADER_SIZE);
+
+      // TEE側: バイナリヘッダをパース
+      const ephPubkeyBytes = payload.slice(0, 32);
+      const nonce = payload.slice(32, 44);
+      const ciphertext = payload.slice(44);
+
       // TEE側: 同一の対称鍵を導出
-      const ephPubkeyBytes = Buffer.from(
-        encryptedPayload.ephemeral_pubkey,
-        "base64"
-      );
       const teeShared = deriveSharedSecret(teeSecret, ephPubkeyBytes);
       const teeSymmetricKey = deriveSymmetricKey(teeShared);
       assert.deepEqual(teeSymmetricKey, symmetricKey);
 
       // TEE側: 復号
-      const teeDecrypted = await decryptResponse(
-        teeSymmetricKey,
-        encryptedPayload.nonce,
-        encryptedPayload.ciphertext
+      const decrypted = await decrypt(teeSymmetricKey, nonce, ciphertext);
+      assert.deepEqual(decrypted, plaintext);
+
+      // TEE側: 平文をパース — [4B metadata_len][metadata JSON][raw content]
+      const metaLen = new DataView(decrypted.buffer, decrypted.byteOffset).getUint32(0);
+      const metaJson = JSON.parse(
+        new TextDecoder().decode(decrypted.slice(4, 4 + metaLen))
       );
-      assert.deepEqual(teeDecrypted, payloadBytes);
+      assert.equal(metaJson.owner_wallet, "SomeBase58Address");
+      const extractedContent = decrypted.slice(4 + metaLen);
+      assert.deepEqual(extractedContent, content);
 
       // TEE側: レスポンスを同一鍵で暗号化して返す
       const responsePayload = JSON.stringify({
@@ -177,6 +189,27 @@ describe("crypto", () => {
         Buffer.from(respCt).toString("base64")
       );
       assert.deepEqual(clientDecrypted, responseBytes);
+    });
+  });
+
+  describe("buildPlaintext", () => {
+    it("正しいバイナリフォーマットを生成する", () => {
+      const content = new Uint8Array([1, 2, 3, 4, 5]);
+      const result = buildPlaintext(
+        { owner_wallet: "W", extension_inputs: { ext: { key: "val" } } },
+        content,
+      );
+
+      // metadata_len をパース
+      const metaLen = new DataView(result.buffer, result.byteOffset).getUint32(0);
+      const metaJson = JSON.parse(
+        new TextDecoder().decode(result.slice(4, 4 + metaLen))
+      );
+      assert.equal(metaJson.owner_wallet, "W");
+      assert.deepEqual(metaJson.extension_inputs, { ext: { key: "val" } });
+
+      // content が正しく結合されている
+      assert.deepEqual(result.slice(4 + metaLen), content);
     });
   });
 });

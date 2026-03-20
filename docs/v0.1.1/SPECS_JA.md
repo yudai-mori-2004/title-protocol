@@ -1045,19 +1045,28 @@ Title Protocolの価値は、C2PAの普及に正比例する。これは意図�
 | 形式 | 用途 |
 | --- | --- |
 | Base58 | Solanaアドレス、公開鍵等。人間が読みやすく、紛らわしい文字（0, O, l, I）を除外 |
-| Base64 | バイナリデータ（暗号文、署名等）。標準的なバイナリ→テキスト変換 |
+| Base64 | 署名、Attestation Document等のJSON内バイナリフィールド |
+| バイナリ | 暗号化ペイロード（Step 1-2）。JSON/Base64を使用せず、rawバイナリとしてS3に保存 |
 
 ## 5.1 登録フローのデータ構造
 
 ### Step 1: クライアントが構築するペイロード（暗号化前）
 
-クライアントは、コンテンツ本体と帰属先ウォレットを一つのペイロードにまとめる。
+クライアントは、メタデータとコンテンツ本体をバイナリ形式で結合し、一つの平文ペイロードを構築する。
+
+**平文フォーマット:**
+
+```
+[4B: metadata_len (big-endian u32)]
+[metadata_len bytes: メタデータJSON]
+[remaining: コンテンツのrawバイナリ]
+```
+
+**メタデータJSON:**
 
 ```json
 {
   "owner_wallet": "Base58エンコードされたSolanaウォレットアドレス",
-  "content": "Base64エンコードされたコンテンツバイナリ",
-  "sidecar_manifest": "(Optional) Base64エンコードされた.c2paファイル",
   "extension_inputs": {
     "extension_id": {
       "(WASMが期待する任意のJSONオブジェクト)"
@@ -1068,23 +1077,23 @@ Title Protocolの価値は、C2PAの普及に正比例する。これは意図�
 
 `extension_inputs` はOptionalフィールドである。キーはextension_id、値はそのWASMが期待する任意のJSONオブジェクトである。内部完結型のExtension（pHash等）のみをリクエストする場合は省略できる。
 
-このペイロード全体（`extension_inputs` を含む）が、セクション1で説明したハイブリッド暗号化の対象となる。これにより、ノード運営者を含む全ての中間者は、どのような補助データが送られているかも知ることはできない。
+コンテンツはBase64変換せず、rawバイナリとしてメタデータの直後に結合される。これにより5MBのコンテンツが17MBに膨張する問題を排除する。
+
+この平文ペイロード全体（`extension_inputs` を含む）が、セクション1で説明したハイブリッド暗号化の対象となる。これにより、ノード運営者を含む全ての中間者は、どのような補助データが送られているかも知ることはできない。
 
 ---
 
 ### Step 2: 暗号化されたペイロード（Temporary Storageに保存）
 
-暗号化後、以下の構造でTemporary Storageにアップロードされる。
+暗号化後、以下のバイナリ形式でTemporary Storageにアップロードされる。Content-Typeは `application/octet-stream`。
 
-```json
-{
-  "ephemeral_pubkey": "Base64エンコードされたX25519公開鍵（32バイト）",
-  "nonce": "Base64エンコードされたAES-GCM nonce（12バイト）",
-  "ciphertext": "Base64エンコードされた暗号文"
-}
+```
+[32B: ephemeral_pubkey (X25519公開鍵)]
+[12B: nonce (AES-GCM)]
+[remaining: AES-GCM ciphertext + 16B auth tag]
 ```
 
-TEEは `ephemeral_pubkey` と自身の秘密鍵でECDHを実行し、共通鍵を導出して `ciphertext` を復号する。
+TEEは先頭32Bの `ephemeral_pubkey` と自身の秘密鍵でECDHを実行し、共通鍵を導出して `ciphertext` を復号する。JSON/Base64を一切使用しないことで、エンコーディングオーバーヘッドが排除される。
 
 ---
 
@@ -1313,7 +1322,7 @@ cNFTがプロトコル公式コレクションに属していることが、TEE�
 
 ### オンチェーン構造
 
-Global Configは、容量効率のため2種類のアカウントに分割される。
+Global Configは、容量効率とスケーラビリティのため3種類のアカウントに分割される。
 
 **GlobalConfigAccount PDA**（単一、信頼の原点）:
 
@@ -1324,8 +1333,12 @@ GlobalConfigAccount (PDA: seeds=[b"global-config"])
 ├── ext_collection_mint: Pubkey          // Extension cNFTの公式コレクション
 ├── trusted_node_keys: Vec<[u8; 32]>     // TEEノードsigning_pubkeyのフラットリスト
 ├── trusted_tsa_keys: Vec<[u8; 32]>      // TSA公開鍵ハッシュのリスト
-└── trusted_wasm_modules: Vec<WasmModuleEntry>
-    └── { extension_id: [u8; 32], wasm_hash: [u8; 32], wasm_source: String }
+├── trusted_wasm_ids: Vec<[u8; 32]>      // WASMモジュールextension_idのフラットリスト
+└── resource_limits: ResourceLimitsOnChain // Gatewayリソース制限の上限値
+    └── { max_single_content_bytes: Option<u64>, max_concurrent_bytes: Option<u64>,
+          min_upload_speed_bytes: Option<u64>, base_processing_time_sec: Option<u64>,
+          max_global_timeout_sec: Option<u64>, chunk_read_timeout_sec: Option<u64>,
+          c2pa_max_graph_size: Option<u64> }
 ```
 
 **TeeNodeAccount PDA**（ノードごとに1つ）:
@@ -1343,7 +1356,22 @@ TeeNodeAccount (PDA: seeds=[b"tee-node", &signing_pubkey])
 └── bump: u8                             // PDA bump seed
 ```
 
+**WasmModuleAccount PDA**（WASMモジュールごとに1つ）:
+
+```
+WasmModuleAccount (PDA: seeds=[b"wasm-module", &extension_id])
+├── extension_id: [u8; 32]              // Extension識別子（null-padded）
+├── versions: Vec<WasmVersionEntry>      // バージョンリスト（追加順）
+│   └── { version: u32, wasm_hash: [u8; 32], wasm_source: String,
+│          status: u8, registered_at: i64 }
+└── bump: u8                             // PDA bump seed
+```
+
 `trusted_node_keys` にsigning_pubkeyが含まれるTEEノードが信頼されたノードである。各ノードの詳細情報は、そのsigning_pubkeyをseedとするTeeNodeAccount PDAから取得する。
+
+`trusted_wasm_ids` にextension_idが含まれるWASMモジュールが信頼されたモジュールである。各モジュールの詳細情報（wasm_hash、wasm_source、バージョン履歴）は、そのextension_idをseedとするWasmModuleAccount PDAから取得する。TEEノードの管理パターン（GlobalConfigにIDリスト + 詳細は個別PDA）と対称的な設計により、Solana CPI制限（10,240バイト）に制約されることなくモジュールを追加できる。
+
+`resource_limits` はGatewayが適用するリソース制限の上限値をオンチェーンで管理する。各フィールドはOption型であり、Noneの場合はGatewayのデフォルト値が使用される。Someの場合はGatewayのデフォルト値とのminを取り、オンチェーン値が上限として機能する。
 
 ### 論理ビュー
 
@@ -1377,9 +1405,20 @@ TeeNodeAccount (PDA: seeds=[b"tee-node", &signing_pubkey])
     {
       "extension_id": "phash-v1",
       "wasm_source": "ar://...",
-      "wasm_hash": "SHA-256ハッシュ"
+      "wasm_hash": "SHA-256ハッシュ",
+      "version": 1,
+      "status": "active"
     }
-  ]
+  ],
+  "resource_limits": {
+    "max_single_content_bytes": 2147483648,
+    "max_concurrent_bytes": 8589934592,
+    "min_upload_speed_bytes": 1048576,
+    "base_processing_time_sec": 30,
+    "max_global_timeout_sec": 3600,
+    "chunk_read_timeout_sec": 30,
+    "c2pa_max_graph_size": 10000
+  }
 }
 ```
 
@@ -1425,8 +1464,9 @@ TeeNodeAccount (PDA: seeds=[b"tee-node", &signing_pubkey])
 | `core_collection_mint` | Core cNFTの公式コレクションを識別するMintアドレス（MPL Core） |
 | `ext_collection_mint` | Extension cNFTの公式コレクションを識別するMintアドレス（MPL Core） |
 | `trusted_node_keys` | 信頼されたTEEノードのsigning_pubkeyリスト。このリストに含まれるノードのみがプロトコル公式cNFTを発行できる |
-| `trusted_wasm_modules` | 信頼されたWASMモジュールのリスト。Extension実行時に使用 |
+| `trusted_wasm_ids` | 信頼されたWASMモジュールのextension_idリスト。各モジュールの詳細（wasm_hash、wasm_source、バージョン）は個別のWasmModuleAccount PDAに格納される |
 | `trusted_tsa_keys` | 信頼するTSA（Time Stamp Authority）公開鍵のハッシュリスト。重複解決時に使用 |
+| `resource_limits` | Gatewayが適用するリソース制限の上限値。各フィールドはOptionalであり、Noneの場合はGatewayのデフォルト値を使用する |
 
 **TeeNodeAccount:**
 
@@ -1872,13 +1912,15 @@ processor_idごとに `signed_json` が返却される。`signed_json` の構造
     {
       "signed_json_uri": "ar://..."
     }
-  ]
+  ],
+  "fee_payer": "(Optional) Base58エンコードされたfee payerウォレットアドレス"
 }
 ```
 
 | フィールド | 説明 |
 | --- | --- |
 | `recent_blockhash` | クライアントが直前に取得したBlockhash。TEEはこの値を使用してトランザクションを構築する。 |
+| `fee_payer` | (Optional) トランザクションのfee payerアドレス。`/sign-and-mint` でGatewayがガス代を負担する場合に使用される。省略時は `creator_wallet` がfee payerとなる。 |
 
 CoreとExtensionを同一リクエストでまとめて処理できる。複数のコンテンツを含めることも可能。
 
@@ -2064,7 +2106,14 @@ Request:
   "gateway_pubkey": "Base58エンコードされたGateway署名用Ed25519公開鍵",
   "recent_blockhash": "Base58エンコードされたBlockhash",
   "authority": "Base58エンコードされたDAO authority公開鍵",
-  "program_id": "Base58エンコードされたtitle-configプログラムID"
+  "program_id": "Base58エンコードされたtitle-configプログラムID",
+  "core_collection_mint": "Base58エンコードされたCore cNFTコレクションMintアドレス",
+  "ext_collection_mint": "Base58エンコードされたExtension cNFTコレクションMintアドレス",
+  "measurements": {
+    "PCR0": "Hex文字列",
+    "PCR1": "Hex文字列",
+    "PCR2": "Hex文字列"
+  }
 }
 
 Response:
@@ -2115,15 +2164,19 @@ Client                                          TEE
   │  3. shared_secret = ECDH(eph_sk, tee_pk)     │
   │                                              │
   │  4. symmetric_key = HKDF(shared_secret)      │
-  │     ciphertext = AES-GCM-Encrypt(payload)    │
+  │     plaintext = [4B meta_len][meta JSON][raw content]
+  │     ciphertext = AES-GCM-Encrypt(plaintext)  │
   │                                              │
-  │  5. Upload: {ciphertext, eph_pk, nonce}      │
+  │  5. Upload (application/octet-stream):       │
+  │     [32B eph_pk][12B nonce][ciphertext]       │
   │─────────────────────────────────────────────>│
   │                                              │
-  │                    6. shared_secret = ECDH(tee_sk, eph_pk)
+  │                    6. バイナリヘッダパース: eph_pk, nonce, ciphertext
+  │                       shared_secret = ECDH(tee_sk, eph_pk)
   │                                              │
   │                    7. symmetric_key = HKDF(shared_secret)
-  │                       payload = AES-GCM-Decrypt(ciphertext)
+  │                       plaintext = AES-GCM-Decrypt(ciphertext)
+  │                       metadata, content = parse_plaintext(plaintext)
   │                                              │
   │                       ... 検証処理 ...
   │                                              │
@@ -2410,7 +2463,8 @@ const config = await fetchGlobalConfig(conn, "devnet");
 - `authority` — 管理者ウォレット（Base58）
 - `core_collection_mint` / `ext_collection_mint` — コレクションMint（Base58）
 - `trusted_tee_nodes[]` — TEEノード一覧（signing\_pubkey, encryption\_pubkey, gateway\_endpoint, status, tee\_type, expected\_measurements）
-- `trusted_wasm_modules[]` — WASMモジュール一覧（extension\_id, wasm\_hash）
+- `trusted_wasm_ids[]` — 信頼されたWASMモジュールのextension\_idリスト
+- `trusted_wasm_hashes` — extension\_idごとの最新active wasm\_hash（WasmModuleAccount PDAから取得）
 - `resource_limits` — リソース制限
 
 cluster別のProgram IDはSDK内にハードコードされており、ユーザーが意識する必要はない。自前デプロイ（ノード運営者向け）の場合のみ `fetchGlobalConfig(connection, programId)` でProgram IDを直接指定できる。
@@ -2500,7 +2554,7 @@ SDKは `register()` 内で以下の検証を自動実行する。これらはプ
 
 **wasm\_hash検証（/verify レスポンス復号直後）:**
 
-Extension signed\_jsonに含まれる `wasm_hash` を、`fetchGlobalConfig` で取得済みの `trusted_wasm_modules` と照合する。不一致の場合、当該signed\_jsonを破棄し、永続ストレージへのアップロードを中止する。
+Extension signed\_jsonに含まれる `wasm_hash` を、`fetchGlobalConfig` で取得済みの `trusted_wasm_hashes`（WasmModuleAccount PDAの最新activeバージョンから取得したwasm\_hash）と照合する。不一致の場合、当該signed\_jsonを破棄し、永続ストレージへのアップロードを中止する。
 
 **トランザクション検証（/sign レスポンス受信後）:**
 
@@ -2728,8 +2782,9 @@ WASM                                                TEE Host
 | `sha256` | `{"op":"sha256"}` | 32バイト | SHA-256ハッシュ |
 | `sha384` | `{"op":"sha384"}` | 48バイト | SHA-384ハッシュ |
 | `sha512` | `{"op":"sha512"}` | 64バイト | SHA-512ハッシュ |
+| `c2pa_verify_active_cert_chain` | `{"op":"c2pa_verify_active_cert_chain","root_spki_hex":"..."}` | 1バイト | C2PAアクティブマニフェストの署名チェーンが指定されたルートSPKIに連鎖するか検証。0x01=成功、0x00=失敗 |
 
-オプション: `offset`（デフォルト0）、`length`（デフォルト: コンテンツ全長）で範囲指定可能。
+ハッシュ系操作（`sha256`, `sha384`, `sha512`）はオプションの `offset`（デフォルト0）、`length`（デフォルト: コンテンツ全長）で範囲指定可能。
 
 **get_decoded_feature — デコード済みデータ特徴量:**
 
@@ -2747,7 +2802,7 @@ WASM                                                TEE Host
 | -2 | コンテンツ範囲外（get_content_feature のみ） |
 | -3 | 出力バッファ境界外 |
 | -4 | デコード未実行（get_decoded_feature のみ） |
-| -5 | チャネル数不正 / データサイズ不一致（get_decoded_feature のみ） |
+| -5 | チャネル数不正 / データサイズ不一致（get_decoded_feature のみ）、またはC2PA構造エラー（c2pa_verify_active_cert_chain のみ） |
 
 **HMAC計算:**
 
@@ -2798,7 +2853,7 @@ TEEホストはこのバッファからJSONを読み取り、Extension payload�
 
 | パラメータ | デフォルト値 | 説明 |
 | --- | --- | --- |
-| Fuel制限 | 100,000,000 | wasmtime命令実行数の上限（無限ループ防止） |
+| Fuel制限 | 1,000,000,000 | wasmtime命令実行数の上限（無限ループ防止） |
 | Memory制限 | 64MB | WASMリニアメモリの上限（OOM防止） |
 
 ---
@@ -2880,9 +2935,21 @@ phash-v1はpHash (DCT) アルゴリズムを使用する。ホスト側でグレ
 
 ## 7.5 バージョン管理
 
-WASMのバージョニングは `phash-v1` → `phash-v2` のように自然に行える。
+WASMのバージョニングは `phash-v1` → `phash-v2` のようにextension_idレベルで自然に行える。
 
-C2PA実装ごとのメタデータ記法の差異は、Global ConfigでWASMバイナリの参照先を更新することで吸収する。古いWASMで発行されたExtension cNFTは引き続き有効であり、新しいWASMは新規発行にのみ適用される。
+同一extension_id内でのマイナーバージョン管理は、WasmModuleAccount PDA内のバージョンリスト（`Vec<WasmVersionEntry>`）で管理される。各バージョンエントリには以下のフィールドが含まれる。
+
+| フィールド | 型 | 説明 |
+| --- | --- | --- |
+| `version` | u32 | バージョン番号（1始まり、単調増加） |
+| `wasm_hash` | [u8; 32] | WASMバイナリのSHA-256ハッシュ |
+| `wasm_source` | String | WASMバイナリの取得先URL（例: "ar://..."） |
+| `status` | u8 | 0=active, 1=deprecated |
+| `registered_at` | i64 | 登録時のUnixタイムスタンプ |
+
+TEEは最新のactive状態のバージョンを使用してWASMを実行する。バージョン追加は `add_wasm_version` 命令、ステータス更新は `update_wasm_version` 命令で行い、いずれもauthorityの署名を要求する。
+
+C2PA実装ごとのメタデータ記法の差異は、新バージョンの追加でWASMバイナリの参照先を更新することで吸収する。古いWASMで発行されたExtension cNFTは引き続き有効であり、新しいWASMは新規発行にのみ適用される。
 
 ---
 
@@ -2899,6 +2966,8 @@ Global Configの変更権限は `authority` フィールドで指定されたア
 | Phase 1 | 単一ウォレット（開発者が迅速に対応） |
 | Phase 2 | マルチシグ（Squads等による合議制） |
 | Phase 3 | DAO（分散型ガバナンスへ完全移行） |
+
+フェーズ間の移行は `update_authority` 命令で実行する。現在のauthorityが署名し、新しいauthorityアドレス（マルチシグウォレットやDAOプログラムのPDA）を指定する。移行は即座に有効となる。
 
 ---
 

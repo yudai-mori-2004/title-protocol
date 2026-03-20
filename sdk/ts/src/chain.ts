@@ -59,6 +59,9 @@ const GLOBAL_CONFIG_DISC = Buffer.from("58c97d0fc786e147", "hex");
 /** Anchor account discriminator for TeeNodeAccount. */
 const TEE_NODE_DISC = Buffer.from("a3bc3b8a54edb493", "hex");
 
+/** Anchor account discriminator for WasmModuleAccount. */
+const WASM_MODULE_DISC = Buffer.from("a2fe81fbbda3bfb0", "hex");
+
 // ---------------------------------------------------------------------------
 // Status / TeeType enums
 // ---------------------------------------------------------------------------
@@ -113,6 +116,25 @@ export function findTeeNodePDA(
   }
   return PublicKey.findProgramAddressSync(
     [Buffer.from("tee-node"), bytes],
+    programId
+  );
+}
+
+/**
+ * Derive a WasmModuleAccount PDA address.
+ *
+ * 仕様書 §7.3 — seeds = ["wasm-module", extension_id]
+ *
+ * @param extensionId - Extension ID string (e.g. "phash-v1"). Will be null-padded to 32 bytes.
+ */
+export function findWasmModulePDA(
+  extensionId: string,
+  programId: PublicKey = TITLE_CONFIG_PROGRAM_ID
+): [PublicKey, number] {
+  const idBytes = Buffer.alloc(32, 0);
+  Buffer.from(extensionId, "utf-8").copy(idBytes, 0, 0, Math.min(extensionId.length, 32));
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("wasm-module"), idBytes],
     programId
   );
 }
@@ -359,6 +381,67 @@ function rawWasmIdToString(buf: Buffer): string {
 }
 
 // ---------------------------------------------------------------------------
+// WasmModuleAccount deserialization
+// ---------------------------------------------------------------------------
+
+interface RawWasmVersionEntry {
+  version: number;
+  wasmHash: Buffer;  // 32 bytes
+  wasmSource: string;
+  status: number;
+  registeredAt: bigint;
+}
+
+interface RawWasmModuleAccount {
+  extensionId: Buffer;  // 32 bytes
+  versions: RawWasmVersionEntry[];
+  bump: number;
+}
+
+function deserializeWasmModuleAccount(data: Buffer): RawWasmModuleAccount {
+  const r = new BorshReader(data);
+
+  const disc = r.readBytes(8);
+  if (!disc.equals(WASM_MODULE_DISC)) {
+    throw new Error(
+      `Invalid WasmModuleAccount discriminator: ${disc.toString("hex")} (expected ${WASM_MODULE_DISC.toString("hex")})`
+    );
+  }
+
+  const extensionId = r.readFixedBytes(32);
+
+  const versionsLen = r.readU32LE();
+  const versions: RawWasmVersionEntry[] = [];
+  for (let i = 0; i < versionsLen; i++) {
+    const version = r.readU32LE();
+    const wasmHash = r.readFixedBytes(32);
+    const wasmSource = r.readString();
+    const status = r.readU8();
+    const registeredAt = r.readU64LE();
+    versions.push({ version, wasmHash, wasmSource, status, registeredAt });
+  }
+
+  const bump = r.readU8();
+
+  return { extensionId, versions, bump };
+}
+
+/** WASM version entry from on-chain WasmModuleAccount. */
+export interface WasmVersionInfo {
+  version: number;
+  wasm_hash: string;   // hex-encoded
+  wasm_source: string;
+  status: number;       // 0=active, 1=deprecated
+  registered_at: number;
+}
+
+/** WASM module info from on-chain WasmModuleAccount PDA. */
+export interface WasmModuleInfo {
+  extension_id: string;
+  versions: WasmVersionInfo[];
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -454,17 +537,83 @@ export async function fetchGlobalConfig(
     (n): n is TrustedTeeNode => n !== null
   );
 
+  const wasmIds = raw.trustedWasmIds.map(rawWasmIdToString);
+
+  // Fetch all WasmModuleAccount PDAs for wasm_hash validation
+  const trustedWasmHashes = await fetchWasmHashes(
+    connection,
+    wasmIds,
+    resolvedProgramId
+  );
+
   return {
     authority: pubkeyToBase58(raw.authority),
     core_collection_mint: pubkeyToBase58(raw.coreCollectionMint),
     ext_collection_mint: pubkeyToBase58(raw.extCollectionMint),
     trusted_tee_nodes: trustedTeeNodes,
     trusted_tsa_keys: raw.trustedTsaKeys.map(pubkeyToBase58),
-    trusted_wasm_ids: raw.trustedWasmIds.map(rawWasmIdToString),
+    trusted_wasm_ids: wasmIds,
     resource_limits: raw.resourceLimits,
+    trusted_wasm_hashes: trustedWasmHashes,
   };
+}
+
+/**
+ * Fetch a single WasmModuleAccount from chain.
+ *
+ * @returns WasmModuleInfo or null if not found.
+ */
+export async function fetchWasmModuleAccount(
+  connection: Connection,
+  extensionId: string,
+  programId: PublicKey = TITLE_CONFIG_PROGRAM_ID
+): Promise<WasmModuleInfo | null> {
+  const [pda] = findWasmModulePDA(extensionId, programId);
+  const accountInfo = await connection.getAccountInfo(pda);
+  if (!accountInfo) return null;
+
+  const raw = deserializeWasmModuleAccount(Buffer.from(accountInfo.data));
+  return {
+    extension_id: trimNulls(raw.extensionId),
+    versions: raw.versions.map((v) => ({
+      version: v.version,
+      wasm_hash: bytesToHex(v.wasmHash),
+      wasm_source: v.wasmSource,
+      status: v.status,
+      registered_at: Number(v.registeredAt),
+    })),
+  };
+}
+
+/**
+ * Fetch all WasmModuleAccount PDAs for the given extension IDs.
+ *
+ * Returns a Map from extension_id to its latest active wasm_hash (hex).
+ * Used by TitleClient for wasm_hash validation.
+ */
+export async function fetchWasmHashes(
+  connection: Connection,
+  extensionIds: string[],
+  programId: PublicKey = TITLE_CONFIG_PROGRAM_ID
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const promises = extensionIds.map(async (id) => {
+    const info = await fetchWasmModuleAccount(connection, id, programId);
+    if (info) {
+      // Find the latest active version (status=0)
+      const active = info.versions
+        .filter((v) => v.status === 0)
+        .sort((a, b) => b.version - a.version);
+      if (active.length > 0) {
+        result.set(id, active[0].wasm_hash);
+      }
+    }
+  });
+  await Promise.all(promises);
+  return result;
 }
 
 // Re-export for deserialization testing
 export { deserializeGlobalConfig as _deserializeGlobalConfig };
 export { deserializeTeeNodeAccount as _deserializeTeeNodeAccount };
+export { deserializeWasmModuleAccount as _deserializeWasmModuleAccount };

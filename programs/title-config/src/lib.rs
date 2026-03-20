@@ -26,6 +26,7 @@
 //! - `add_wasm_version`: WASMモジュールに新バージョン追加
 //! - `update_wasm_version`: WASMバージョンのステータス等更新
 //! - `set_resource_limits`: リソース制限の設定
+//! - `update_authority`: authorityの移譲（Phase 1→2→3移行用）
 //! - `add_tsa_key`: TSA鍵の追加
 //! - `remove_tsa_key`: TSA鍵の削除
 
@@ -488,6 +489,24 @@ pub mod title_config {
     ) -> Result<()> {
         let config = &mut ctx.accounts.global_config;
         config.resource_limits = limits;
+        Ok(())
+    }
+
+    /// authorityを新しいアドレスに移譲する。
+    /// 仕様書 §8.1: Phase 1（単一ウォレット）→ Phase 2（マルチシグ）→ Phase 3（DAO）の移行に使用。
+    ///
+    /// 現在のauthorityが署名し、新しいauthorityアドレスを指定する。
+    /// 移譲は即座に有効となる。
+    pub fn update_authority(
+        ctx: Context<UpdateConfig>,
+        new_authority: Pubkey,
+    ) -> Result<()> {
+        let config = &mut ctx.accounts.global_config;
+        config.authority = new_authority;
+        emit!(AuthorityUpdated {
+            old_authority: ctx.accounts.authority.key(),
+            new_authority,
+        });
         Ok(())
     }
 
@@ -968,6 +987,14 @@ pub struct WasmModuleRegistered {
 #[event]
 pub struct WasmModuleRemoved {
     pub extension_id: [u8; 32],
+}
+
+/// authority移譲イベント。
+/// 仕様書 §8.1
+#[event]
+pub struct AuthorityUpdated {
+    pub old_authority: Pubkey,
+    pub new_authority: Pubkey,
 }
 
 // ---------------------------------------------------------------------------

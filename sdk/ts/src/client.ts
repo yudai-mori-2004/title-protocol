@@ -438,22 +438,42 @@ export class TitleClient {
   /**
    * Validate wasm_hash in extension signed_json against on-chain data.
    *
-   * NOTE: WASM hashes are now stored in per-module WasmModuleAccount PDAs,
-   * not in GlobalConfig. Full validation requires reading each PDA.
-   * Currently validates that extension_id is in trusted_wasm_ids.
+   * 仕様書 §6.7: Extension signed_jsonに含まれる wasm_hash を、
+   * fetchGlobalConfigで取得済みの trusted_wasm_hashes（WasmModuleAccount PDA由来）と照合する。
+   * 不一致の場合、当該signed_jsonを破棄し永続ストレージへのアップロードを中止する。
    */
   private validateWasmHashes(response: VerifyResponse): void {
     const trustedIds = new Set(this.globalConfig.trusted_wasm_ids);
+    const trustedHashes = this.globalConfig.trusted_wasm_hashes;
 
     for (const result of response.results) {
       const payload = result.signed_json.payload;
       if ("extension_id" in payload) {
         const extPayload = payload as ExtensionPayload;
+
+        // Check 1: extension_id must be in trusted list
         if (!trustedIds.has(extPayload.extension_id)) {
           throw new Error(
             `Untrusted extension "${extPayload.extension_id}": ` +
               `Not found in GlobalConfig trusted_wasm_ids.`
           );
+        }
+
+        // Check 2: wasm_hash must match on-chain WasmModuleAccount
+        if (trustedHashes && extPayload.wasm_hash) {
+          const expectedHash = trustedHashes.get(extPayload.extension_id);
+          if (expectedHash) {
+            // signed_json wasm_hash is "0x"-prefixed hex; on-chain is raw hex
+            const actualHash = extPayload.wasm_hash.startsWith("0x")
+              ? extPayload.wasm_hash.slice(2)
+              : extPayload.wasm_hash;
+            if (actualHash !== expectedHash) {
+              throw new Error(
+                `WASM hash mismatch for "${extPayload.extension_id}": ` +
+                  `signed_json has "${actualHash}" but on-chain has "${expectedHash}".`
+              );
+            }
+          }
         }
       }
     }

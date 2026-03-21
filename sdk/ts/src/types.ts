@@ -87,6 +87,24 @@ export interface ResourceLimits {
   c2pa_max_graph_size?: number;
 }
 
+/** WASM version entry from on-chain WasmModuleAccount. Spec §7.3 */
+export interface WasmVersionInfo {
+  version: number;
+  /** SHA-256 hash of the WASM binary (hex-encoded). */
+  wasm_hash: string;
+  /** Retrievable URL for the WASM binary (e.g. ar://...). */
+  wasm_source: string;
+  /** 0 = active, 1 = deprecated. */
+  status: number;
+  registered_at: number;
+}
+
+/** WASM module with full version history from on-chain WasmModuleAccount PDA. Spec §5.2 Step 1 */
+export interface WasmModuleInfo {
+  extension_id: string;
+  versions: WasmVersionInfo[];
+}
+
 /** Global Config PDA. Spec §5.2 Step 1 */
 export interface GlobalConfig {
   authority: string;
@@ -94,7 +112,7 @@ export interface GlobalConfig {
   ext_collection_mint: string;
   trusted_tee_nodes: TrustedTeeNode[];
   trusted_tsa_keys: string[];
-  trusted_wasm_modules: TrustedWasmModule[];
+  trusted_wasm_modules: WasmModuleInfo[];
   resource_limits: ResourceLimits;
 }
 
@@ -125,13 +143,6 @@ export interface TrustedTeeNode {
  * | `intel_tdx`   | `MRTD`, `RTMR0` .. `RTMR3`    |
  */
 export type ExpectedMeasurements = Record<string, string>;
-
-/** Trusted WASM module. Spec §5.2 Step 1 */
-export interface TrustedWasmModule {
-  extension_id: string;
-  wasm_source: string;
-  wasm_hash: string;
-}
 
 // ---------------------------------------------------------------------------
 // Encrypted payload (Spec §5.1 Step 2)

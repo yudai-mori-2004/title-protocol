@@ -16,7 +16,8 @@ import type {
   GlobalConfig,
   ResourceLimits,
   TrustedTeeNode,
-  TrustedWasmModule,
+  WasmModuleInfo,
+  WasmVersionInfo,
   ExpectedMeasurements,
 } from "./types";
 
@@ -381,19 +382,6 @@ function rawWasmIdToString(buf: Buffer): string {
   return trimNulls(buf);
 }
 
-/** Pick latest active version from WasmModuleInfo → TrustedWasmModule. */
-function wasmModuleInfoToTrusted(info: WasmModuleInfo): TrustedWasmModule | null {
-  const active = info.versions
-    .filter((v) => v.status === 0)
-    .sort((a, b) => b.version - a.version);
-  if (active.length === 0) return null;
-  return {
-    extension_id: info.extension_id,
-    wasm_source: active[0].wasm_source,
-    wasm_hash: active[0].wasm_hash,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // WasmModuleAccount deserialization
 // ---------------------------------------------------------------------------
@@ -438,21 +426,6 @@ function deserializeWasmModuleAccount(data: Buffer): RawWasmModuleAccount {
   const bump = r.readU8();
 
   return { extensionId, versions, bump };
-}
-
-/** WASM version entry from on-chain WasmModuleAccount. */
-export interface WasmVersionInfo {
-  version: number;
-  wasm_hash: string;   // hex-encoded
-  wasm_source: string;
-  status: number;       // 0=active, 1=deprecated
-  registered_at: number;
-}
-
-/** WASM module info from on-chain WasmModuleAccount PDA. */
-export interface WasmModuleInfo {
-  extension_id: string;
-  versions: WasmVersionInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -557,10 +530,9 @@ export async function fetchGlobalConfig(
     fetchWasmModuleAccount(connection, id, resolvedProgramId)
   );
   const wasmResults = await Promise.all(wasmPromises);
-  const trustedWasmModules = wasmResults
-    .filter((w): w is WasmModuleInfo => w !== null)
-    .map(wasmModuleInfoToTrusted)
-    .filter((w): w is TrustedWasmModule => w !== null);
+  const trustedWasmModules = wasmResults.filter(
+    (w): w is WasmModuleInfo => w !== null
+  );
 
   return {
     authority: pubkeyToBase58(raw.authority),

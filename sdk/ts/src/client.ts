@@ -9,7 +9,7 @@
 import type {
   GlobalConfig,
   TrustedTeeNode,
-  TrustedWasmModule,
+  WasmModuleInfo,
   VerifyRequest,
   VerifyResponse,
   SignRequest,
@@ -416,7 +416,7 @@ export class TitleClient {
   // GlobalConfig accessors
   // ---------------------------------------------------------------------------
 
-  getTrustedWasmModules(): TrustedWasmModule[] {
+  getTrustedWasmModules(): WasmModuleInfo[] {
     return this.globalConfig.trusted_wasm_modules;
   }
 
@@ -460,18 +460,18 @@ export class TitleClient {
           );
         }
 
-        // Check 2: wasm_hash must match on-chain WasmModuleAccount
+        // Check 2: wasm_hash must match any version in WasmModuleAccount
         if (extPayload.wasm_hash) {
-          const trusted = modules.find((m) => m.extension_id === extPayload.extension_id);
-          if (trusted) {
-            // signed_json wasm_hash is "0x"-prefixed hex; on-chain is raw hex
+          const mod = modules.find((m) => m.extension_id === extPayload.extension_id);
+          if (mod) {
             const actualHash = extPayload.wasm_hash.startsWith("0x")
               ? extPayload.wasm_hash.slice(2)
               : extPayload.wasm_hash;
-            if (actualHash !== trusted.wasm_hash) {
+            const matched = mod.versions.some((v) => v.wasm_hash === actualHash);
+            if (!matched) {
               throw new Error(
                 `WASM hash mismatch for "${extPayload.extension_id}": ` +
-                  `signed_json has "${actualHash}" but on-chain has "${trusted.wasm_hash}".`
+                  `signed_json has "${actualHash}" but no matching version found on-chain.`
               );
             }
           }

@@ -164,7 +164,7 @@ For advanced use cases, the underlying Gateway endpoints are available:
 
 The SDK automatically validates TEE responses inside `register()`:
 
-- **wasm_hash check**: Extension signed_json's `wasm_hash` is verified against GlobalConfig's `trusted_wasm_ids`
+- **wasm_hash check**: Extension signed_json's `wasm_hash` is verified against GlobalConfig's `trusted_wasm_modules`
 - **These checks can also be performed manually** by reading the on-chain GlobalConfig directly
 
 ## Encryption Protocol

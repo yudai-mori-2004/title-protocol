@@ -9,6 +9,7 @@
 import type {
   GlobalConfig,
   TrustedTeeNode,
+  TrustedWasmModule,
   VerifyRequest,
   VerifyResponse,
   SignRequest,
@@ -415,8 +416,8 @@ export class TitleClient {
   // GlobalConfig accessors
   // ---------------------------------------------------------------------------
 
-  getTrustedWasmIds(): string[] {
-    return this.globalConfig.trusted_wasm_ids;
+  getTrustedWasmModules(): TrustedWasmModule[] {
+    return this.globalConfig.trusted_wasm_modules;
   }
 
   getCoreCollectionMint(): string {
@@ -439,12 +440,12 @@ export class TitleClient {
    * Validate wasm_hash in extension signed_json against on-chain data.
    *
    * 仕様書 §6.7: Extension signed_jsonに含まれる wasm_hash を、
-   * fetchGlobalConfigで取得済みの trusted_wasm_hashes（WasmModuleAccount PDA由来）と照合する。
+   * fetchGlobalConfigで取得済みの trusted_wasm_modules（WasmModuleAccount PDA由来）と照合する。
    * 不一致の場合、当該signed_jsonを破棄し永続ストレージへのアップロードを中止する。
    */
   private validateWasmHashes(response: VerifyResponse): void {
-    const trustedIds = new Set(this.globalConfig.trusted_wasm_ids);
-    const trustedHashes = this.globalConfig.trusted_wasm_hashes;
+    const modules = this.globalConfig.trusted_wasm_modules;
+    const trustedIds = new Set(modules.map((m) => m.extension_id));
 
     for (const result of response.results) {
       const payload = result.signed_json.payload;
@@ -455,22 +456,22 @@ export class TitleClient {
         if (!trustedIds.has(extPayload.extension_id)) {
           throw new Error(
             `Untrusted extension "${extPayload.extension_id}": ` +
-              `Not found in GlobalConfig trusted_wasm_ids.`
+              `Not found in GlobalConfig trusted_wasm_modules.`
           );
         }
 
         // Check 2: wasm_hash must match on-chain WasmModuleAccount
-        if (trustedHashes && extPayload.wasm_hash) {
-          const expectedHash = trustedHashes.get(extPayload.extension_id);
-          if (expectedHash) {
+        if (extPayload.wasm_hash) {
+          const trusted = modules.find((m) => m.extension_id === extPayload.extension_id);
+          if (trusted) {
             // signed_json wasm_hash is "0x"-prefixed hex; on-chain is raw hex
             const actualHash = extPayload.wasm_hash.startsWith("0x")
               ? extPayload.wasm_hash.slice(2)
               : extPayload.wasm_hash;
-            if (actualHash !== expectedHash) {
+            if (actualHash !== trusted.wasm_hash) {
               throw new Error(
                 `WASM hash mismatch for "${extPayload.extension_id}": ` +
-                  `signed_json has "${actualHash}" but on-chain has "${expectedHash}".`
+                  `signed_json has "${actualHash}" but on-chain has "${trusted.wasm_hash}".`
               );
             }
           }

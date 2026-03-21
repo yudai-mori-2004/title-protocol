@@ -94,14 +94,8 @@ export interface GlobalConfig {
   ext_collection_mint: string;
   trusted_tee_nodes: TrustedTeeNode[];
   trusted_tsa_keys: string[];
-  trusted_wasm_ids: string[];
+  trusted_wasm_modules: TrustedWasmModule[];
   resource_limits: ResourceLimits;
-  /**
-   * Map of extension_id → latest active wasm_hash (hex).
-   * Populated by fetchGlobalConfig from WasmModuleAccount PDAs.
-   * Used for wasm_hash validation in register().
-   */
-  trusted_wasm_hashes?: Map<string, string>;
 }
 
 /** Trusted TEE node. Spec §5.2 Step 1 */

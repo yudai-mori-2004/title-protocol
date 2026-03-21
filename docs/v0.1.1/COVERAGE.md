@@ -209,6 +209,8 @@ AES-256-GCM + Base64 をプラットフォーム非依存に抽象化。デフ�
 | [10-release-preparation](tasks/10-release-preparation/README.md) | v0.1.1 リリース準備 — ドキュメント精査 + ゼロベース検証 | 進行中 |
 | [11-sdk-node-selection-crypto-provider](tasks/11-sdk-node-selection-crypto-provider/README.md) | SDK ノード選択改善 + CryptoProvider 抽象化 | 完了 |
 | [12-binary-encrypted-payload](tasks/12-binary-encrypted-payload/README.md) | 暗号化ペイロードのバイナリプロトコル化（Base64膨張排除） | 完了 |
+| [13-spec-code-sync](tasks/13-spec-code-sync/README.md) | 仕様書・コード同期（update_authority、wasm_hash検証） | 完了 |
+| [14-sdk-wasm-module-symmetry](tasks/14-sdk-wasm-module-symmetry/README.md) | SDK WasmModule / TeeNode 対称性修正 | 完了 |
 
 ---
 
@@ -266,3 +268,30 @@ Content-Type: `application/octet-stream`
 | `sdk/ts/package.json` | `0.1.8` → `0.1.9` |
 | `integration-tests/register-photo.ts` | バイナリ形式に対応 |
 | `integration-tests/stress-test.ts` | 全暗号テストをバイナリ形式に対応 |
+
+---
+
+## §5.2 — SDK WasmModule / TeeNode 対称性修正
+
+`fetchGlobalConfig` が返す `GlobalConfig` で、TeeNode はフルオブジェクト配列（`TrustedTeeNode[]`）を返していたのに対し、WasmModule は ID リスト + ハッシュ Map に分割されていた非対称性を修正。
+
+### 変更内容
+
+| | 旧（非対称） | 新（対称） |
+|---|---|---|
+| GlobalConfig フィールド | `trusted_wasm_ids: string[]` + `trusted_wasm_hashes?: Map` | `trusted_wasm_modules: TrustedWasmModule[]` |
+| fetchGlobalConfig | `fetchWasmHashes()` で情報欠落 | TeeNode と同パターンの並列 fetch |
+| TitleClient accessor | `getTrustedWasmIds(): string[]` | `getTrustedWasmModules(): TrustedWasmModule[]` |
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `sdk/ts/src/types.ts` | `GlobalConfig` フィールド統一 |
+| `sdk/ts/src/chain.ts` | `wasmModuleInfoToTrusted` 追加、`fetchWasmHashes` 削除、`fetchGlobalConfig` 対称化 |
+| `sdk/ts/src/client.ts` | accessor + validation 更新 |
+| `sdk/ts/src/__tests__/chain.test.ts` | WasmModule PDA + デシリアライズテスト 7件追加 |
+| `sdk/ts/README.md` | API リファレンス更新 |
+| `integration-tests/register-photo.ts` | フィールド名更新 |
+| `integration-tests/stress-test.ts` | フィールド名更新 |
+| `sdk/ts/package.json` | `0.1.9` → `0.1.10` |

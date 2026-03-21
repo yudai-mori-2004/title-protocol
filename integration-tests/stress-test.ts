@@ -2345,7 +2345,7 @@ async function main() {
       ext_collection_mint: "",
       trusted_tee_nodes: [teeNode],
       trusted_tsa_keys: [],
-      trusted_wasm_ids: [],
+      trusted_wasm_modules: [],
     };
     log("WARN", "GlobalConfig not found on-chain, using CLI fallback");
   }

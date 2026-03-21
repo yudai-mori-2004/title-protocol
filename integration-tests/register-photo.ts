@@ -264,7 +264,7 @@ async function main() {
     process.exit(1);
   }
   log("STEP 1", `trusted_tee_nodes: ${globalConfig.trusted_tee_nodes.length}`);
-  log("STEP 1", `trusted_wasm_ids: ${globalConfig.trusted_wasm_ids.length}`);
+  log("STEP 1", `trusted_wasm_modules: ${globalConfig.trusted_wasm_modules.length}`);
 
   // ---------------------------------------------------------------------------
   // TitleClient 構築 + ノード選択（ヘルスチェック付き）

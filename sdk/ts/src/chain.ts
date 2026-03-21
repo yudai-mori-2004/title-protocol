@@ -16,6 +16,7 @@ import type {
   GlobalConfig,
   ResourceLimits,
   TrustedTeeNode,
+  TrustedWasmModule,
   ExpectedMeasurements,
 } from "./types";
 
@@ -380,6 +381,19 @@ function rawWasmIdToString(buf: Buffer): string {
   return trimNulls(buf);
 }
 
+/** Pick latest active version from WasmModuleInfo → TrustedWasmModule. */
+function wasmModuleInfoToTrusted(info: WasmModuleInfo): TrustedWasmModule | null {
+  const active = info.versions
+    .filter((v) => v.status === 0)
+    .sort((a, b) => b.version - a.version);
+  if (active.length === 0) return null;
+  return {
+    extension_id: info.extension_id,
+    wasm_source: active[0].wasm_source,
+    wasm_hash: active[0].wasm_hash,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // WasmModuleAccount deserialization
 // ---------------------------------------------------------------------------
@@ -464,11 +478,11 @@ export async function fetchTeeNodeAccount(
 }
 
 /**
- * Fetch GlobalConfig and all TeeNodeAccount PDAs in parallel.
+ * Fetch GlobalConfig and all TeeNodeAccount / WasmModuleAccount PDAs in parallel.
  *
  * Reads GlobalConfigAccount to get authority, collections, trusted keys,
- * and WASM modules. Then fetches each TeeNodeAccount PDA listed in
- * `trusted_node_keys` and assembles a complete GlobalConfig.
+ * and WASM modules. Then fetches each TeeNodeAccount and WasmModuleAccount
+ * PDA and assembles a complete GlobalConfig.
  *
  * The default `programId` points to the canonical Title Protocol program.
  * The canonical GlobalConfig (controlled by the DAO multi-sig on mainnet)
@@ -537,14 +551,16 @@ export async function fetchGlobalConfig(
     (n): n is TrustedTeeNode => n !== null
   );
 
+  // Fetch all WasmModuleAccount PDAs in parallel
   const wasmIds = raw.trustedWasmIds.map(rawWasmIdToString);
-
-  // Fetch all WasmModuleAccount PDAs for wasm_hash validation
-  const trustedWasmHashes = await fetchWasmHashes(
-    connection,
-    wasmIds,
-    resolvedProgramId
+  const wasmPromises = wasmIds.map((id) =>
+    fetchWasmModuleAccount(connection, id, resolvedProgramId)
   );
+  const wasmResults = await Promise.all(wasmPromises);
+  const trustedWasmModules = wasmResults
+    .filter((w): w is WasmModuleInfo => w !== null)
+    .map(wasmModuleInfoToTrusted)
+    .filter((w): w is TrustedWasmModule => w !== null);
 
   return {
     authority: pubkeyToBase58(raw.authority),
@@ -552,9 +568,8 @@ export async function fetchGlobalConfig(
     ext_collection_mint: pubkeyToBase58(raw.extCollectionMint),
     trusted_tee_nodes: trustedTeeNodes,
     trusted_tsa_keys: raw.trustedTsaKeys.map(pubkeyToBase58),
-    trusted_wasm_ids: wasmIds,
+    trusted_wasm_modules: trustedWasmModules,
     resource_limits: raw.resourceLimits,
-    trusted_wasm_hashes: trustedWasmHashes,
   };
 }
 
@@ -583,34 +598,6 @@ export async function fetchWasmModuleAccount(
       registered_at: Number(v.registeredAt),
     })),
   };
-}
-
-/**
- * Fetch all WasmModuleAccount PDAs for the given extension IDs.
- *
- * Returns a Map from extension_id to its latest active wasm_hash (hex).
- * Used by TitleClient for wasm_hash validation.
- */
-export async function fetchWasmHashes(
-  connection: Connection,
-  extensionIds: string[],
-  programId: PublicKey = TITLE_CONFIG_PROGRAM_ID
-): Promise<Map<string, string>> {
-  const result = new Map<string, string>();
-  const promises = extensionIds.map(async (id) => {
-    const info = await fetchWasmModuleAccount(connection, id, programId);
-    if (info) {
-      // Find the latest active version (status=0)
-      const active = info.versions
-        .filter((v) => v.status === 0)
-        .sort((a, b) => b.version - a.version);
-      if (active.length > 0) {
-        result.set(id, active[0].wasm_hash);
-      }
-    }
-  });
-  await Promise.all(promises);
-  return result;
 }
 
 // Re-export for deserialization testing

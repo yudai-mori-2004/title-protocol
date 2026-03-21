@@ -16,9 +16,11 @@ import bs58 from "bs58";
 import {
   findGlobalConfigPDA,
   findTeeNodePDA,
+  findWasmModulePDA,
   TITLE_CONFIG_PROGRAM_ID,
   _deserializeGlobalConfig,
   _deserializeTeeNodeAccount,
+  _deserializeWasmModuleAccount,
 } from "../chain";
 
 // ---------------------------------------------------------------------------
@@ -165,6 +167,31 @@ function extensionIdBytes(id: string): Buffer {
   return buf;
 }
 
+/** Build a minimal WasmModuleAccount buffer. */
+function buildWasmModuleBuffer(opts: {
+  extensionId: Buffer;
+  versions: { version: number; wasmHash: Buffer; wasmSource: string; status: number; registeredAt: bigint }[];
+  bump: number;
+}): Buffer {
+  const parts: Buffer[] = [];
+
+  parts.push(anchorDiscriminator("WasmModuleAccount"));
+  parts.push(opts.extensionId); // 32 bytes
+
+  // Vec<WasmVersionEntry>
+  parts.push(u32le(opts.versions.length));
+  for (const v of opts.versions) {
+    parts.push(u32le(v.version));
+    parts.push(v.wasmHash);   // 32 bytes
+    parts.push(borshString(v.wasmSource));
+    parts.push(Buffer.from([v.status]));
+    parts.push(u64le(v.registeredAt));
+  }
+
+  parts.push(Buffer.from([opts.bump]));
+  return Buffer.concat(parts);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -204,6 +231,36 @@ describe("chain", () => {
       const [pda] = findTeeNodePDA(signingKey, customProgram);
       const [expected] = PublicKey.findProgramAddressSync(
         [Buffer.from("tee-node"), signingKey],
+        customProgram
+      );
+      assert.equal(pda.toBase58(), expected.toBase58());
+    });
+
+    it("findWasmModulePDA returns deterministic address", () => {
+      const [pda1] = findWasmModulePDA("image-phash");
+      const [pda2] = findWasmModulePDA("image-phash");
+      assert.equal(pda1.toBase58(), pda2.toBase58());
+    });
+
+    it("findWasmModulePDA matches manual derivation", () => {
+      const extensionId = "image-phash";
+      const [pda] = findWasmModulePDA(extensionId);
+      const idBytes = Buffer.alloc(32, 0);
+      Buffer.from(extensionId, "utf-8").copy(idBytes);
+      const [expected] = PublicKey.findProgramAddressSync(
+        [Buffer.from("wasm-module"), idBytes],
+        TITLE_CONFIG_PROGRAM_ID
+      );
+      assert.equal(pda.toBase58(), expected.toBase58());
+    });
+
+    it("findWasmModulePDA with custom programId", () => {
+      const customProgram = new PublicKey(randomBytes32());
+      const [pda] = findWasmModulePDA("c2pa-training", customProgram);
+      const idBytes = Buffer.alloc(32, 0);
+      Buffer.from("c2pa-training", "utf-8").copy(idBytes);
+      const [expected] = PublicKey.findProgramAddressSync(
+        [Buffer.from("wasm-module"), idBytes],
         customProgram
       );
       assert.equal(pda.toBase58(), expected.toBase58());
@@ -390,6 +447,102 @@ describe("chain", () => {
       assert.throws(
         () => _deserializeTeeNodeAccount(buf),
         /Invalid TeeNodeAccount discriminator/
+      );
+    });
+  });
+
+  describe("WasmModuleAccount deserialization", () => {
+    it("deserializes module with no versions", () => {
+      const extId = extensionIdBytes("image-phash");
+
+      const buf = buildWasmModuleBuffer({
+        extensionId: extId,
+        versions: [],
+        bump: 253,
+      });
+
+      const result = _deserializeWasmModuleAccount(buf);
+      assert.equal(
+        result.extensionId.subarray(0, 11).toString("utf-8"),
+        "image-phash"
+      );
+      assert.equal(result.versions.length, 0);
+      assert.equal(result.bump, 253);
+    });
+
+    it("deserializes module with versions", () => {
+      const extId = extensionIdBytes("c2pa-training");
+      const wasmHash = randomBytes32();
+
+      const buf = buildWasmModuleBuffer({
+        extensionId: extId,
+        versions: [
+          {
+            version: 1,
+            wasmHash,
+            wasmSource: "https://arweave.net/abc123",
+            status: 0,
+            registeredAt: 1700000000n,
+          },
+        ],
+        bump: 252,
+      });
+
+      const result = _deserializeWasmModuleAccount(buf);
+      assert.equal(
+        result.extensionId.subarray(0, 13).toString("utf-8"),
+        "c2pa-training"
+      );
+      assert.equal(result.versions.length, 1);
+      assert.equal(result.versions[0].version, 1);
+      assert.equal(
+        result.versions[0].wasmHash.toString("hex"),
+        wasmHash.toString("hex")
+      );
+      assert.equal(result.versions[0].wasmSource, "https://arweave.net/abc123");
+      assert.equal(result.versions[0].status, 0);
+      assert.equal(result.versions[0].registeredAt, 1700000000n);
+      assert.equal(result.bump, 252);
+    });
+
+    it("deserializes module with multiple versions", () => {
+      const extId = extensionIdBytes("hardware-google");
+
+      const buf = buildWasmModuleBuffer({
+        extensionId: extId,
+        versions: [
+          {
+            version: 1,
+            wasmHash: randomBytes32(),
+            wasmSource: "https://arweave.net/v1",
+            status: 1, // deprecated
+            registeredAt: 1700000000n,
+          },
+          {
+            version: 2,
+            wasmHash: randomBytes32(),
+            wasmSource: "https://arweave.net/v2",
+            status: 0, // active
+            registeredAt: 1700100000n,
+          },
+        ],
+        bump: 251,
+      });
+
+      const result = _deserializeWasmModuleAccount(buf);
+      assert.equal(result.versions.length, 2);
+      assert.equal(result.versions[0].version, 1);
+      assert.equal(result.versions[0].status, 1);
+      assert.equal(result.versions[1].version, 2);
+      assert.equal(result.versions[1].status, 0);
+    });
+
+    it("rejects invalid discriminator", () => {
+      const buf = Buffer.alloc(200);
+      buf.fill(0xbb, 0, 8);
+      assert.throws(
+        () => _deserializeWasmModuleAccount(buf),
+        /Invalid WasmModuleAccount discriminator/
       );
     });
   });

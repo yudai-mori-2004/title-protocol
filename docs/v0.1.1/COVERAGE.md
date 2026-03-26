@@ -211,6 +211,7 @@ AES-256-GCM + Base64 をプラットフォーム非依存に抽象化。デフ�
 | [12-binary-encrypted-payload](tasks/12-binary-encrypted-payload/README.md) | 暗号化ペイロードのバイナリプロトコル化（Base64膨張排除） | 完了 |
 | [13-spec-code-sync](tasks/13-spec-code-sync/README.md) | 仕様書・コード同期（update_authority、wasm_hash検証） | 完了 |
 | [14-sdk-wasm-module-symmetry](tasks/14-sdk-wasm-module-symmetry/README.md) | SDK WasmModule / TeeNode 対称性修正 | 完了 |
+| [15-tsa-key-management](tasks/15-tsa-key-management/README.md) | TSA鍵管理 — CLI + ドキュメント整備 | 未着手 |
 
 ---
 

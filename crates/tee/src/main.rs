@@ -126,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(max_concurrent_bytes, "ResourcePool初期化");
 
     // 信頼されたExtension ID（仕様書 §6.4 不正WASMインジェクション防御）
-    // TRUSTED_EXTENSIONS=image-phash,hardware-google,c2pa-training,c2pa-license
+    // TRUSTED_EXTENSIONS=image-phash,image-pdq,video-vpdq,cert-google,cert-sony,cert-leica,cert-rootlens
     let trusted_extension_ids = std::env::var("TRUSTED_EXTENSIONS").ok().map(|s| {
         let ids: HashSet<String> = s.split(',').map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect();
         tracing::info!(extensions = ?ids, "信頼されたExtension一覧を設定しました");

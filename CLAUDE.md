@@ -21,11 +21,14 @@ Combines C2PA (provenance) x TEE (Trusted Execution Environment) x cNFT (compres
 cargo check --workspace
 cargo test --workspace
 
-# WASM modules (4 modules, excluded from workspace — build individually)
-cd wasm/phash-v1 && cargo build --target wasm32-unknown-unknown --release
-cd wasm/hardware-google && cargo build --target wasm32-unknown-unknown --release
-cd wasm/c2pa-training-v1 && cargo build --target wasm32-unknown-unknown --release
-cd wasm/c2pa-license-v1 && cargo build --target wasm32-unknown-unknown --release
+# WASM modules (7 modules, excluded from workspace — build individually)
+cd wasm/image-phash && cargo build --target wasm32-unknown-unknown --release
+cd wasm/image-pdq && cargo build --target wasm32-unknown-unknown --release
+cd wasm/video-vpdq && cargo build --target wasm32-unknown-unknown --release
+cd wasm/cert-google && cargo build --target wasm32-unknown-unknown --release
+cd wasm/cert-sony && cargo build --target wasm32-unknown-unknown --release
+cd wasm/cert-leica && cargo build --target wasm32-unknown-unknown --release
+cd wasm/cert-rootlens && cargo build --target wasm32-unknown-unknown --release
 
 # TypeScript SDK
 cd sdk/ts && npm run build
@@ -70,10 +73,13 @@ Client (SDK) → Gateway → Temporary Storage → TEE → Solana
 
 | Module | Output | Spec |
 |--------|--------|------|
-| `wasm/phash-v1` | Perceptual hash | §7.4 |
-| `wasm/hardware-google` | Hardware capture proof | §7.4 |
-| `wasm/c2pa-training-v1` | AI training consent flag | §7.4 |
-| `wasm/c2pa-license-v1` | License information | §7.4 |
+| `wasm/image-phash` | pHash 64-bit image hash (deprecated) | §7.4 |
+| `wasm/image-pdq` | PDQ 256-bit image hash (Meta ThreatExchange compatible) | §7.4 |
+| `wasm/video-vpdq` | vPDQ per-frame video hash (Meta ThreatExchange compatible) | §7.4 |
+| `wasm/cert-google` | Google C2PA cert chain verification | §7.4 |
+| `wasm/cert-sony` | Sony C2PA cert chain verification | §7.4 |
+| `wasm/cert-leica` | Leica C2PA cert chain verification | §7.4 |
+| `wasm/cert-rootlens` | RootLens C2PA cert chain verification | §7.4 |
 
 ### TypeScript
 

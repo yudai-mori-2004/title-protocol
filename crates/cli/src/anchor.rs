@@ -341,9 +341,9 @@ mod tests {
 
     #[test]
     fn test_extension_id_bytes() {
-        let bytes = extension_id_bytes("phash-v1");
-        assert_eq!(&bytes[..8], b"phash-v1");
-        assert!(bytes[8..].iter().all(|&b| b == 0));
+        let bytes = extension_id_bytes("image-phash");
+        assert_eq!(&bytes[..11], b"image-phash");
+        assert!(bytes[11..].iter().all(|&b| b == 0));
     }
 
     #[test]

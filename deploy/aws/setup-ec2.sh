@@ -234,7 +234,7 @@ echo "[Step 1/11] WASMモジュールのビルド..."
 WASM_OUTPUT="$PROJECT_ROOT/wasm-modules"
 mkdir -p "$WASM_OUTPUT"
 
-WASM_TARGETS=(phash-v1 hardware-google c2pa-training-v1 c2pa-license-v1)
+WASM_TARGETS=(image-phash image-pdq video-vpdq cert-google cert-sony cert-leica cert-rootlens)
 
 export OPENSSL_NO_VENDOR=1
 
@@ -352,7 +352,7 @@ else
         CORE_COLLECTION_MINT="$CORE_COLLECTION_MINT" \
         EXT_COLLECTION_MINT="$EXT_COLLECTION_MINT" \
         GATEWAY_PUBKEY="${GATEWAY_PUBKEY:-}" \
-        TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-image-phash,hardware-google,c2pa-training,c2pa-license}" \
+        TRUSTED_EXTENSIONS="${TRUSTED_EXTENSIONS:-image-phash,image-pdq,video-vpdq,cert-google,cert-sony,cert-leica,cert-rootlens}" \
         PROGRAM_ID="$PROGRAM_ID" \
         ${WASM_DIR:+WASM_DIR="$WASM_DIR"} \
         nohup ./target/release/title-tee > /tmp/title-tee.log 2>&1 &

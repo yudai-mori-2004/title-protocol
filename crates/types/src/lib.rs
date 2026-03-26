@@ -183,7 +183,7 @@ pub type ExpectedMeasurements = HashMap<String, String>;
 /// 仕様書 §5.2 Step 1
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedWasmModule {
-    /// Extension識別子 (例: "phash-v1")
+    /// Extension識別子 (例: "image-phash")
     pub extension_id: String,
     /// WASMバイナリのArweave URI
     pub wasm_source: String,
@@ -632,7 +632,7 @@ mod tests {
             content_hash: "0xabc".into(),
             content_type: "image/png".into(),
             creator_wallet: "wallet".into(),
-            extension_id: "phash-v1".into(),
+            extension_id: "image-phash".into(),
             wasm_source: "arweave://xxx".into(),
             wasm_hash: "0xdef".into(),
             extension_input_hash: None,
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(json["phash"], "abcd1234");
         assert!(json.get("result").is_none());
         // 通常フィールドも存在
-        assert_eq!(json["extension_id"], "phash-v1");
+        assert_eq!(json["extension_id"], "image-phash");
     }
 
     // -----------------------------------------------------------------------
@@ -760,7 +760,7 @@ mod tests {
     fn test_verify_request_roundtrip() {
         let req = VerifyRequest {
             download_url: "https://example.com/data".into(),
-            processor_ids: vec!["core".into(), "phash-v1".into()],
+            processor_ids: vec!["core".into(), "image-phash".into()],
         };
         let json_str = serde_json::to_string(&req).unwrap();
         let restored: VerifyRequest = serde_json::from_str(&json_str).unwrap();

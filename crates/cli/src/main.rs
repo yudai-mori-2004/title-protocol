@@ -73,7 +73,7 @@ enum Commands {
     },
     /// WASMモジュールをオンチェーンに登録する（PDA作成 + 初期バージョン登録）
     RegisterWasm {
-        /// Extension ID（例: phash, hardware-google）
+        /// Extension ID（例: image-phash, cert-google）
         #[arg(long)]
         extension_id: String,
         /// WASMバイナリのパス
@@ -85,7 +85,7 @@ enum Commands {
     },
     /// WASMモジュールをオンチェーンから削除する（PDAクローズ + リスト除去）
     RemoveWasm {
-        /// Extension ID（例: phash-v1）
+        /// Extension ID（例: image-phash）
         #[arg(long)]
         extension_id: String,
     },
@@ -97,7 +97,7 @@ enum Commands {
     },
     /// 既存WASMモジュールに新バージョンを追加する
     AddWasmVersion {
-        /// Extension ID（例: phash, hardware-google）
+        /// Extension ID（例: image-phash, cert-google）
         #[arg(long)]
         extension_id: String,
         /// WASMバイナリのパス

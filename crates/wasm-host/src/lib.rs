@@ -27,8 +27,11 @@
 pub mod c2pa_cert;
 pub mod decode;
 pub mod resource_pool;
+pub mod video;
 
 pub use resource_pool::{ResourcePool, Ticket};
+
+mod jarosz;
 
 use std::panic;
 use std::sync::Arc;
@@ -431,10 +434,15 @@ impl WasmRunner {
                                 Some(s) => s,
                                 None => return -1,
                             };
-                            // 証明書チェーン検証はコンテンツ全体が必要（MIME依存のJUMBF抽出）
-                            match c2pa_cert::verify_active_cert_chain_with_mime(&state.content, root_spki_hex, &state.mime_type) {
-                                Ok(true) => vec![0x01],
-                                Ok(false) => vec![0x00],
+                            // 証明書チェーン検証（詳細結果: verified + chain subjects）
+                            // 仕様書 §7.1: cert-* WASMモジュール用
+                            match c2pa_cert::verify_active_cert_chain_detailed(&state.content, root_spki_hex, &state.mime_type) {
+                                Ok(result) => {
+                                    match serde_json::to_vec(&result) {
+                                        Ok(json_bytes) => json_bytes,
+                                        Err(_) => return -5,
+                                    }
+                                }
                                 Err(_) => return -5, // C2PA構造エラー
                             }
                         }
@@ -667,9 +675,20 @@ impl WasmRunner {
                         .copy_from_slice(&result.metadata);
 
                     // 7. デコード済みデータを格納（メタデータも保持）
-                    let w = u32::from_le_bytes([result.metadata[0], result.metadata[1], result.metadata[2], result.metadata[3]]);
-                    let h = u32::from_le_bytes([result.metadata[4], result.metadata[5], result.metadata[6], result.metadata[7]]);
-                    let ch = u32::from_le_bytes([result.metadata[8], result.metadata[9], result.metadata[10], result.metadata[11]]);
+                    // 画像: metadata=12B [width, height, channels], data=pixels
+                    // 動画: metadata=20B [frame_count, fps_x100, width, height, duration_ms], data=empty
+                    let (w, h, ch) = if result.metadata.len() == 20 {
+                        // Video: width/height are at offset 8 and 12
+                        let w = u32::from_le_bytes([result.metadata[8], result.metadata[9], result.metadata[10], result.metadata[11]]);
+                        let h = u32::from_le_bytes([result.metadata[12], result.metadata[13], result.metadata[14], result.metadata[15]]);
+                        (w, h, 0u32) // channels=0 signals video mode
+                    } else {
+                        // Image: standard 12-byte metadata
+                        let w = u32::from_le_bytes([result.metadata[0], result.metadata[1], result.metadata[2], result.metadata[3]]);
+                        let h = u32::from_le_bytes([result.metadata[4], result.metadata[5], result.metadata[6], result.metadata[7]]);
+                        let ch = u32::from_le_bytes([result.metadata[8], result.metadata[9], result.metadata[10], result.metadata[11]]);
+                        (w, h, ch)
+                    };
                     let state = caller.data_mut();
                     state.decoded = Some(DecodedContent {
                         data: result.data,
@@ -809,39 +828,17 @@ impl WasmRunner {
                                 None => return -1,
                             };
 
-                            // グレースケール変換（ITU-R BT.601）+ リサイズ
-                            use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};
-
-                            let gray_img = match decoded.channels {
-                                1 => match GrayImage::from_raw(decoded.width, decoded.height, decoded.data.clone()) {
-                                    Some(img) => img,
-                                    None => return -5,
-                                },
-                                3 => {
-                                    let rgb = match RgbImage::from_raw(decoded.width, decoded.height, decoded.data.clone()) {
-                                        Some(img) => img,
-                                        None => return -5,
-                                    };
-                                    DynamicImage::ImageRgb8(rgb).to_luma8()
-                                }
-                                4 => {
-                                    let rgba = match RgbaImage::from_raw(decoded.width, decoded.height, decoded.data.clone()) {
-                                        Some(img) => img,
-                                        None => return -5,
-                                    };
-                                    DynamicImage::ImageRgba8(rgba).to_luma8()
-                                }
-                                _ => return -5,
-                            };
-
-                            // バイリニア補間リサイズ
-                            let resized = image::imageops::resize(
-                                &gray_img,
+                            // PDQ準拠 f32 luminanceパイプライン (BT.601):
+                            // RGB/RGBA/Gray → f32 luminance → Jarosz 4パスボックスフィルタ → decimate → u8
+                            // Meta ThreatExchange PDQリファレンス実装と互換。
+                            let output = jarosz::downsample_from_decoded(
+                                &decoded.data,
+                                decoded.width,
+                                decoded.height,
+                                decoded.channels,
                                 target_w,
                                 target_h,
-                                image::imageops::FilterType::Triangle,
                             );
-                            let output = resized.into_raw();
 
                             // WASMメモリに出力
                             let dest = output_ptr as usize;
@@ -851,7 +848,71 @@ impl WasmRunner {
                             mem_data[dest..dest + output.len()].copy_from_slice(&output);
                             output.len() as i32
                         }
-                        _ => -1, // 未知のop
+                        "video_frame_grayscale" => {
+                            // Extract a single video frame and return it as a
+                            // Jarosz-downsampled grayscale buffer.
+                            // Spec: {"op":"video_frame_grayscale","frame":N,"width":64,"height":64}
+                            let frame_idx = match spec.get("frame").and_then(|v| v.as_u64()) {
+                                Some(f) => f as u32,
+                                None => return -1,
+                            };
+                            let target_w = match spec.get("width").and_then(|v| v.as_u64()) {
+                                Some(w) => w as u32,
+                                None => return -1,
+                            };
+                            let target_h = match spec.get("height").and_then(|v| v.as_u64()) {
+                                Some(h) => h as u32,
+                                None => return -1,
+                            };
+
+                            // Read video metadata from decoded state
+                            // Video decode stores metadata only (no pixel data)
+                            if decoded.data.is_empty() && decoded.channels == 0 {
+                                // This is a video — extract frame via ffmpeg
+                                // Re-probe to get fps for timestamp calculation
+                                let video_meta = match video::probe(&state.content) {
+                                    Ok(m) => m,
+                                    Err(_) => return -5,
+                                };
+
+                                let timestamp = if video_meta.fps > 0.0 {
+                                    frame_idx as f64 / video_meta.fps
+                                } else {
+                                    frame_idx as f64 / 30.0
+                                };
+
+                                // Extract frame as RGB24 at original resolution
+                                let rgb = match video::extract_frame_rgb(
+                                    &state.content,
+                                    timestamp,
+                                    video_meta.width,
+                                    video_meta.height,
+                                ) {
+                                    Ok(data) => data,
+                                    Err(_) => return -6, // Frame extraction error
+                                };
+
+                                // Jarosz downsample: RGB → f32 luma → filter → decimate → u8
+                                let output = jarosz::downsample_from_decoded(
+                                    &rgb,
+                                    video_meta.width,
+                                    video_meta.height,
+                                    3, // RGB24
+                                    target_w,
+                                    target_h,
+                                );
+
+                                let dest = output_ptr as usize;
+                                if dest + output.len() > mem_data.len() {
+                                    return -3;
+                                }
+                                mem_data[dest..dest + output.len()].copy_from_slice(&output);
+                                output.len() as i32
+                            } else {
+                                -1 // Not a video
+                            }
+                        }
+                        _ => -1,
                     }
                 },
             )

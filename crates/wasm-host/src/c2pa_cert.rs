@@ -415,6 +415,29 @@ pub fn verify_cert_chain(
 // エントリポイント
 // ---------------------------------------------------------------------------
 
+/// 証明書チェーン検証の詳細結果。
+/// チェーンの検証成否に加え、各証明書のSubject文字列を含む。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CertChainResult {
+    /// チェーン検証成功（信頼されたRoot CAに連なる）
+    pub verified: bool,
+    /// x5chain内の各証明書のSubject（Leaf → Intermediate順）
+    pub chain: Vec<CertSubject>,
+}
+
+/// 証明書のSubject情報。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CertSubject {
+    pub subject: String,
+}
+
+/// DER証明書からSubject文字列を抽出する。
+fn extract_subject(cert_der: &[u8]) -> Result<String, &'static str> {
+    let cert = x509_cert::Certificate::from_der(cert_der)
+        .map_err(|_| "X.509証明書のDERパースに失敗")?;
+    Ok(cert.tbs_certificate.subject.to_string())
+}
+
 /// コンテンツ内のC2PAアクティブマニフェストの証明書チェーンを
 /// 指定されたRoot CAの公開鍵に対して検証する。
 ///
@@ -447,6 +470,36 @@ pub fn verify_active_cert_chain_with_mime(content: &[u8], root_spki_hex: &str, m
 
     verify_cert_chain(&certs, &root_spki)
         .map_err(|e| format!("証明書チェーン検証エラー: {e}"))
+}
+
+/// コンテンツのC2PA証明書チェーンを検証し、チェーン詳細（Subject情報）を含む結果を返す。
+///
+/// 仕様書 §7.1: cert-* WASMモジュール用の拡張エントリポイント。
+/// 検証成否に加え、x5chain内の各証明書のSubject文字列を返す。
+pub fn verify_active_cert_chain_detailed(content: &[u8], root_spki_hex: &str, mime_type: &str) -> Result<CertChainResult, String> {
+    let root_spki = hex::decode(root_spki_hex)
+        .map_err(|e| format!("root_spki_hexのデコードに失敗: {e}"))?;
+
+    let jumbf = extract_jumbf(content, mime_type)
+        .ok_or_else(|| "JUMBFデータが見つかりません".to_string())?;
+
+    let cose_cbor = find_active_cose_sign1(&jumbf)
+        .ok_or_else(|| "アクティブマニフェストのCOSE_Sign1が見つかりません".to_string())?;
+
+    let certs_der = extract_x5chain(&cose_cbor)
+        .map_err(|e| format!("x5chainの抽出に失敗: {e}"))?;
+
+    // チェーン検証
+    let verified = verify_cert_chain(&certs_der, &root_spki)
+        .map_err(|e| format!("証明書チェーン検証エラー: {e}"))?;
+
+    // 各証明書のSubjectを抽出
+    let chain = certs_der
+        .iter()
+        .filter_map(|der| extract_subject(der).ok().map(|s| CertSubject { subject: s }))
+        .collect();
+
+    Ok(CertChainResult { verified, chain })
 }
 
 // ---------------------------------------------------------------------------
@@ -535,4 +588,5 @@ mod tests {
         let result = verify_active_cert_chain(&data, GOOGLE_ROOT_SPKI_HEX);
         assert!(result.is_err());
     }
+
 }

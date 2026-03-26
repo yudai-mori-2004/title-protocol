@@ -1,14 +1,15 @@
 [package]
-name = "c2pa-license-v1"
+name = "video-vpdq"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/yudai-mori-2004/title-protocol"
 authors = ["Title Protocol Contributors"]
-description = "Title Protocol Extension: license information extraction"
+description = "Title Protocol Extension: vPDQ video perceptual hash (Meta ThreatExchange compatible)"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 dlmalloc = { version = "0.2", features = ["global"] }
+libm = "0.2"

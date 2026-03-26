@@ -82,7 +82,7 @@ pub trait SignedJsonStorage: Send + Sync {
 /// processor_idの取得: `payload.extension_id` があればそれを使用、なければ `"core-c2pa"`。
 pub struct SignedJsonStorageRouter {
     /// processor_id → ストレージのマッピング。
-    /// 例: `"core-c2pa"` → Irys, `"phash-v1"` → S3
+    /// 例: `"core-c2pa"` → Irys, `"image-phash"` → S3
     routes: std::collections::HashMap<String, Box<dyn SignedJsonStorage>>,
     /// マッピングにないprocessor_id用のデフォルトストレージ。
     default_storage: Option<Box<dyn SignedJsonStorage>>,

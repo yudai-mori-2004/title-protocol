@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! # phash-v1 統合テスト
+//! # image-phash 統合テスト
 //!
-//! コンパイル済み phash-v1.wasm を WasmRunner で実行し、
+//! コンパイル済み image-phash.wasm を WasmRunner で実行し、
 //! pHash (DCT) アルゴリズムの正確性を検証する。
 //!
 //! ## 前提条件
 //! ```bash
-//! cd wasm/phash-v1 && cargo build --target wasm32-unknown-unknown --release
+//! cd wasm/image-phash && cargo build --target wasm32-unknown-unknown --release
 //! ```
 //!
 //! WASM バイナリが存在しない場合、テストはスキップされる。
@@ -16,11 +16,11 @@ use std::io::Cursor;
 
 use title_wasm_host::WasmRunner;
 
-/// phash-v1.wasm のパス（CARGO_MANIFEST_DIR からの相対）
+/// image-phash.wasm のパス（CARGO_MANIFEST_DIR からの相対）
 const WASM_RELATIVE: &str =
-    "../../wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm";
+    "../../wasm/image-phash/target/wasm32-unknown-unknown/release/image_phash.wasm";
 
-/// phash-v1.wasm をロードする。ビルドされていなければ None。
+/// image-phash.wasm をロードする。ビルドされていなければ None。
 fn load_phash_wasm() -> Option<Vec<u8>> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let path = format!("{manifest_dir}/{WASM_RELATIVE}");
@@ -32,7 +32,7 @@ fn run_phash(wasm: &[u8], image_bytes: &[u8]) -> u64 {
     let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
     let result = runner
         .execute(wasm, image_bytes, "image/jpeg", None, "process")
-        .expect("phash-v1 WASM実行に失敗");
+        .expect("image-phash WASM実行に失敗");
 
     let hash_str = result.output["phash"]
         .as_str()
@@ -82,7 +82,7 @@ fn test_phash_same_image_jpeg_png() {
     let wasm = match load_phash_wasm() {
         Some(w) => w,
         None => {
-            eprintln!("SKIP: phash-v1.wasm が見つかりません（先にビルドしてください）");
+            eprintln!("SKIP: image-phash.wasm が見つかりません（先にビルドしてください）");
             return;
         }
     };
@@ -108,7 +108,7 @@ fn test_phash_resize_robustness() {
     let wasm = match load_phash_wasm() {
         Some(w) => w,
         None => {
-            eprintln!("SKIP: phash-v1.wasm が見つかりません");
+            eprintln!("SKIP: image-phash.wasm が見つかりません");
             return;
         }
     };
@@ -137,7 +137,7 @@ fn test_phash_different_images() {
     let wasm = match load_phash_wasm() {
         Some(w) => w,
         None => {
-            eprintln!("SKIP: phash-v1.wasm が見つかりません");
+            eprintln!("SKIP: image-phash.wasm が見つかりません");
             return;
         }
     };
@@ -166,7 +166,7 @@ fn test_phash_deterministic() {
     let wasm = match load_phash_wasm() {
         Some(w) => w,
         None => {
-            eprintln!("SKIP: phash-v1.wasm が見つかりません");
+            eprintln!("SKIP: image-phash.wasm が見つかりません");
             return;
         }
     };

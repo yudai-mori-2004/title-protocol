@@ -228,7 +228,7 @@ async fn test_verify_roundtrip() {
 }
 
 /// Extension（WASM実行）付き/verifyのテスト
-/// processor_ids: ["core-c2pa", "phash-v1"] で両方のsigned_jsonが返ることを確認
+/// processor_ids: ["core-c2pa", "image-phash"] で両方のsigned_jsonが返ることを確認
 #[tokio::test]
 async fn test_verify_with_extension() {
     // WASMバイナリをWATから生成（テスト用簡易phash WASM）
@@ -253,7 +253,7 @@ async fn test_verify_with_extension() {
     // テスト用WASMディレクトリを作成
     let wasm_dir = std::env::temp_dir().join("title-test-wasm");
     let _ = std::fs::create_dir_all(&wasm_dir);
-    std::fs::write(wasm_dir.join("phash-v1.wasm"), &test_wasm).unwrap();
+    std::fs::write(wasm_dir.join("image-phash.wasm"), &test_wasm).unwrap();
 
     // 1. MockRuntime初期化
     let rt = MockRuntime::new();
@@ -296,7 +296,7 @@ async fn test_verify_with_extension() {
     // 4. /verify: core-c2pa + phash-v1
     let verify_request = VerifyRequest {
         download_url: format!("http://127.0.0.1:{mock_port}/payload"),
-        processor_ids: vec!["core-c2pa".to_string(), "phash-v1".to_string()],
+        processor_ids: vec!["core-c2pa".to_string(), "image-phash".to_string()],
     };
     let body = serde_json::to_value(&verify_request).unwrap();
 
@@ -339,7 +339,7 @@ async fn test_verify_with_extension() {
     let ext_result = verify_response
         .results
         .iter()
-        .find(|r| r.processor_id == "phash-v1")
+        .find(|r| r.processor_id == "image-phash")
         .expect("phash-v1結果が存在するべき");
     assert_eq!(
         ext_result.signed_json["protocol"],
@@ -347,7 +347,7 @@ async fn test_verify_with_extension() {
     );
     // Extension signed_jsonもSignedJson構造体を使用するため、
     // extension_idはpayload内にある
-    assert_eq!(ext_result.signed_json["payload"]["extension_id"], "phash-v1");
+    assert_eq!(ext_result.signed_json["payload"]["extension_id"], "image-phash");
     // WASM実行結果がpayloadに含まれることを確認
     assert_eq!(
         ext_result.signed_json["payload"]["phash"], "test",
@@ -434,9 +434,9 @@ async fn test_verify_rejects_untrusted_extension() {
     let mock_port = start_mock_storage("/payload", payload_bytes).await;
     let proxy_port = start_inline_proxy().await;
 
-    // trusted_extension_idsに "phash-v1" のみ許可（"evil-ext" は不許可）
+    // trusted_extension_idsに "image-phash" のみ許可（"evil-ext" は不許可）
     let mut trusted = std::collections::HashSet::new();
-    trusted.insert("phash-v1".to_string());
+    trusted.insert("image-phash".to_string());
 
     let state = Arc::new(TeeAppState {
         runtime: Box::new(rt),

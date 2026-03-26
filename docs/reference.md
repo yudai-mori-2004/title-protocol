@@ -78,7 +78,7 @@ signed_json の保存先はプロトコルが強制するものではない。`S
 | `CORE_COLLECTION_MINT` | Auto | Core cNFT Collection Mint address. **`network.json` から自動読み取り。** `.env` で明示設定した場合はそちらが優先。 |
 | `EXT_COLLECTION_MINT` | Auto | Extension cNFT Collection Mint address. **`network.json` から自動読み取り。** `.env` で明示設定した場合はそちらが優先。 |
 | `GATEWAY_PUBKEY` | No | Gateway 認証用 Ed25519 public key (Base58). 未設定時は Gateway 認証をスキップ（開発環境用）。 |
-| `TRUSTED_EXTENSIONS` | Auto | 信頼する WASM Extension のカンマ区切りリスト. Default: `image-phash,hardware-google,c2pa-training,c2pa-license`. |
+| `TRUSTED_EXTENSIONS` | Auto | 信頼する WASM Extension のカンマ区切りリスト. Default: `image-phash,image-pdq,video-vpdq,cert-google,cert-sony,cert-leica,cert-rootlens`. |
 | `WASM_DIR` | Auto | WASM バイナリディレクトリ. Default: `/wasm-modules`. |
 
 ### Proxy (`crates/proxy`)

@@ -29,8 +29,8 @@ use std::io::Cursor;
 pub enum DecoderKind {
     /// 画像デコーダー（JPEG, PNG, WebP, GIF, BMP, TIFF）
     Image,
-    // Audio,  // 将来追加
-    // Video,  // 将来追加
+    /// 動画デコーダー（MP4, WebM, MOV — ffmpeg CLI経由）
+    Video,
 }
 
 /// デコード結果。
@@ -49,7 +49,9 @@ pub fn detect(content: &[u8]) -> Option<DecoderKind> {
     if image_decoder::supports(content) {
         return Some(DecoderKind::Image);
     }
-    // 将来: audio_decoder::supports(), video_decoder::supports() を追加
+    if crate::video::supports(content) {
+        return Some(DecoderKind::Video);
+    }
     None
 }
 
@@ -60,15 +62,36 @@ pub fn detect(content: &[u8]) -> Option<DecoderKind> {
 pub fn estimate_peak_bytes(kind: DecoderKind, content: &[u8]) -> Result<usize, i32> {
     match kind {
         DecoderKind::Image => image_decoder::estimate_peak_bytes(content),
+        DecoderKind::Video => {
+            // Video: peak memory is the temp file + one decoded frame (RGB24)
+            // We don't decode all frames at once, only one at a time
+            let meta = crate::video::probe(content).map_err(|_| -1i32)?;
+            let frame_bytes = (meta.width as usize) * (meta.height as usize) * 3;
+            Ok(content.len() + frame_bytes)
+        }
     }
 }
 
 /// コンテンツをデコードする。
+/// 画像: ピクセルデータをデコード。
+/// 動画: ヘッダのみ読み取り（メタデータ返却）。フレームは `video_frame_grayscale` opで逐次取得。
 /// 戻り値: `Ok(result)` = デコード結果, `Err(rc)` = `decode_content` の戻り値
 /// 仕様書 §7.1
 pub fn decode(kind: DecoderKind, content: &[u8]) -> Result<DecodeResult, i32> {
     match kind {
         DecoderKind::Image => image_decoder::decode(content),
+        DecoderKind::Video => {
+            let meta = crate::video::probe(content).map_err(|_| -3i32)?;
+            // Video metadata: [frame_count:u32, fps_x100:u32, width:u32, height:u32, duration_ms:u32]
+            let mut metadata = Vec::with_capacity(20);
+            metadata.extend_from_slice(&meta.frame_count.to_le_bytes());
+            metadata.extend_from_slice(&((meta.fps * 100.0) as u32).to_le_bytes());
+            metadata.extend_from_slice(&meta.width.to_le_bytes());
+            metadata.extend_from_slice(&meta.height.to_le_bytes());
+            metadata.extend_from_slice(&(meta.duration_ms as u32).to_le_bytes());
+            // data is empty for video — frames are extracted on demand
+            Ok(DecodeResult { data: vec![], metadata })
+        }
     }
 }
 

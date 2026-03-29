@@ -312,7 +312,7 @@ echo ""
 echo "[Step 4/11] TEE の起動..."
 
 ENCLAVE_CPU="${ENCLAVE_CPU_COUNT:-2}"
-ENCLAVE_MEM="${ENCLAVE_MEMORY_MIB:-1024}"
+ENCLAVE_MEM="${ENCLAVE_MEMORY_MIB:-3072}"
 
 if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
   # 既存Enclaveの停止

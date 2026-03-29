@@ -57,8 +57,7 @@ pub async fn run(
     // tee-info.json から Tree アドレスを取得
     let tee_info_path = project_root
         .join("tests")
-        .join("e2e")
-        .join("fixtures")
+        .join("cli")
         .join("tee-info.json");
     let info = config::load_tee_info(&tee_info_path)?;
 

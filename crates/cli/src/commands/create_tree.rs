@@ -92,8 +92,7 @@ pub async fn run(
     // tee-info.json を更新
     let tee_info_path = project_root
         .join("tests")
-        .join("e2e")
-        .join("fixtures")
+        .join("cli")
         .join("tee-info.json");
     let mut info = config::load_tee_info(&tee_info_path)?;
     info.core_tree_address = Some(result.core_tree_address);

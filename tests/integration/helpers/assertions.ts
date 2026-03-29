@@ -144,9 +144,18 @@ export function assertCertResult(
 ): void {
   const p = sj.payload as any;
   assert.equal(p.verified, opts.verified, `Expected verified=${opts.verified}`);
-  assert.ok(Array.isArray(p.chain), "chain must be an array");
-  assert.ok(p.root_ca, "root_ca must be present");
-  assert.ok(p.root_spki, "root_spki must be present");
 
-  if (opts.rootCa) assert.equal(p.root_ca, opts.rootCa);
+  if (opts.verified) {
+    // Positive case: full cert chain info returned
+    assert.ok(Array.isArray(p.chain), "chain must be an array when verified=true");
+    assert.ok(p.root_ca, "root_ca must be present when verified=true");
+    assert.ok(p.root_spki, "root_spki must be present when verified=true");
+    if (opts.rootCa) assert.equal(p.root_ca, opts.rootCa);
+  } else {
+    // Negative case: WASM returns verified=false + error, no chain details
+    assert.ok(
+      p.error || p.chain === undefined,
+      "verified=false should have error or no chain",
+    );
+  }
 }

@@ -43,6 +43,8 @@ RUN dnf install -y \
     iproute \
     perl \
     make \
+    tar \
+    gzip \
     && curl -sL https://exiftool.org/Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz | tar xz -C /tmp \
     && cd /tmp/Image-ExifTool-${EXIFTOOL_VERSION} \
     && perl Makefile.PL && make install \

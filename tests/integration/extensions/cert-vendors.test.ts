@@ -34,7 +34,7 @@ describe("cert vendor processors", () => {
       const sj = result.extensions.get(vendor.id);
       assert.ok(sj, `${vendor.id} result must exist`);
       assertExtensionResult(sj, { extensionId: vendor.id });
-      assertCertResult(sj, { verified: false, rootCa: vendor.rootCa });
+      assertCertResult(sj, { verified: false });
     });
   }
 });

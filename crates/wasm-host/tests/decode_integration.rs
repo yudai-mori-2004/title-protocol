@@ -24,31 +24,31 @@ fn test_detect_jpeg() {
 
 #[test]
 fn test_detect_png() {
-    let data = fixture("images/png/sample.png").unwrap();
+    let data = fixture("minimal/test_2x2.png").unwrap();
     assert!(matches!(decode::detect(&data), Some(DecoderKind::Image)));
 }
 
 #[test]
 fn test_detect_webp() {
-    let data = fixture("images/webp/sample.webp").unwrap();
+    let data = fixture("minimal/test.webp").unwrap();
     assert!(matches!(decode::detect(&data), Some(DecoderKind::Image)));
 }
 
 #[test]
 fn test_detect_gif() {
-    let data = fixture("images/gif/sample.gif").unwrap();
+    let data = fixture("minimal/test.gif").unwrap();
     assert!(matches!(decode::detect(&data), Some(DecoderKind::Image)));
 }
 
 #[test]
 fn test_detect_bmp() {
-    let data = fixture("images/bmp/sample.bmp").unwrap();
+    let data = fixture("minimal/test.bmp").unwrap();
     assert!(matches!(decode::detect(&data), Some(DecoderKind::Image)));
 }
 
 #[test]
 fn test_detect_tiff() {
-    let data = fixture("images/tiff/sample.tiff").unwrap();
+    let data = fixture("minimal/test.tiff").unwrap();
     // TIFF files go through RawImage path (exiftool first, image crate fallback).
     assert!(matches!(decode::detect(&data), Some(DecoderKind::RawImage)));
 }
@@ -80,7 +80,7 @@ fn test_detect_heic() {
 
 #[test]
 fn test_detect_mp4() {
-    let data = fixture("video/mp4/sample.mp4").unwrap();
+    let data = fixture("minimal/test.mp4").unwrap();
     assert!(matches!(decode::detect(&data), Some(DecoderKind::Video)));
 }
 
@@ -90,19 +90,19 @@ fn test_detect_mp4() {
 
 #[test]
 fn test_detect_mp3() {
-    let data = fixture("audio/mp3/sample.mp3").unwrap();
+    let data = fixture("minimal/test.mp3").unwrap();
     assert!(matches!(decode::detect(&data), Some(DecoderKind::Audio)));
 }
 
 #[test]
 fn test_detect_wav() {
-    let data = fixture("audio/wav/sample.wav").unwrap();
+    let data = fixture("minimal/test.wav").unwrap();
     assert!(matches!(decode::detect(&data), Some(DecoderKind::Audio)));
 }
 
 #[test]
 fn test_detect_flac() {
-    let data = fixture("audio/flac/sample.flac").unwrap();
+    let data = fixture("minimal/test.flac").unwrap();
     assert!(matches!(decode::detect(&data), Some(DecoderKind::Audio)));
 }
 
@@ -180,7 +180,7 @@ fn test_decode_jpeg() {
 
 #[test]
 fn test_decode_png() {
-    let data = fixture("images/png/sample.png").unwrap();
+    let data = fixture("minimal/test_2x2.png").unwrap();
     let kind = decode::detect(&data).unwrap();
     let result = decode::decode(kind, &data).unwrap();
     assert!(!result.data.is_empty());
@@ -188,7 +188,7 @@ fn test_decode_png() {
 
 #[test]
 fn test_decode_webp() {
-    let data = fixture("images/webp/sample.webp").unwrap();
+    let data = fixture("minimal/test.webp").unwrap();
     let kind = decode::detect(&data).unwrap();
     let result = decode::decode(kind, &data).unwrap();
     assert!(!result.data.is_empty());
@@ -196,7 +196,7 @@ fn test_decode_webp() {
 
 #[test]
 fn test_decode_gif() {
-    let data = fixture("images/gif/sample.gif").unwrap();
+    let data = fixture("minimal/test.gif").unwrap();
     let kind = decode::detect(&data).unwrap();
     let result = decode::decode(kind, &data).unwrap();
     assert!(!result.data.is_empty());
@@ -204,7 +204,7 @@ fn test_decode_gif() {
 
 #[test]
 fn test_decode_bmp() {
-    let data = fixture("images/bmp/sample.bmp").unwrap();
+    let data = fixture("minimal/test.bmp").unwrap();
     let kind = decode::detect(&data).unwrap();
     let result = decode::decode(kind, &data).unwrap();
     assert!(!result.data.is_empty());
@@ -212,7 +212,7 @@ fn test_decode_bmp() {
 
 #[test]
 fn test_decode_tiff() {
-    let data = fixture("images/tiff/sample.tiff").unwrap();
+    let data = fixture("minimal/test.tiff").unwrap();
     let kind = decode::detect(&data).unwrap();
     // TIFF goes through RawImage → exiftool fails (no preview) → image crate fallback
     let result = decode::decode(kind, &data).unwrap();
@@ -225,7 +225,7 @@ fn test_decode_tiff() {
 
 #[test]
 fn test_decode_video_metadata() {
-    let data = fixture("video/mp4/sample.mp4").unwrap();
+    let data = fixture("minimal/test.mp4").unwrap();
     let kind = decode::detect(&data).unwrap();
     assert!(matches!(kind, DecoderKind::Video));
     let result = decode::decode(kind, &data).unwrap();
@@ -322,7 +322,7 @@ fn test_decode_raw_dng() {
 
 #[test]
 fn test_decode_audio_mp3_not_implemented() {
-    let data = fixture("audio/mp3/sample.mp3").unwrap();
+    let data = fixture("minimal/test.mp3").unwrap();
     let kind = decode::detect(&data).unwrap();
     assert!(matches!(kind, DecoderKind::Audio));
     assert!(decode::decode(kind, &data).is_err());
@@ -330,7 +330,7 @@ fn test_decode_audio_mp3_not_implemented() {
 
 #[test]
 fn test_decode_audio_wav_not_implemented() {
-    let data = fixture("audio/wav/sample.wav").unwrap();
+    let data = fixture("minimal/test.wav").unwrap();
     let kind = decode::detect(&data).unwrap();
     assert!(matches!(kind, DecoderKind::Audio));
     assert!(decode::decode(kind, &data).is_err());
@@ -338,7 +338,7 @@ fn test_decode_audio_wav_not_implemented() {
 
 #[test]
 fn test_decode_audio_flac_not_implemented() {
-    let data = fixture("audio/flac/sample.flac").unwrap();
+    let data = fixture("minimal/test.flac").unwrap();
     let kind = decode::detect(&data).unwrap();
     assert!(matches!(kind, DecoderKind::Audio));
     assert!(decode::decode(kind, &data).is_err());

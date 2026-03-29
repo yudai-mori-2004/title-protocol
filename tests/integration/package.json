@@ -11,15 +11,16 @@
     "test:multi": "tsx --test multi/*.test.ts"
   },
   "dependencies": {
-    "@title-protocol/sdk": "file:../../sdk/ts",
-    "@solana/web3.js": "^1.95.0",
     "@noble/curves": "^1.8.0",
     "@noble/hashes": "^1.7.0",
-    "bs58": "^6.0.0"
+    "@solana/web3.js": "^1.95.0",
+    "@title-protocol/sdk": "file:../../sdk/ts",
+    "bs58": "^6.0.0",
+    "canonicalize": "^2.1.0"
   },
   "devDependencies": {
-    "tsx": "^4.0.0",
     "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.7.0"
   }
 }

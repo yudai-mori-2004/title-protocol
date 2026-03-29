@@ -74,13 +74,14 @@ pub(crate) fn process_core(
     let attributes_value =
         serde_json::to_value(&attributes).map_err(|e| format!("attributesシリアライズエラー: {e}"))?;
 
-    // 署名対象: payload + attributes の正規化JSON
+    // 署名対象: payload + attributes をRFC 8785 JCS正規化
+    // JCSにより数値・キー順序がクロス言語で一致する
     let sign_target = serde_json::json!({
         "payload": payload_value,
         "attributes": attributes_value,
     });
-    let sign_bytes =
-        serde_json::to_vec(&sign_target).map_err(|e| format!("署名対象のシリアライズエラー: {e}"))?;
+    let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target)
+        .map_err(|e| format!("署名対象のJCS正規化エラー: {e}"))?;
 
     // TEE秘密鍵で署名
     let signature = state.runtime.sign(&sign_bytes);

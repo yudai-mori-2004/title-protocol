@@ -113,12 +113,13 @@ pub(crate) async fn process_extension(
     let attributes_value = serde_json::to_value(&attributes)
         .map_err(|e| format!("attributesシリアライズエラー: {e}"))?;
 
+    // RFC 8785 JCS正規化 — クロス言語での署名検証を保証
     let sign_target = serde_json::json!({
         "payload": payload_value,
         "attributes": attributes_value,
     });
-    let sign_bytes = serde_json::to_vec(&sign_target)
-        .map_err(|e| format!("署名対象のシリアライズエラー: {e}"))?;
+    let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target)
+        .map_err(|e| format!("署名対象のJCS正規化エラー: {e}"))?;
 
     let signature = state.runtime.sign(&sign_bytes);
     let tee_pubkey_b58 = state.runtime.signing_pubkey().to_base58();

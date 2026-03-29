@@ -7,11 +7,15 @@
  * 1. Envelope fields (protocol, tee_type, tee_pubkey, tee_signature, tee_attestation)
  * 2. Ed25519 cryptographic signature verification (core trust property)
  * 3. Payload structure (core vs extension vs processor-specific)
+ *
+ * Signature verification uses RFC 8785 JSON Canonicalization Scheme (JCS)
+ * to match the TEE's serde_json_canonicalizer output.
  */
 
 import assert from "node:assert/strict";
 import { ed25519 } from "@noble/curves/ed25519";
 import bs58 from "bs58";
+import canonicalize from "canonicalize";
 import type { SignedJson } from "@title-protocol/sdk";
 
 // ---------------------------------------------------------------------------
@@ -21,14 +25,17 @@ import type { SignedJson } from "@title-protocol/sdk";
 /**
  * Verify tee_signature against tee_pubkey using Ed25519.
  *
- * The TEE signs: serde_json::to_vec({"payload": ..., "attributes": ...})
- * We reconstruct this sign_target from the signed_json fields.
+ * The TEE signs the JCS-canonicalized form of {"payload": ..., "attributes": ...}.
  */
 export function verifyTeeSignature(sj: SignedJson): void {
   const { tee_pubkey, tee_signature, payload, attributes } = sj;
 
-  // Reconstruct sign_target exactly as Rust produces it
-  const signTarget = JSON.stringify({ payload, attributes });
+  assert.ok(tee_pubkey, "tee_pubkey must be present");
+  assert.ok(tee_signature, "tee_signature must be present");
+
+  // RFC 8785 JCS — deterministic JSON serialization matching Rust's serde_json_canonicalizer
+  const signTarget = canonicalize({ payload, attributes });
+  assert.ok(signTarget, "JCS canonicalization failed");
   const messageBytes = new TextEncoder().encode(signTarget);
 
   const pubkeyBytes = bs58.decode(tee_pubkey);
@@ -145,17 +152,14 @@ export function assertCertResult(
   const p = sj.payload as any;
   assert.equal(p.verified, opts.verified, `Expected verified=${opts.verified}`);
 
-  if (opts.verified) {
-    // Positive case: full cert chain info returned
-    assert.ok(Array.isArray(p.chain), "chain must be an array when verified=true");
-    assert.ok(p.root_ca, "root_ca must be present when verified=true");
-    assert.ok(p.root_spki, "root_spki must be present when verified=true");
-    if (opts.rootCa) assert.equal(p.root_ca, opts.rootCa);
+  if (p.error) {
+    // Host function returned an error (e.g., no x5chain in C2PA manifest).
+    // WASM returns {verified: false, error: "..."} without chain details.
   } else {
-    // Negative case: WASM returns verified=false + error, no chain details
-    assert.ok(
-      p.error || p.chain === undefined,
-      "verified=false should have error or no chain",
-    );
+    // Normal result: chain extracted, root info present regardless of verified status.
+    assert.ok(Array.isArray(p.chain), "chain must be an array");
+    assert.ok(p.root_ca, "root_ca must be present");
+    assert.ok(p.root_spki, "root_spki must be present");
+    if (opts.rootCa) assert.equal(p.root_ca, opts.rootCa);
   }
 }

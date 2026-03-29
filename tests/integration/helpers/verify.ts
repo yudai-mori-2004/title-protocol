@@ -18,9 +18,7 @@ import { fixturePath } from "./fixtures.ts";
 export interface VerifyResult {
   response: VerifyResponse;
   results: VerifyResponse["results"];
-  /** Core processor result (if core-c2pa was requested). */
   core: SignedJson | undefined;
-  /** Extension results keyed by extension_id. */
   extensions: Map<string, SignedJson>;
   durationMs: number;
 }
@@ -33,7 +31,6 @@ export async function verifyContent(
   const absPath = fixturePath(relativeFixturePath);
   const content = fs.readFileSync(absPath);
 
-  // Encrypt
   const plaintext = buildPlaintext(
     { owner_wallet: OWNER_WALLET },
     new Uint8Array(content),
@@ -44,13 +41,11 @@ export async function verifyContent(
     plaintext,
   );
 
-  // Upload
   const { downloadUrl } = await ctx.client.upload(
     ctx.session.gatewayUrl,
     payload,
   );
 
-  // Verify
   const t0 = Date.now();
   const encResponse = await ctx.client.verifyRaw(ctx.session.gatewayUrl, {
     download_url: downloadUrl,
@@ -58,7 +53,6 @@ export async function verifyContent(
   });
   const durationMs = Date.now() - t0;
 
-  // Decrypt
   const responsePlaintext = await decryptResponse(
     symmetricKey,
     encResponse.nonce,
@@ -68,7 +62,6 @@ export async function verifyContent(
     new TextDecoder().decode(responsePlaintext),
   );
 
-  // Organize results
   let core: SignedJson | undefined;
   const extensions = new Map<string, SignedJson>();
 
@@ -76,8 +69,8 @@ export async function verifyContent(
     if (r.processor_id === "core-c2pa") {
       core = r.signed_json;
     } else {
-      const payload = r.signed_json.payload as any;
-      extensions.set(payload.extension_id ?? r.processor_id, r.signed_json);
+      const p = r.signed_json.payload as any;
+      extensions.set(p.extension_id ?? r.processor_id, r.signed_json);
     }
   }
 

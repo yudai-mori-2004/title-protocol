@@ -55,7 +55,7 @@ export async function getTestContext(): Promise<TestContext> {
     new PublicKey(PROGRAM_ID)
   );
   const client = new TitleClient(config);
-  const session = await client.selectNodeByEndpoint(GATEWAY_URL);
+  const session = await client.selectNode();
 
   cached = { config, client, session };
   return cached;

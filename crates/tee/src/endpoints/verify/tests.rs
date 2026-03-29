@@ -191,7 +191,7 @@ async fn test_verify_roundtrip() {
         "payload": signed_json.payload,
         "attributes": signed_json.attributes,
     });
-    let sign_bytes = serde_json::to_vec(&sign_target).unwrap();
+    let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target).unwrap();
     assert!(
         verifying_key.verify_strict(&sign_bytes, &signature).is_ok(),
         "tee_signatureの検証に失敗"

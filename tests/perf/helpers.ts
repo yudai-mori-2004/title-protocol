@@ -47,7 +47,7 @@ export async function init(): Promise<void> {
   const conn = new Connection(SOLANA_RPC);
   const config = await fetchGlobalConfig(conn, new PublicKey(PROGRAM_ID));
   client = new TitleClient(config);
-  session = await client.selectNodeByEndpoint(GATEWAY_URL);
+  session = await client.selectNode();
   initialized = true;
 }
 

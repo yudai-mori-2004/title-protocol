@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 const CERTS: &[u8] = include_bytes!("../../../tests/fixtures/certs/chain.pem");
 const PRIVATE_KEY: &[u8] = include_bytes!("../../../tests/fixtures/certs/ee.key");
-const TEST_IMAGE: &[u8] = include_bytes!("../../../tests/fixtures/test.jpg");
+const TEST_IMAGE: &[u8] = include_bytes!("../../../tests/fixtures/minimal/test.jpg");
 
 fn test_signer() -> Box<dyn c2pa::Signer> {
     c2pa::create_signer::from_keys(CERTS, PRIVATE_KEY, c2pa::SigningAlg::Ed25519, None).unwrap()
@@ -89,7 +89,7 @@ fn main() {
     let output_dir = if args.len() > 1 {
         PathBuf::from(&args[1])
     } else {
-        PathBuf::from("tests/e2e/fixtures")
+        PathBuf::from("tests/cli")
     };
 
     fs::create_dir_all(&output_dir).unwrap();

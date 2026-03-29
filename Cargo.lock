@@ -6786,6 +6786,7 @@ dependencies = [
  "coset 0.3.8",
  "der",
  "hex",
+ "image",
  "serde",
  "serde_bytes",
  "serde_json",

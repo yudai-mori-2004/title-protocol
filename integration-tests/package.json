@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "register": "tsx register-photo.ts"
+    "register": "tsx register-photo.ts",
+    "test": "tsx --test tests/**/*.test.ts",
+    "test:core": "tsx --test tests/core/*.test.ts",
+    "test:extensions": "tsx --test tests/extensions/*.test.ts",
+    "test:errors": "tsx --test tests/errors/*.test.ts",
+    "test:multi": "tsx --test tests/multi/*.test.ts"
   },
   "dependencies": {
     "@title-protocol/sdk": "file:../sdk/ts",

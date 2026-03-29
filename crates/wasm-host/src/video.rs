@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn test_probe_and_extract_real_video() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let path = format!("{manifest_dir}/../../integration-tests/fixtures/video/mp4/sample.mp4");
+        let path = format!("{manifest_dir}/../../tests/fixtures/video/mp4/sample.mp4");
         let content = match std::fs::read(&path) {
             Ok(c) => c,
             Err(_) => {

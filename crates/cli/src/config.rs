@@ -21,7 +21,7 @@ pub struct NetworkConfig {
     pub ext_collection_mint: String,
 }
 
-/// TEE情報（tests/e2e/fixtures/tee-info.json）。
+/// TEE情報（tests/cli/tee-info.json）。
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct TeeInfo {
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -1178,7 +1178,7 @@ mod tests {
     #[test]
     fn test_decode_content_png_success() {
         let wasm = decode_test_wat();
-        let content = include_bytes!("../../../tests/fixtures/test_2x2.png");
+        let content = include_bytes!("../../../tests/fixtures/minimal/test_2x2.png");
 
         let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
         let result = runner
@@ -1261,7 +1261,7 @@ mod tests {
         // （test.jpg は1x1最小JPEGで image crate がデコードできないため test_4x4.jpg を使用）
         let certs = include_bytes!("../../../tests/fixtures/certs/chain.pem");
         let private_key = include_bytes!("../../../tests/fixtures/certs/ee.key");
-        let test_image = include_bytes!("../../../tests/fixtures/test_4x4.jpg");
+        let test_image = include_bytes!("../../../tests/fixtures/minimal/test_4x4.jpg");
 
         let signer =
             c2pa::create_signer::from_keys(certs, private_key, c2pa::SigningAlg::Ed25519, None)
@@ -1346,7 +1346,7 @@ mod tests {
         )
         .unwrap();
 
-        let content = include_bytes!("../../../tests/fixtures/test_2x2.png");
+        let content = include_bytes!("../../../tests/fixtures/minimal/test_2x2.png");
         let runner = WasmRunner::new(100_000_000, 64 * 1024 * 1024);
         let result = runner
             .execute(&wasm, content, "image/jpeg", None, "process")

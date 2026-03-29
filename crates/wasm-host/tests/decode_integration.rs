@@ -3,13 +3,13 @@
 //! Integration tests for unified format detection and decoding.
 //!
 //! Covers all supported content types: images, video, audio, camera RAW.
-//! Uses organized fixture directory under `integration-tests/fixtures/`.
+//! Uses organized fixture directory under `tests/fixtures/`.
 
 use title_wasm_host::decode::{self, DecoderKind};
 
 fn fixture(relative: &str) -> Option<Vec<u8>> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    std::fs::read(format!("{manifest_dir}/../../integration-tests/fixtures/{relative}")).ok()
+    std::fs::read(format!("{manifest_dir}/../../tests/fixtures/{relative}")).ok()
 }
 
 // -----------------------------------------------------------------------

@@ -9,8 +9,8 @@
 //!   cargo run --example gen_phash_fixtures -- <fixtures_dir> [--tsa <url>]
 //!
 //! 例:
-//!   cargo run --example gen_phash_fixtures -- integration-tests/fixtures/phash-test
-//!   cargo run --example gen_phash_fixtures -- integration-tests/fixtures/phash-test \
+//!   cargo run --example gen_phash_fixtures -- tests/fixtures/phash-test
+//!   cargo run --example gen_phash_fixtures -- tests/fixtures/phash-test \
 //!     --tsa http://timestamp.digicert.com
 
 use std::fs;

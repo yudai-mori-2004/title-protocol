@@ -31,6 +31,8 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
+    ffmpeg \
+    libimage-exiftool-perl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee

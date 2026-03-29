@@ -29,11 +29,25 @@ RUN cargo build --release --bin title-tee
 # --- 実行ステージ ---
 FROM amazonlinux:2023
 
+# Static ffmpeg/ffprobe — zero shared library dependencies
+COPY --from=mwader/static-ffmpeg:7.1 /ffmpeg /usr/local/bin/ffmpeg
+COPY --from=mwader/static-ffmpeg:7.1 /ffprobe /usr/local/bin/ffprobe
+
+# ExifTool — pure Perl, install from official tarball
+ENV EXIFTOOL_VERSION=13.50
+
 RUN dnf install -y \
     openssl \
     ca-certificates \
     socat \
     iproute \
+    perl \
+    make \
+    && curl -sL https://exiftool.org/Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz | tar xz -C /tmp \
+    && cd /tmp/Image-ExifTool-${EXIFTOOL_VERSION} \
+    && perl Makefile.PL && make install \
+    && cd / && rm -rf /tmp/Image-ExifTool-* \
+    && dnf remove -y make \
     && dnf clean all
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee

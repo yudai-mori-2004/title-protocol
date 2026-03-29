@@ -390,7 +390,7 @@ mod tests {
 
     const CERTS: &[u8] = include_bytes!("../../../tests/fixtures/certs/chain.pem");
     const PRIVATE_KEY: &[u8] = include_bytes!("../../../tests/fixtures/certs/ee.key");
-    const TEST_IMAGE: &[u8] = include_bytes!("../../../tests/fixtures/test.jpg");
+    const TEST_IMAGE: &[u8] = include_bytes!("../../../tests/fixtures/minimal/test.jpg");
 
     /// テスト用のsignerを作成する
     fn test_signer() -> Box<dyn c2pa::Signer> {

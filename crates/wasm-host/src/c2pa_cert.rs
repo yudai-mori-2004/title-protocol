@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_extract_jumbf_from_plane() {
-        let data = std::fs::read("../../integration-tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
+        let data = std::fs::read("../../tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
         let jumbf = extract_jumbf_from_jpeg(&data).expect("JUMBF should be found");
         assert!(jumbf.len() > 1000);
         // Top box type should be 'jumb'
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn test_extract_cose_from_plane() {
-        let data = std::fs::read("../../integration-tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
+        let data = std::fs::read("../../tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
         let jumbf = extract_jumbf_from_jpeg(&data).unwrap();
         let cose = find_active_cose_sign1(&jumbf).expect("COSE_Sign1 should be found");
         assert!(cose.len() > 100);
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn test_extract_x5chain_from_plane() {
-        let data = std::fs::read("../../integration-tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
+        let data = std::fs::read("../../tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
         let jumbf = extract_jumbf_from_jpeg(&data).unwrap();
         let cose = find_active_cose_sign1(&jumbf).unwrap();
         let certs = extract_x5chain(&cose).expect("x5chain should be extracted");
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_verify_plane_against_google_root() {
-        let data = std::fs::read("../../integration-tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
+        let data = std::fs::read("../../tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
         let result = verify_active_cert_chain(&data, GOOGLE_ROOT_SPKI_HEX);
         assert!(result.is_ok(), "Verification should not error: {:?}", result.err());
         assert!(result.unwrap(), "plane.jpg should verify against Google Root CA");
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_verify_ramen_against_google_root() {
-        let data = std::fs::read("../../integration-tests/fixtures/images/jpeg/pixel_ramen.jpg").unwrap();
+        let data = std::fs::read("../../tests/fixtures/images/jpeg/pixel_ramen.jpg").unwrap();
         let result = verify_active_cert_chain(&data, GOOGLE_ROOT_SPKI_HEX);
         assert!(result.is_ok(), "Verification should not error: {:?}", result.err());
         assert!(result.unwrap(), "ramen.jpg should verify against Google Root CA");
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn test_verify_plane_against_wrong_root() {
-        let data = std::fs::read("../../integration-tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
+        let data = std::fs::read("../../tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
         // Use a fake root SPKI (valid P-384 SPKI format but wrong key)
         let fake_root = "3076301006072a8648ce3d020106052b8104002203620004\
                          0000000000000000000000000000000000000000000000000\

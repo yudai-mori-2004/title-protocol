@@ -52,17 +52,26 @@ cargo build --release -p title-cli
 
 # 7. Register WASM modules on-chain
 ./target/release/title-cli register-wasm \
+  --extension-id image-pdq \
+  --wasm-path wasm/image-pdq/target/wasm32-unknown-unknown/release/image_pdq.wasm
+./target/release/title-cli register-wasm \
   --extension-id image-phash \
-  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm
+  --wasm-path wasm/image-phash/target/wasm32-unknown-unknown/release/image_phash.wasm
 ./target/release/title-cli register-wasm \
-  --extension-id hardware-google \
-  --wasm-path wasm/hardware-google/target/wasm32-unknown-unknown/release/hardware_google.wasm
+  --extension-id video-vpdq \
+  --wasm-path wasm/video-vpdq/target/wasm32-unknown-unknown/release/video_vpdq.wasm
 ./target/release/title-cli register-wasm \
-  --extension-id c2pa-training \
-  --wasm-path wasm/c2pa-training-v1/target/wasm32-unknown-unknown/release/c2pa_training_v1.wasm
+  --extension-id cert-google \
+  --wasm-path wasm/cert-google/target/wasm32-unknown-unknown/release/cert_google.wasm
 ./target/release/title-cli register-wasm \
-  --extension-id c2pa-license \
-  --wasm-path wasm/c2pa-license-v1/target/wasm32-unknown-unknown/release/c2pa_license_v1.wasm
+  --extension-id cert-sony \
+  --wasm-path wasm/cert-sony/target/wasm32-unknown-unknown/release/cert_sony.wasm
+./target/release/title-cli register-wasm \
+  --extension-id cert-leica \
+  --wasm-path wasm/cert-leica/target/wasm32-unknown-unknown/release/cert_leica.wasm
+./target/release/title-cli register-wasm \
+  --extension-id cert-rootlens \
+  --wasm-path wasm/cert-rootlens/target/wasm32-unknown-unknown/release/cert_rootlens.wasm
 ```
 
 > **Full details:** [`programs/title-config/README.md`](../../programs/title-config/README.md) — program ID update locations, network.json schema, and what init-global does.
@@ -152,5 +161,4 @@ tail -f /tmp/title-indexer.log
 | Run a mainnet node | [deploy/aws/README.md — Mainnet](../aws/README.md#running-a-mainnet-node) |
 | Build an app with the SDK | [sdk/ts/README.md](../../sdk/ts/README.md) |
 | Query indexed cNFTs | [indexer/README.md](../../indexer/README.md) |
-| Environment variables & CLI reference | [docs/reference.md](../../docs/reference.md) |
 | Troubleshooting | [docs/troubleshooting.md](../../docs/troubleshooting.md) |

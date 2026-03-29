@@ -82,9 +82,7 @@ cd ../../..
 | `S3_REGION` | AWS region (e.g. `ap-northeast-1`) |
 | `SIGNED_JSON_S3_BUCKET` | `terraform output -raw signed_json_s3_bucket_name` |
 
-`SIGNED_JSON_S3_BUCKET` は Extension signed_json の保存先。Terraform が `title-signed-json-devnet` バケットを作成済み。ストレージルーティングの詳細は reference.md を参照。
-
-> All environment variables: [docs/reference.md](../../docs/reference.md)
+`SIGNED_JSON_S3_BUCKET` is the storage bucket for Extension signed_json. Terraform creates the `title-signed-json-devnet` bucket. See `.env.example` for all environment variables.
 
 ---
 
@@ -278,5 +276,4 @@ terraform destroy
 | Run locally instead | [deploy/local/README.md](../local/README.md) |
 | Build an app with the SDK | [sdk/ts/README.md](../../sdk/ts/README.md) |
 | Query indexed cNFTs | [indexer/README.md](../../indexer/README.md) |
-| Environment variables & CLI reference | [docs/reference.md](../../docs/reference.md) |
 | Troubleshooting | [docs/troubleshooting.md](../../docs/troubleshooting.md) |

@@ -1,10 +1,10 @@
 # Title Config Program — Phase 1: Network Setup
 
-Title Protocol の Anchor プログラムをデプロイし、GlobalConfig を初期化する手順。**開発者ごとに1回だけ実行する。**
+Deploy the Anchor program and initialize GlobalConfig. **Run once per developer.**
 
-Phase 1 で `network.json` を生成し、それを Phase 2（[ローカルノード](../../deploy/local/README.md) / [AWS ノード](../../deploy/aws/README.md)）で使用する。
+Phase 1 produces `network.json`, which is consumed by Phase 2 ([local node](../../deploy/local/README.md) / [AWS node](../../deploy/aws/README.md)).
 
-> アーキテクチャの概念説明は [docs/architecture.md](../../docs/architecture.md) を参照。
+> For a conceptual overview, see [docs/architecture.md](../../docs/architecture.md).
 
 ---
 
@@ -14,8 +14,8 @@ Phase 1 で `network.json` を生成し、それを Phase 2（[ローカルノ�
 |------|-------|
 | [Rust](https://rustup.rs/) + `wasm32-unknown-unknown` target | `rustup target add wasm32-unknown-unknown` |
 | [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) v2.0+ | |
-| `cargo-build-sbf` | Solana CLI に同梱 |
-| ~5 SOL on devnet | Program deploy に ~2 SOL。[faucet.solana.com](https://faucet.solana.com) or `solana airdrop` |
+| `cargo-build-sbf` | Bundled with Solana CLI |
+| ~5 SOL on devnet | Program deploy costs ~2 SOL. [faucet.solana.com](https://faucet.solana.com) or `solana airdrop` |
 
 ---
 
@@ -42,7 +42,7 @@ Update the Program ID in all of these files:
 | `crates/cli/src/anchor.rs` | test program IDs |
 | `crates/tee/src/endpoints/register_node.rs` | test program IDs |
 | `sdk/ts/src/chain.ts` | `TITLE_CONFIG_PROGRAM_ID` |
-| `crates/tee/src/main.rs` | `PROGRAM_ID` 環境変数のフォールバックデフォルト値 |
+| `crates/tee/src/main.rs` | `PROGRAM_ID` env var fallback default |
 
 ## Step 3: Build
 
@@ -97,70 +97,82 @@ Both `keys/authority.json` and `network.json` are gitignored — they are local 
 
 ## Step 8: Register WASM Modules
 
-WASM モジュールは `title-cli register-wasm` でオンチェーンに登録する。各モジュールに WasmModuleAccount PDA が作成され、バイナリの SHA-256 ハッシュと Arweave URL が記録される。
+Register WASM modules on-chain with `title-cli register-wasm`. Each module gets a WasmModuleAccount PDA storing its SHA-256 hash and source URL.
 
 ```bash
 ./target/release/title-cli register-wasm \
+  --extension-id image-pdq \
+  --wasm-path wasm/image-pdq/target/wasm32-unknown-unknown/release/image_pdq.wasm
+./target/release/title-cli register-wasm \
   --extension-id image-phash \
-  --wasm-path wasm/phash-v1/target/wasm32-unknown-unknown/release/phash_v1.wasm
+  --wasm-path wasm/image-phash/target/wasm32-unknown-unknown/release/image_phash.wasm
 ./target/release/title-cli register-wasm \
-  --extension-id hardware-google \
-  --wasm-path wasm/hardware-google/target/wasm32-unknown-unknown/release/hardware_google.wasm
+  --extension-id video-vpdq \
+  --wasm-path wasm/video-vpdq/target/wasm32-unknown-unknown/release/video_vpdq.wasm
 ./target/release/title-cli register-wasm \
-  --extension-id c2pa-training \
-  --wasm-path wasm/c2pa-training-v1/target/wasm32-unknown-unknown/release/c2pa_training_v1.wasm
+  --extension-id cert-google \
+  --wasm-path wasm/cert-google/target/wasm32-unknown-unknown/release/cert_google.wasm
 ./target/release/title-cli register-wasm \
-  --extension-id c2pa-license \
-  --wasm-path wasm/c2pa-license-v1/target/wasm32-unknown-unknown/release/c2pa_license_v1.wasm
+  --extension-id cert-sony \
+  --wasm-path wasm/cert-sony/target/wasm32-unknown-unknown/release/cert_sony.wasm
+./target/release/title-cli register-wasm \
+  --extension-id cert-leica \
+  --wasm-path wasm/cert-leica/target/wasm32-unknown-unknown/release/cert_leica.wasm
+./target/release/title-cli register-wasm \
+  --extension-id cert-rootlens \
+  --wasm-path wasm/cert-rootlens/target/wasm32-unknown-unknown/release/cert_rootlens.wasm
 ```
 
 | Extension ID | WASM Module Directory | Description |
 |-------------|----------------------|-------------|
-| `image-phash` | `wasm/phash-v1` | Perceptual hash |
-| `hardware-google` | `wasm/hardware-google` | Hardware capture proof |
-| `c2pa-training` | `wasm/c2pa-training-v1` | AI training consent flag |
-| `c2pa-license` | `wasm/c2pa-license-v1` | License information |
+| `image-pdq` | `wasm/image-pdq` | PDQ 256-bit perceptual hash |
+| `image-phash` | `wasm/image-phash` | pHash 64-bit perceptual hash (deprecated) |
+| `video-vpdq` | `wasm/video-vpdq` | vPDQ per-frame video hash |
+| `cert-google` | `wasm/cert-google` | Google C2PA certificate chain verification |
+| `cert-sony` | `wasm/cert-sony` | Sony C2PA certificate chain verification |
+| `cert-leica` | `wasm/cert-leica` | Leica C2PA certificate chain verification |
+| `cert-rootlens` | `wasm/cert-rootlens` | RootLens C2PA certificate chain verification |
 
-## Step 9: Collection Authority Delegation (自動)
+## Step 9: Collection Authority Delegation (automatic)
 
-TEE ノードが cNFT をミントするには、コレクションの Authority 権限を TEE の `signing_pubkey` に委譲する必要がある。
+For TEE nodes to mint cNFTs, collection Authority must be delegated to the TEE's `signing_pubkey`.
 
-**この委譲は `register-node` 時に自動的に行われる。** `register_tee_node` Anchor 命令内で MPL Core CPI が実行され、GlobalConfig への登録とコレクション権限委譲が 1 トランザクションで不可分に完了する。
+**This delegation happens automatically during `register-node`.** The `register_tee_node` Anchor instruction executes MPL Core CPI internally, completing GlobalConfig registration and collection authority delegation atomically in a single transaction.
 
-**不変条件:** `GlobalConfig.trusted_node_keys == コレクションの UpdateDelegate.additional_delegates`
+**Invariant:** `GlobalConfig.trusted_node_keys == Collection UpdateDelegate.additional_delegates`
 
-| 操作 | 権限委譲 |
-|------|---------|
-| `register_tee_node` | MPL Core `AddCollectionPluginV1`（初回）/ `UpdateCollectionPluginV1`（追加） |
-| `remove_tee_node` | MPL Core `UpdateCollectionPluginV1`（残ノードあり）/ `RemoveCollectionPluginV1`（最後） |
+| Operation | Authority Delegation |
+|-----------|---------------------|
+| `register_tee_node` | MPL Core `AddCollectionPluginV1` (first node) / `UpdateCollectionPluginV1` (subsequent) |
+| `remove_tee_node` | MPL Core `UpdateCollectionPluginV1` (nodes remaining) / `RemoveCollectionPluginV1` (last node) |
 
 ---
 
 ## Output: `network.json`
 
-Phase 1 完了後、プロジェクトルートに `network.json` が生成される。このファイルが Phase 2 への橋渡し。
+After Phase 1, `network.json` is generated in the project root. This file bridges Phase 1 and Phase 2.
 
-フィールド詳細は [docs/reference.md — network.json Schema](../../docs/reference.md#networkjson-schema) を参照。
+`network.json` is for bootstrapping only. After initialization, the on-chain GlobalConfig becomes the single source of truth.
 
 ---
 
 ## Next: Phase 2 — Node Deployment
 
-- **ローカル開発:** [`deploy/local/README.md`](../../deploy/local/README.md)
-- **AWS 本番:** [`deploy/aws/README.md`](../../deploy/aws/README.md)
+- **Local development:** [`deploy/local/README.md`](../../deploy/local/README.md)
+- **AWS production:** [`deploy/aws/README.md`](../../deploy/aws/README.md)
 
 ---
 
 ## Program Instructions Reference
 
-このプログラムが提供する on-chain instructions:
+On-chain instructions provided by this program:
 
 | Instruction | Description | Authority Required |
 |------------|-------------|-------------------|
-| `initialize` | GlobalConfig PDA を作成 | Yes |
-| `register_tee_node` | TEE ノードを登録 + コレクション権限委譲（MPL Core CPI） | Yes |
-| `remove_tee_node` | TEE ノードを削除 + コレクション権限取り消し（MPL Core CPI） | Yes |
-| `register_wasm_module` | WasmModuleAccount PDA を作成 + GlobalConfig の `trusted_wasm_ids` に追加 + 初期バージョン登録 | Yes |
-| `remove_wasm_module` | WasmModuleAccount PDA をクローズ + GlobalConfig の `trusted_wasm_ids` から除去 | Yes |
-| `add_wasm_version` | 既存 WasmModuleAccount に新バージョンを追加（PDA を realloc で拡張） | Yes |
-| `set_resource_limits` | ResourceLimits を設定 | Yes |
+| `initialize` | Create GlobalConfig PDA | Yes |
+| `register_tee_node` | Register TEE node + delegate collection authority (MPL Core CPI) | Yes |
+| `remove_tee_node` | Remove TEE node + revoke collection authority (MPL Core CPI) | Yes |
+| `register_wasm_module` | Create WasmModuleAccount PDA + add to `trusted_wasm_ids` + register initial version | Yes |
+| `remove_wasm_module` | Close WasmModuleAccount PDA + remove from `trusted_wasm_ids` | Yes |
+| `add_wasm_version` | Add new version to existing WasmModuleAccount (PDA realloc) | Yes |
+| `set_resource_limits` | Set ResourceLimits | Yes |

@@ -63,7 +63,7 @@ pub async fn handle_verify(
     // ダウンロード全体にグローバルタイムアウトを適用（チャンクタイムアウト積算によるSlowloris対策）
     let download_timeout =
         security::compute_dynamic_timeout(&limits, limits.max_single_content_bytes);
-    let (proxy_response, _download_ticket) = tokio::time::timeout(
+    let (proxy_response, download_ticket) = tokio::time::timeout(
         download_timeout,
         security::proxy_get_secured(
             &state.proxy_addr,
@@ -107,20 +107,49 @@ pub async fn handle_verify(
     let symmetric_key = title_crypto::hkdf_derive_key(&shared_secret)
         .map_err(|e| TeeError::Internal(format!("対称鍵の導出に失敗: {e}")))?;
 
-    // AES-GCM復号
+    // AES-GCM復号 — plaintext確保でメモリがcontent_size分増える
+    let payload_size = proxy_response.body.len();
+    if !download_ticket.extend(payload_size) {
+        return Err(TeeError::ServiceUnavailable(
+            "メモリ予算超過: 復号バッファを確保できません".into(),
+        ));
+    }
     let plaintext = title_crypto::aes_gcm_decrypt(&symmetric_key, &nonce, ciphertext)
         .map_err(|e| TeeError::BadRequest(format!("ペイロードの復号に失敗: {e}")))?;
-    drop(proxy_response); // ダウンロードデータのメモリを早期解放
+    drop(proxy_response);
+    download_ticket.shrink(payload_size); // 暗号文バッファ解放分を返却
 
     // 平文フォーマット: [4B: metadata_len][metadata JSON][raw content bytes]
     let (client_metadata, content_offset) =
         title_types::parse_plaintext_payload(&plaintext)
             .map_err(|e| TeeError::BadRequest(e))?;
+    let plaintext_size = plaintext.len();
+    let content_size = plaintext_size - content_offset;
+    if !download_ticket.extend(content_size) {
+        return Err(TeeError::ServiceUnavailable(
+            "メモリ予算超過: コンテンツバッファを確保できません".into(),
+        ));
+    }
     let content_bytes = plaintext[content_offset..].to_vec();
-    drop(plaintext); // 平文バッファのメモリを早期解放
+    drop(plaintext);
+    download_ticket.shrink(plaintext_size); // 平文バッファ解放分を返却
 
     // MIMEタイプを検出
     let mime_type = detect_mime_type(&content_bytes);
+
+    // processor並列実行で content_bytes がcloneされる分を事前予約。
+    // clone数 = processor_ids.len() (元のcontent_bytesは別途保持される)
+    let clone_overhead = content_bytes.len() * request.processor_ids.len();
+    if !download_ticket.extend(clone_overhead) {
+        return Err(TeeError::ServiceUnavailable(
+            "メモリ予算超過: 並列処理用メモリを確保できません".into(),
+        ));
+    }
+
+    // TicketをArcでラップし、各processorのWasmRunnerと共有する。
+    // decode/Jarosz等のメモリ確保はホスト関数内でextend/shrinkされる。
+    // handler終了時にArcの最後の参照がdrop → Ticket drop → 全予約解放。
+    let request_ticket = std::sync::Arc::new(download_ticket);
 
     // コンテンツサイズの事後検証（復号後の実データサイズ）
     // 仕様書 §6.4
@@ -161,6 +190,7 @@ pub async fn handle_verify(
             let pid = processor_id.clone();
             let ext_inputs = client_metadata.extension_inputs.clone();
             let max_graph = limits.c2pa_max_graph_size;
+            let ticket = std::sync::Arc::clone(&request_ticket);
 
             let handle = tokio::spawn(async move {
                 let signed_json = if pid == CORE_PROCESSOR_ID {
@@ -174,6 +204,7 @@ pub async fn handle_verify(
                     super::extension::process_extension(
                         &state, &content, &mime, &wallet, &pid,
                         ext_inputs.as_ref().and_then(|m| m.get(&pid)),
+                        ticket,
                     )
                     .await
                     .map_err(|e| format!("Extension処理に失敗 ({}): {e}", pid))?

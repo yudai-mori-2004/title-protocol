@@ -238,7 +238,7 @@ mod tests {
             ext_collection_mint: None,
             gateway_pubkey: None,
             wasm_loader: None,
-            resource_pool: Arc::new(title_wasm_host::ResourcePool::new(1024 * 1024 * 1024)),
+            resource_pool: Arc::new(title_wasm_host::ResourcePool::with_single_limit(1024 * 1024 * 1024)),
             trusted_extension_ids: None,
             alt_address: RwLock::new(None),
             alt_addresses: RwLock::new(vec![]),

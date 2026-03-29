@@ -19,8 +19,8 @@ const CERT_GOOGLE_WASM: &str =
     "../../wasm/cert-google/target/wasm32-unknown-unknown/release/cert_google.wasm";
 
 /// Pixel写真のパス
-const PIXEL_PLANE: &str = "../../integration-tests/fixtures/pixel_photo_plane.jpg";
-const PIXEL_RAMEN: &str = "../../integration-tests/fixtures/pixel_photo_ramen.jpg";
+const PIXEL_PLANE: &str = "../../integration-tests/fixtures/images/jpeg/pixel_plane.jpg";
+const PIXEL_RAMEN: &str = "../../integration-tests/fixtures/images/jpeg/pixel_ramen.jpg";
 
 /// WASMバイナリをロードする。ビルドされていなければ None。
 fn load_wasm(relative_path: &str) -> Option<Vec<u8>> {
@@ -91,8 +91,9 @@ fn test_cert_google_plane() {
         Some("Google C2PA Root CA G3")
     );
 
-    // root_spki_hash should be present
-    assert!(result.output["root_spki_hash"].as_str().is_some());
+    // root_spki should be the full SPKI DER hex
+    let spki = result.output["root_spki"].as_str().unwrap();
+    assert!(spki.len() > 100, "root_spki should be full SPKI hex, got len={}", spki.len());
 }
 
 #[test]

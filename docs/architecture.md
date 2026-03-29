@@ -1,8 +1,8 @@
 # Architecture
 
-Title Protocol のオンチェーン構造、信頼モデル、ノードアーキテクチャの概念説明。
+On-chain structure, trust model, and node architecture of Title Protocol.
 
-セットアップ手順は [QUICKSTART.md](../QUICKSTART.md) を参照。
+For setup instructions, see [QUICKSTART.md](../QUICKSTART.md).
 
 ---
 
@@ -198,10 +198,10 @@ On devnet, `keys/authority.json` is created during Phase 1 (`init-global`), so `
 4. Client                    5. Client                  6. Client
    |                            |                          |
    |  POST /verify              |  Upload signed_json      |  POST /sign
-   |  -------------->           |  to Arweave (via Irys)   |  -------------->
+   |  -------------->           |  to off-chain storage    |  -------------->
    |  Gateway -> TEE            |  -------------->         |  Gateway -> TEE
    |  <--------------           |  <--------------         |  <--------------
-   |  encrypted results         |  ar://<tx_id>            |  partial_txs[]
+   |  encrypted results         |  <uri>                   |  partial_txs[]
    |                            |                          |
    v                            v                          v  broadcast
 ```
@@ -210,7 +210,7 @@ On devnet, `keys/authority.json` is created during Phase 1 (`init-global`), so `
 2. **Get upload URL** — Request a presigned upload URL from the Gateway
 3. **Upload encrypted payload** — Encrypt the content + owner wallet with ECDH (X25519 + HKDF-SHA256 + AES-256-GCM), upload to temp storage
 4. **Verify** — The Gateway relays to the TEE, which decrypts, verifies C2PA signatures, builds the provenance graph, and runs WASM extensions. Results are returned encrypted
-5. **Store results** — Upload the signed JSON to permanent storage (Arweave via Irys)
+5. **Store results** — Upload the signed JSON to any storage that returns a retrievable URI
 6. **Sign & Mint** — The TEE creates cNFT mint transactions. The client broadcasts them to Solana
 
 For SDK usage, see [`sdk/ts/README.md`](../sdk/ts/README.md).

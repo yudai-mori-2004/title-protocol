@@ -12,7 +12,7 @@ use title_wasm_host::WasmRunner;
 const WASM_RELATIVE: &str =
     "../../wasm/video-vpdq/target/wasm32-unknown-unknown/release/video_vpdq.wasm";
 
-const VIDEO_RELATIVE: &str = "../../integration-tests/fixtures/test_video.mp4";
+const VIDEO_RELATIVE: &str = "../../integration-tests/fixtures/video/mp4/sample.mp4";
 
 fn load_wasm() -> Option<Vec<u8>> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

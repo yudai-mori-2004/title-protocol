@@ -117,13 +117,19 @@ async fn main() -> anyhow::Result<()> {
             Some(Box::new(wasm_loader::CachedWasmLoader::new(inner, ttl)))
         };
 
-    // ResourcePool（仕様書 §6.4, §7.1 統合リソースプール）
-    let max_concurrent_bytes: usize = std::env::var("MAX_CONCURRENT_BYTES")
+    // ResourcePool — two-tier admission control (§6.4, §7.1)
+    // ADMISSION_LIMIT: new requests accepted when used < this value
+    // TOTAL_LIMIT: absolute ceiling for in-progress extend() calls
+    let total_limit: usize = std::env::var("POOL_TOTAL_LIMIT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(infra::security::DEFAULT_MAX_CONCURRENT_BYTES as usize);
-    let resource_pool = Arc::new(title_wasm_host::ResourcePool::new(max_concurrent_bytes));
-    tracing::info!(max_concurrent_bytes, "ResourcePool初期化");
+    let admission_limit: usize = std::env::var("POOL_ADMISSION_LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(total_limit * 3 / 4); // default: 75% of total
+    let resource_pool = Arc::new(title_wasm_host::ResourcePool::new(admission_limit, total_limit));
+    tracing::info!(admission_limit, total_limit, "ResourcePool初期化");
 
     // 信頼されたExtension ID（仕様書 §6.4 不正WASMインジェクション防御）
     // TRUSTED_EXTENSIONS=image-phash,image-pdq,video-vpdq,cert-google,cert-sony,cert-leica,cert-rootlens

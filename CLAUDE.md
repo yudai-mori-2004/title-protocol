@@ -97,7 +97,7 @@ Client (SDK) → Gateway → Temporary Storage → TEE → Solana
 ## Key Design Decisions
 
 - **No Extism** — use wasmtime directly (§7.1)
-- **c2pa crate v0.75**
+- **c2pa crate v0.78**
 - **Vendor separation via feature flags**: `vendor-aws` feature gates vendor-specific code. Proxy uses `#[cfg(target_os = "linux")]` for conditional compilation
 - **TEE runtime is trait-abstracted**: `trait TeeRuntime` → `MockRuntime` (local) / vendor implementations (behind feature flags)
 - **TEE is stateless**: No state between requests. Keys exist only in memory, lost on restart

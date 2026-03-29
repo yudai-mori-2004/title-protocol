@@ -28,7 +28,9 @@ use super::proxy_client::ProxyResponse;
 pub const DEFAULT_MAX_SINGLE_CONTENT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// 同時処理可能な合計データ量（バイト）: 8GB
-pub const DEFAULT_MAX_CONCURRENT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// Default total memory budget for ResourcePool.
+/// Enclave default is 1024MB; reserve ~300MB for OS/TEE binary/unmanaged buffers.
+pub const DEFAULT_MAX_CONCURRENT_BYTES: u64 = 700 * 1024 * 1024;
 
 /// 動的タイムアウト計算に使用する最低転送速度（バイト/秒）: 1MB/s
 pub const DEFAULT_MIN_UPLOAD_SPEED_BYTES: u64 = 1024 * 1024;
@@ -241,7 +243,7 @@ pub async fn proxy_get_secured(
     // Ticket により、タイムアウトやIOエラー時もDrop時に確実に解放される。
     let total_to_read = declared_size as usize;
     let mut buffer = Vec::with_capacity(total_to_read);
-    let ticket = pool.ticket();
+    let ticket = pool.try_ticket().ok_or(SecurityError::MemoryLimitExceeded)?;
     let mut remaining = total_to_read;
 
     while remaining > 0 {
@@ -318,10 +320,13 @@ async fn proxy_get_secured_direct(
 
     // ResourcePool で予約（Ticket 発行）— body 分のメモリを追跡
     let ticket = if !body.is_empty() {
-        pool.acquire(body.len())
-            .ok_or(SecurityError::MemoryLimitExceeded)?
+        let t = pool.try_ticket().ok_or(SecurityError::MemoryLimitExceeded)?;
+        if !t.extend(body.len()) {
+            return Err(SecurityError::MemoryLimitExceeded);
+        }
+        t
     } else {
-        pool.ticket()
+        pool.try_ticket().ok_or(SecurityError::MemoryLimitExceeded)?
     };
 
     Ok((ProxyResponse { status, body }, ticket))
@@ -422,7 +427,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let pool = Arc::new(ResourcePool::new(1024 * 1024 * 1024));
+        let pool = Arc::new(ResourcePool::with_single_limit(1024 * 1024 * 1024));
         let result = proxy_get_secured(
             &format!("127.0.0.1:{port}"),
             "http://example.com/payload",
@@ -468,7 +473,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // ResourcePool容量を64KBに制限 → 128KBの2チャンク目で枯渇
-        let pool = Arc::new(ResourcePool::new(64 * 1024));
+        let pool = Arc::new(ResourcePool::with_single_limit(64 * 1024));
         let result = proxy_get_secured(
             &format!("127.0.0.1:{port}"),
             "http://example.com/payload",
@@ -515,7 +520,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let pool = Arc::new(ResourcePool::new(1024 * 1024));
+        let pool = Arc::new(ResourcePool::with_single_limit(1024 * 1024));
         let result = proxy_get_secured(
             &format!("127.0.0.1:{port}"),
             "http://example.com/payload",
@@ -561,7 +566,7 @@ mod tests {
             }
         });
 
-        let pool = Arc::new(ResourcePool::new(1024 * 1024));
+        let pool = Arc::new(ResourcePool::with_single_limit(1024 * 1024));
         let result = proxy_get_secured(
             &format!("127.0.0.1:{port}"),
             "http://example.com/test",

@@ -86,23 +86,6 @@ fn write_result(json: &str) -> u32 {
     ptr
 }
 
-/// SHA-256ハッシュをhex文字列に変換する。
-/// SPKI DERバイト列のハッシュ用（Root CA識別に使用）。
-fn sha256_hex(data: &[u8]) -> String {
-    // get_content_featureのsha256 opはコンテンツ全体用なので、
-    // ここではSPKI hexの文字列をそのまま使う（固定値なのでハッシュ不要）。
-    // root_spki_hashにはSPKI hex自体のSHA-256を使いたいが、
-    // no_std環境でSHA-256を計算するのはオーバーキル。
-    // 代わりにSPKI hexの先頭32文字をfingerprint的に使用。
-    let mut s = String::with_capacity(32);
-    for &b in &data[..16.min(data.len())] {
-        let hi = b >> 4;
-        let lo = b & 0x0f;
-        s.push(char::from(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 }));
-        s.push(char::from(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 }));
-    }
-    s
-}
 
 /// JSON文字列内の特殊文字をエスケープする。
 fn json_escape(s: &str, out: &mut String) {
@@ -162,25 +145,23 @@ pub extern "C" fn process() -> u32 {
 
     // ホスト結果からverifiedとchainを抽出して最終結果JSONを構築
     // ホスト結果: {"verified":true/false,"chain":[{"subject":"..."},...]}}
-    // 最終結果に root_ca と root_spki_hash を追加
+    // 最終結果に root_ca と root_spki を追加
     let host_json = match core::str::from_utf8(result_bytes) {
         Ok(s) => s,
         Err(_) => return write_result(r#"{"verified":false,"error":"invalid utf8"}"#),
     };
 
-    // root_spki_hash: SPKI hexの先頭部分をフィンガープリントとして使用
-    let spki_fingerprint = sha256_hex(ROOT_SPKI_HEX.as_bytes());
 
     // ホストJSONをパースせずに結果を構築（no_stdでJSONパーサーがないため）
-    // ホストの結果はそのまま展開し、root_caとroot_spki_hashを追加
+    // ホストの結果はそのまま展開し、root_caとroot_spkiを追加
     // ホスト結果の末尾の '}' を除去し、追加フィールドを付加
     let mut final_json = String::with_capacity(host_json.len() + 200);
     if let Some(stripped) = host_json.strip_suffix('}') {
         final_json.push_str(stripped);
         final_json.push_str(",\"root_ca\":\"");
         json_escape(ROOT_CA_NAME, &mut final_json);
-        final_json.push_str("\",\"root_spki_hash\":\"");
-        final_json.push_str(&spki_fingerprint);
+        final_json.push_str("\",\"root_spki\":\"");
+        final_json.push_str(ROOT_SPKI_HEX);
         final_json.push_str("\"}");
     } else {
         // ホスト結果が予期しない形式の場合はそのまま返す

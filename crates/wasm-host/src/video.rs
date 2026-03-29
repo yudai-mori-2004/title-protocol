@@ -52,7 +52,8 @@ impl TempVideoFile {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path = dir.join(format!("title-tee-video-{id}"));
+        let pid = std::process::id();
+        let path = dir.join(format!("title-tee-video-{pid}-{id}"));
 
         let mut file = std::fs::File::create(&path)
             .map_err(|e| format!("Failed to create temp video file: {e}"))?;
@@ -67,22 +68,6 @@ impl Drop for TempVideoFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
-}
-
-/// Check whether the content looks like a video file (MP4, WebM, MOV, etc.).
-pub fn supports(content: &[u8]) -> bool {
-    if content.len() < 12 {
-        return false;
-    }
-    // MP4/MOV: ftyp box at offset 4
-    if &content[4..8] == b"ftyp" {
-        return true;
-    }
-    // WebM/Matroska: EBML header
-    if content[0..4] == [0x1A, 0x45, 0xDF, 0xA3] {
-        return true;
-    }
-    false
 }
 
 /// Extract video metadata using ffprobe.
@@ -193,22 +178,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_supports_mp4() {
-        // Minimal ftyp box
-        let mut data = vec![0u8; 12];
-        data[4..8].copy_from_slice(b"ftyp");
-        assert!(supports(&data));
-    }
-
-    #[test]
-    fn test_supports_non_video() {
-        // JPEG
-        assert!(!supports(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0, 0, 0, 0, 0]));
-        // Too short
-        assert!(!supports(&[0, 1, 2, 3]));
-    }
-
-    #[test]
     fn test_parse_frame_rate() {
         assert!((parse_frame_rate("30/1") - 30.0).abs() < 0.01);
         assert!((parse_frame_rate("30000/1001") - 29.97).abs() < 0.01);
@@ -218,7 +187,7 @@ mod tests {
     #[test]
     fn test_probe_and_extract_real_video() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let path = format!("{manifest_dir}/../../integration-tests/fixtures/test_video.mp4");
+        let path = format!("{manifest_dir}/../../integration-tests/fixtures/video/mp4/sample.mp4");
         let content = match std::fs::read(&path) {
             Ok(c) => c,
             Err(_) => {
@@ -226,8 +195,6 @@ mod tests {
                 return;
             }
         };
-
-        assert!(supports(&content));
 
         let meta = probe(&content).expect("ffprobe should succeed");
         eprintln!("Video: {}x{}, {:.2}fps, {}ms, {} frames",

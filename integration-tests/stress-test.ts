@@ -277,10 +277,8 @@ async function testBaseline() {
         download_url: downloadUrl,
         processor_ids: [
           "core-c2pa",
-          "phash-v1",
-          "hardware-google",
-          "c2pa-training-v1",
-          "c2pa-license-v1",
+          "image-pdq",
+          "cert-google",
         ],
       });
       const d = Date.now() - t0;
@@ -1299,7 +1297,7 @@ async function testResourceExhaustion() {
       try {
         const encResp = await client.verify(gatewayUrl, {
           download_url: downloadUrl,
-          processor_ids: ["core-c2pa", "phash-v1"],
+          processor_ids: ["core-c2pa", "image-pdq"],
         });
         await decryptResponse(symmetricKey, encResp.nonce, encResp.ciphertext);
         return { ok: true, ms: Date.now() - t };
@@ -1316,7 +1314,7 @@ async function testResourceExhaustion() {
 
     record({
       category: "resource",
-      name: `${count} concurrent /verify+phash flood`,
+      name: `${count} concurrent /verify+pdq flood`,
       status: ok > 0 ? "PASS" : "FAIL",
       duration_ms: d,
       details: `${ok}/${count} ok, total=${d}ms, ${failed.length > 0 ? `failures: ${failed.map((f) => (f as any).err?.slice(0, 50)).join("; ")}` : "all success"}`,
@@ -1356,7 +1354,7 @@ async function testResourceExhaustion() {
       const { downloadUrl, symmetricKey } = await uploadEncrypted();
       const encResp = await client.verify(gatewayUrl, {
         download_url: downloadUrl,
-        processor_ids: ["core-c2pa", "phash-v1"],
+        processor_ids: ["core-c2pa", "image-pdq"],
       });
       await decryptResponse(symmetricKey, encResp.nonce, encResp.ciphertext);
       const d = Date.now() - t0;
@@ -1365,7 +1363,7 @@ async function testResourceExhaustion() {
         name: "ResourcePool recovery /verify after flood",
         status: "PASS",
         duration_ms: d,
-        details: `full /verify+phash succeeded in ${d}ms — pool fully recovered`,
+        details: `full /verify+pdq succeeded in ${d}ms — pool fully recovered`,
         expected: "200 OK (Tickets released, pool budget available)",
       });
     } catch (e: any) {

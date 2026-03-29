@@ -296,3 +296,36 @@ Content-Type: `application/octet-stream`
 | `integration-tests/register-photo.ts` | フィールド名更新 |
 | `integration-tests/stress-test.ts` | フィールド名更新 |
 | `sdk/ts/package.json` | `0.1.9` → `0.1.10` |
+
+---
+
+## Task 16 — WASMモジュール再設計
+
+| 変更 | 内容 |
+|------|------|
+| cert-* (4モジュール新設) | C2PA証明書チェーン検証。Root CA SPKIハードコード。Google/Sony/Leica/RootLens |
+| image-pdq (新設) | Meta ThreatExchange PDQ 256-bit知覚ハッシュ。Jaroszダウンサンプル + DCT + Torben中央値。Metaリファレンスとの距離 ≤ 2 |
+| WASM整理 | c2pa-license-v1, c2pa-training-v1, hardware-google を削除。phash-v1 → image-phash リネーム |
+| jarosz.rs (新設) | Meta `downscaling.cpp` の忠実なRust移植。f32 luminanceパイプライン |
+| c2pa_cert.rs 拡張 | `verify_active_cert_chain_detailed()` — JSON結果にchain subjects含む |
+
+## Task 17 — 動画対応 (vPDQ)
+
+| 変更 | 内容 |
+|------|------|
+| video.rs (新設) | ffmpeg CLIサブプロセスでフレーム抽出。`/dev/shm` tmpfs + RAII削除 |
+| decode.rs 拡張 | `DecoderKind::Video` 追加。ffprobeでメタデータ取得 |
+| get_decoded_feature 拡張 | `video_frame_grayscale` op追加。フレーム抽出 + Jaroszダウンサンプル |
+| video-vpdq (新設) | per-frame PDQハッシュ列。1fps サンプリング、quality/dedupeフィルタ |
+
+## Task 18 — デコーダー統一 + アーキテクチャ整理
+
+| 変更 | 内容 |
+|------|------|
+| フォーマット検出統一 | `file-format` crateベース。画像/動画/RAW/音声を統一判定。自前マジックバイト廃止 |
+| RAWデコード (新設) | `raw.rs` — exiftool CLIでプレビューJPEG抽出。TIFF系はexiftool → image crate fallback |
+| DecodedContent enum化 | `channels=0` マジックナンバー廃止。`Image { data, w, h, ch }` / `Video { w, h, fps }` |
+| cert-* root_spki修正 | `sha256_hex()` 削除（名前詐欺）。SPKI DER hexをそのまま `root_spki` に書き込み |
+| hmac_content 削除 | 未使用デッドコード。既存暗号基盤でカバー済み。hmac crate依存も削除 |
+| テストフィクスチャ整理 | 整理済みディレクトリ構造 + 全フォーマットのサンプル拡充（c2pa-rs/f-spot） |
+| レガシー削除 | test-phash-similarity.ts, gen_phash_fixtures.rs, phash-test/ |

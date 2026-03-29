@@ -7,8 +7,8 @@ Thank you for your interest in contributing to Title Protocol. This document pro
 | Tool | Version | Purpose |
 |------|---------|---------|
 | Rust | 1.82+ | Core logic, TEE, Gateway, Proxy, WASM modules |
-| Node.js | 24+ | TypeScript SDK, Indexer, scripts |
-| Solana CLI | 1.18+ | Blockchain interaction, key management |
+| Node.js | 20+ | TypeScript SDK, Indexer, scripts |
+| Solana CLI | 2.0+ | Blockchain interaction, key management |
 | Anchor CLI | 0.30+ | Solana program builds (optional) |
 
 ## Getting Started
@@ -51,7 +51,7 @@ See `.env.example` for all configuration options.
 
 ```
 crates/           — Rust workspace (types, crypto, core, wasm-host, tee, gateway, proxy, cli)
-wasm/             — WASM modules (phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1)
+wasm/             — WASM modules (image-pdq, image-phash, video-vpdq, cert-google, cert-sony, cert-leica, cert-rootlens)
 programs/         — Solana Anchor program (title-config)
 sdk/ts/           — TypeScript client SDK
 indexer/          — TypeScript cNFT indexer

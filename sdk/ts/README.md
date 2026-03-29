@@ -75,10 +75,10 @@ If you want to store signed_json yourself instead of using Gateway delegation:
 const result = await client.register({
   content: imageBuffer,
   ownerWallet: wallet,
-  processorIds: ["core-c2pa", "phash-v1"],
+  processorIds: ["core-c2pa", "image-pdq"],
   storeSignedJson: async (json) => {
-    // Persist to your own storage. Return a retrievable URI.
-    return await uploadToArweave(json);
+    // Persist to any storage. Return a retrievable URI.
+    return await uploadToStorage(json);
   },
   recentBlockhash: blockhash,
 });

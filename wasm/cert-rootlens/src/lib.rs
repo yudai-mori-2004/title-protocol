@@ -84,17 +84,6 @@ fn write_result(json: &str) -> u32 {
     ptr
 }
 
-fn sha256_hex(data: &[u8]) -> String {
-    let mut s = String::with_capacity(32);
-    for &b in &data[..16.min(data.len())] {
-        let hi = b >> 4;
-        let lo = b & 0x0f;
-        s.push(char::from(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 }));
-        s.push(char::from(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 }));
-    }
-    s
-}
-
 fn json_escape(s: &str, out: &mut String) {
     for c in s.chars() {
         match c {
@@ -150,15 +139,14 @@ pub extern "C" fn process() -> u32 {
         Err(_) => return write_result(r#"{"verified":false,"error":"invalid utf8"}"#),
     };
 
-    let spki_fingerprint = sha256_hex(ROOT_SPKI_HEX.as_bytes());
 
     let mut final_json = String::with_capacity(host_json.len() + 200);
     if let Some(stripped) = host_json.strip_suffix('}') {
         final_json.push_str(stripped);
         final_json.push_str(",\"root_ca\":\"");
         json_escape(ROOT_CA_NAME, &mut final_json);
-        final_json.push_str("\",\"root_spki_hash\":\"");
-        final_json.push_str(&spki_fingerprint);
+        final_json.push_str("\",\"root_spki\":\"");
+        final_json.push_str(ROOT_SPKI_HEX);
         final_json.push_str("\"}");
     } else {
         final_json.push_str(host_json);

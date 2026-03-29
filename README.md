@@ -101,12 +101,12 @@ Client (SDK)       Temp Storage       Gateway            TEE                 Sol
      |                  |                |                 |-- sign results     |
      |<-- encrypted results ------------|<----------------|                    |
      |                                                                         |
-     |  decrypt, upload signed_json to Arweave                                 |
+     |  decrypt, upload signed_json to off-chain storage                        |
      |  POST /sign → TEE builds partial TX → client co-signs and broadcasts    |
      |------------------------------------------------------------------------>|
 ```
 
-Registration is split into two phases — **Verify** and **Sign**. In Verify, the TEE processes the content and signs the results. The client uploads the signed result to permanent storage (Arweave). In Sign, the TEE builds a cNFT mint transaction and partially signs it; the client co-signs with their wallet and broadcasts to Solana. This split keeps the TEE stateless and avoids giving it a Solana wallet or dependency on external state.
+Registration is split into two phases — **Verify** and **Sign**. In Verify, the TEE processes the content and signs the results. The client uploads the signed result to any storage that returns a retrievable URI. Since the result contains a TEE signature, tamper detection works regardless of where it is stored. In Sign, the TEE builds a cNFT mint transaction and partially signs it; the client co-signs with their wallet and broadcasts to Solana. This split keeps the TEE stateless and avoids giving it a Solana wallet or dependency on external state.
 
 ---
 
@@ -126,16 +126,19 @@ Both layers start from the same C2PA verification. They diverge at step 3: Core 
 
 **Core** builds a provenance graph — a DAG where nodes are content_hash values (SHA-256 of each Active Manifest's signature) and edges represent "used as ingredient" relationships. The graph records content relationships; the current owner of each node is resolved separately at query time by looking up cNFTs on-chain.
 
-**Extension** runs deterministic WASM modules against the raw content to produce objective attributes. Any WASM binary can be registered — the DAO maintains an on-chain allowlist (`trusted_wasm_ids` in GlobalConfig) of approved extension IDs, each backed by a WasmModuleAccount PDA storing the binary's SHA-256 hash and Arweave URL. The TEE fetches the binary, verifies its hash, and executes it in a sandboxed wasmtime runtime.
+**Extension** runs deterministic WASM modules against the raw content to produce objective attributes. Any WASM binary can be registered — the DAO maintains an on-chain allowlist (`trusted_wasm_ids` in GlobalConfig) of approved extension IDs, each backed by a WasmModuleAccount PDA storing the binary's SHA-256 hash and source URL. The TEE fetches the binary, verifies its hash, and executes it in a sandboxed wasmtime runtime.
 
-This repository includes four reference modules:
+This repository includes seven reference modules:
 
 | Extension ID | WASM Module | Output |
 |--------------|-------------|--------|
-| `image-phash` | `wasm/phash-v1` | Perceptual hash for similarity search |
-| `hardware-google` | `wasm/hardware-google` | Hardware capture proof (Titan M2 chip detection) |
-| `c2pa-training` | `wasm/c2pa-training-v1` | AI training consent flag (`c2pa.training-mining`) |
-| `c2pa-license` | `wasm/c2pa-license-v1` | License information (Creative Commons, rights) |
+| `image-pdq` | `wasm/image-pdq` | PDQ 256-bit perceptual hash (Meta ThreatExchange compatible) |
+| `image-phash` | `wasm/image-phash` | pHash 64-bit perceptual hash (deprecated) |
+| `video-vpdq` | `wasm/video-vpdq` | vPDQ per-frame video hash (Meta ThreatExchange compatible) |
+| `cert-google` | `wasm/cert-google` | Google C2PA certificate chain verification |
+| `cert-sony` | `wasm/cert-sony` | Sony C2PA certificate chain verification |
+| `cert-leica` | `wasm/cert-leica` | Leica C2PA certificate chain verification |
+| `cert-rootlens` | `wasm/cert-rootlens` | RootLens C2PA certificate chain verification |
 
 ---
 
@@ -198,7 +201,7 @@ crates/
   gateway/        — Gateway HTTP server: upload, relay, sign-and-mint
   proxy/          — HTTP proxy for TEE network isolation
   cli/            — CLI: init-global, register-node, create-tree, create-alt, remove-node, register-wasm, add-wasm-version, remove-wasm
-wasm/             — WASM modules (no_std): phash-v1, hardware-google, c2pa-training-v1, c2pa-license-v1
+wasm/             — WASM modules (no_std): image-pdq, image-phash, video-vpdq, cert-google, cert-sony, cert-leica, cert-rootlens
 programs/
   title-config/   — Anchor program: GlobalConfig + TeeNodeAccount + WasmModuleAccount PDA management
 sdk/ts/           — TypeScript client SDK: E2EE, register, resolve
@@ -236,7 +239,6 @@ cd indexer && npm install && npm run build && cd ..
 | [QUICKSTART.md](QUICKSTART.md) | Deploy your own GlobalConfig and full local network |
 | [deploy/aws/README.md](deploy/aws/README.md) | AWS deployment with Nitro Enclaves |
 | [docs/architecture.md](docs/architecture.md) | Architecture, trust model, and Web infrastructure analogy |
-| [docs/reference.md](docs/reference.md) | Environment variables and CLI reference |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues and solutions |
 | [sdk/ts/README.md](sdk/ts/README.md) | TypeScript SDK guide |
 | [indexer/README.md](indexer/README.md) | cNFT indexer setup |

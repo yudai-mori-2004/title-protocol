@@ -1,55 +1,97 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! # ResourcePool（統合セマフォ）
+//! Resource pool with two-tier admission control.
 //!
-//! 仕様書 §7.1
+//! Manages concurrent memory usage across all requests with a single
+//! `AtomicUsize` counter and two thresholds:
 //!
-//! raw binary ダウンロードとデコード済みデータのメモリ予算を
-//! 単一の `AtomicUsize` で CAS 管理する。
+//! - **`admission_limit`**: New requests are accepted only when
+//!   `used < admission_limit`. This reserves headroom for in-progress
+//!   requests to extend without being starved by new arrivals.
 //!
-//! ## 設計
+//! - **`total_limit`**: Absolute ceiling for all extend() calls.
+//!   In-progress requests can use memory up to this limit. Beyond this,
+//!   extend() fails and the specific operation returns an error.
 //!
-//! `ResourcePool` は合計使用量 `used` を単一の AtomicUsize で管理する。
-//! `Ticket` は Drop で自動解放される予約チケットで、`extend` による漸進的予約をサポートする。
-//! これにより、従来の `tokio::Semaphore`（Semaphore A）と `MemoryPool`（Semaphore B）を
-//! 単一のリソースプールに統合し、TOCTOU 競合を完全に排除する。
+//! ```text
+//! |← new requests OK →|← in-progress only →|← OS/unmanaged →|
+//! 0              admission_limit        total_limit      enclave_max
+//! ```
+//!
+//! `Ticket` is a RAII handle that tracks a reservation. It supports:
+//! - `extend(n)`: atomically reserve `n` more bytes (CAS loop, non-blocking)
+//! - `shrink(n)`: release `n` bytes back to the pool
+//! - `Drop`: release all remaining reservation
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// ResourcePool: 全リソース予約の合計使用量を total_limit 以下に保つ。
-/// 仕様書 §7.1
+/// Resource pool with two-tier admission control.
 #[derive(Debug)]
 pub struct ResourcePool {
-    /// 全体のメモリ予算（バイト）
+    /// Threshold for accepting new requests (new ticket creation).
+    admission_limit: usize,
+    /// Absolute memory ceiling for all extend() calls.
     total_limit: usize,
-    /// 全 Ticket の合計使用量（CAS で排他制御する唯一の判定値）
+    /// Total bytes currently reserved across all tickets.
     used: AtomicUsize,
 }
 
-/// Drop で自動解放される予約チケット。
-/// 仕様書 §7.1
+/// RAII reservation handle. Released automatically on drop.
 #[derive(Debug)]
 pub struct Ticket {
-    /// 所属プール
     pool: Arc<ResourcePool>,
-    /// このチケットが予約しているバイト数（extend で追加可能）
     reserved: AtomicUsize,
 }
 
 impl ResourcePool {
-    /// 新しい ResourcePool を作成する。
-    /// 仕様書 §7.1
-    pub fn new(total_limit: usize) -> Self {
+    /// Create a pool with separate admission and total limits.
+    ///
+    /// - `admission_limit`: max `used` for accepting new requests
+    /// - `total_limit`: absolute ceiling for all reservations
+    pub fn new(admission_limit: usize, total_limit: usize) -> Self {
+        assert!(admission_limit <= total_limit);
         Self {
+            admission_limit,
             total_limit,
             used: AtomicUsize::new(0),
         }
     }
 
-    /// 一括予約。失敗時 None。
-    /// `ticket()` + `extend(size)` の糖衣構文。
-    /// 仕様書 §7.1
+    /// Create a pool with a single limit (admission = total).
+    /// Convenience for tests where two-tier control is not needed.
+    pub fn with_single_limit(limit: usize) -> Self {
+        Self::new(limit, limit)
+    }
+
+    /// Check if the pool can accept a new request.
+    /// Returns true if `used < admission_limit`.
+    pub fn can_admit(&self) -> bool {
+        self.used.load(Ordering::Acquire) < self.admission_limit
+    }
+
+    /// Issue a new 0-byte ticket for a new request.
+    /// Fails if the pool has exceeded the admission limit.
+    pub fn try_ticket(self: &Arc<Self>) -> Option<Ticket> {
+        if self.can_admit() {
+            Some(Ticket {
+                pool: Arc::clone(self),
+                reserved: AtomicUsize::new(0),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Issue a 0-byte ticket unconditionally (for in-progress operations).
+    pub fn ticket(self: &Arc<Self>) -> Ticket {
+        Ticket {
+            pool: Arc::clone(self),
+            reserved: AtomicUsize::new(0),
+        }
+    }
+
+    /// One-shot reserve: issue ticket + extend. Fails if over total_limit.
     pub fn acquire(self: &Arc<Self>, size: usize) -> Option<Ticket> {
         let ticket = self.ticket();
         if ticket.extend(size) {
@@ -59,25 +101,15 @@ impl ResourcePool {
         }
     }
 
-    /// 漸進予約用の 0 バイトチケットを発行する。
-    /// 仕様書 §7.1
-    pub fn ticket(self: &Arc<Self>) -> Ticket {
-        Ticket {
-            pool: Arc::clone(self),
-            reserved: AtomicUsize::new(0),
-        }
-    }
-
-    /// 現在の合計使用量を返す（テスト・モニタリング用）。
+    /// Current total usage (for monitoring/tests).
     pub fn total_used(&self) -> usize {
         self.used.load(Ordering::Relaxed)
     }
 }
 
 impl Ticket {
-    /// 追加予約。失敗時 false（既存予約は保持される）。
-    /// CAS ループで非ブロッキング。
-    /// 仕様書 §7.1
+    /// Reserve additional bytes. Fails if total_limit would be exceeded.
+    /// CAS loop, non-blocking. Existing reservation is preserved on failure.
     pub fn extend(&self, additional: usize) -> bool {
         if additional == 0 {
             return true;
@@ -86,7 +118,7 @@ impl Ticket {
             let current = self.pool.used.load(Ordering::Acquire);
             let new_total = match current.checked_add(additional) {
                 Some(v) => v,
-                None => return false, // オーバーフロー
+                None => return false,
             };
             if new_total > self.pool.total_limit {
                 return false;
@@ -103,7 +135,16 @@ impl Ticket {
         }
     }
 
-    /// このチケットが予約しているバイト数を返す。
+    /// Release bytes back to the pool.
+    pub fn shrink(&self, amount: usize) {
+        if amount == 0 {
+            return;
+        }
+        self.reserved.fetch_sub(amount, Ordering::AcqRel);
+        self.pool.used.fetch_sub(amount, Ordering::AcqRel);
+    }
+
+    /// Current reservation of this ticket.
     pub fn reserved(&self) -> usize {
         self.reserved.load(Ordering::Acquire)
     }
@@ -124,32 +165,28 @@ mod tests {
 
     #[test]
     fn test_basic_acquire_release() {
-        let pool = Arc::new(ResourcePool::new(1000));
+        let pool = Arc::new(ResourcePool::with_single_limit(1000));
         {
-            let ticket = pool.acquire(500).expect("500バイト予約に成功するべき");
+            let ticket = pool.acquire(500).unwrap();
             assert_eq!(pool.total_used(), 500);
             assert_eq!(ticket.reserved(), 500);
         }
-        // Drop で解放
         assert_eq!(pool.total_used(), 0);
     }
 
     #[test]
     fn test_acquire_exceeds_limit() {
-        let pool = Arc::new(ResourcePool::new(1000));
-        let _t1 = pool.acquire(600).expect("600バイト予約に成功するべき");
-        // 600 + 500 = 1100 > 1000
+        let pool = Arc::new(ResourcePool::with_single_limit(1000));
+        let _t1 = pool.acquire(600).unwrap();
         assert!(pool.acquire(500).is_none());
         assert_eq!(pool.total_used(), 600);
     }
 
     #[test]
     fn test_ticket_extend_pattern() {
-        let pool = Arc::new(ResourcePool::new(1000));
+        let pool = Arc::new(ResourcePool::with_single_limit(1000));
         let ticket = pool.ticket();
-        assert_eq!(ticket.reserved(), 0);
         assert!(ticket.extend(300));
-        assert_eq!(ticket.reserved(), 300);
         assert!(ticket.extend(200));
         assert_eq!(ticket.reserved(), 500);
         assert_eq!(pool.total_used(), 500);
@@ -157,23 +194,68 @@ mod tests {
 
     #[test]
     fn test_extend_exceeds_limit() {
-        let pool = Arc::new(ResourcePool::new(1000));
+        let pool = Arc::new(ResourcePool::with_single_limit(1000));
         let ticket = pool.ticket();
         assert!(ticket.extend(800));
-        // 800 + 300 = 1100 > 1000
         assert!(!ticket.extend(300));
-        // 既存予約は保持
         assert_eq!(ticket.reserved(), 800);
-        assert_eq!(pool.total_used(), 800);
+    }
+
+    #[test]
+    fn test_shrink_partial_release() {
+        let pool = Arc::new(ResourcePool::with_single_limit(1000));
+        let ticket = pool.ticket();
+        assert!(ticket.extend(800));
+        ticket.shrink(500);
+        assert_eq!(pool.total_used(), 300);
+        assert_eq!(ticket.reserved(), 300);
+        assert!(pool.acquire(600).is_some());
+    }
+
+    #[test]
+    fn test_shrink_then_drop() {
+        let pool = Arc::new(ResourcePool::with_single_limit(1000));
+        {
+            let ticket = pool.ticket();
+            assert!(ticket.extend(800));
+            ticket.shrink(300);
+            assert_eq!(pool.total_used(), 500);
+        }
+        assert_eq!(pool.total_used(), 0);
+    }
+
+    #[test]
+    fn test_two_tier_admission() {
+        // admission_limit=600, total_limit=1000
+        let pool = Arc::new(ResourcePool::new(600, 1000));
+
+        // New request when used=0: admitted
+        let t1 = pool.try_ticket().expect("should admit when empty");
+        assert!(t1.extend(500));
+        assert_eq!(pool.total_used(), 500);
+
+        // New request when used=500 < 600: still admitted
+        let t2 = pool.try_ticket().expect("should admit under admission_limit");
+        assert!(t2.extend(100));
+        assert_eq!(pool.total_used(), 600);
+
+        // New request when used=600 >= 600: rejected
+        assert!(pool.try_ticket().is_none(), "should reject at admission_limit");
+
+        // But in-progress ticket can still extend up to total_limit
+        assert!(t1.extend(300)); // 600 + 300 = 900 < 1000
+        assert_eq!(pool.total_used(), 900);
+
+        // In-progress extend beyond total_limit fails
+        assert!(!t2.extend(200)); // 900 + 200 = 1100 > 1000
     }
 
     #[test]
     fn test_multiple_tickets_share_pool() {
-        let pool = Arc::new(ResourcePool::new(1000));
-        let t1 = pool.acquire(400).expect("400バイト予約に成功するべき");
-        let t2 = pool.acquire(400).expect("400バイト予約に成功するべき");
+        let pool = Arc::new(ResourcePool::with_single_limit(1000));
+        let t1 = pool.acquire(400).unwrap();
+        let t2 = pool.acquire(400).unwrap();
         assert_eq!(pool.total_used(), 800);
-        // 800 + 300 = 1100 > 1000
         assert!(pool.acquire(300).is_none());
         drop(t1);
         assert_eq!(pool.total_used(), 400);
@@ -183,13 +265,12 @@ mod tests {
 
     #[test]
     fn test_drop_releases_reservation() {
-        let pool = Arc::new(ResourcePool::new(1000));
+        let pool = Arc::new(ResourcePool::with_single_limit(1000));
         {
             let ticket = pool.ticket();
             assert!(ticket.extend(500));
             assert!(ticket.extend(300));
             assert_eq!(pool.total_used(), 800);
-            // ticket がスコープを離脱 → Drop で解放
         }
         assert_eq!(pool.total_used(), 0);
     }

@@ -122,7 +122,7 @@ fn test_pdq_same_photo_reencoded() {
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let original = match std::fs::read(format!(
-        "{manifest_dir}/../../integration-tests/fixtures/pixel_photo_plane.jpg"
+        "{manifest_dir}/../../integration-tests/fixtures/images/jpeg/pixel_plane.jpg"
     )) {
         Ok(d) => d,
         Err(_) => {
@@ -169,7 +169,7 @@ fn test_pdq_resize_robustness() {
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let original = match std::fs::read(format!(
-        "{manifest_dir}/../../integration-tests/fixtures/pixel_photo_plane.jpg"
+        "{manifest_dir}/../../integration-tests/fixtures/images/jpeg/pixel_plane.jpg"
     )) {
         Ok(d) => d,
         Err(_) => {
@@ -292,7 +292,7 @@ fn test_pdq_pixel_photo() {
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let plane = match std::fs::read(format!(
-        "{manifest_dir}/../../integration-tests/fixtures/pixel_photo_plane.jpg"
+        "{manifest_dir}/../../integration-tests/fixtures/images/jpeg/pixel_plane.jpg"
     )) {
         Ok(d) => d,
         Err(_) => {
@@ -301,7 +301,7 @@ fn test_pdq_pixel_photo() {
         }
     };
     let ramen = match std::fs::read(format!(
-        "{manifest_dir}/../../integration-tests/fixtures/pixel_photo_ramen.jpg"
+        "{manifest_dir}/../../integration-tests/fixtures/images/jpeg/pixel_ramen.jpg"
     )) {
         Ok(d) => d,
         Err(_) => {

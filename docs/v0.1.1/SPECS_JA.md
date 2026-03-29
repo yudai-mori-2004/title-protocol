@@ -158,7 +158,7 @@ User (wallet)        Client         Neutral Computer       Blockchain
 | --- | --- | --- |
 | クライアントサイド | エンドユーザー（ウォレット保持）、クライアント（SDK） | コンテンツの暗号化・送信、トランザクションの署名 |
 | 登録ノード | Gateway, Temporary Storage, TEE | 認証・中継・一時保管、コンテンツ検証・署名 |
-| ストレージ | オフチェーンストレージ（Arweave等） | `signed_json` の永続保存。Arweaveは永続的なデータ保存を保証する分散型ストレージ |
+| ストレージ | オフチェーンストレージ | `signed_json` の保存。TEE署名により改竄検知が保証されるため、保存先はプロトコルとして規定しない |
 | ブロックチェーン | Solana | 権利トークン（cNFT）による権利の記録 |
 | ガバナンス | DAO | 信頼の原点（Collection Authorityの保持） |
 
@@ -257,7 +257,7 @@ TEEは暗号化ペイロードを復号し、コンテンツに対して指定�
 
 **クライアントによるオフチェーンアップロード**
 
-クライアントは、TEEが署名した `signed_json` をオフチェーンストレージ（Arweave等）にアップロードし、永続的なURIを取得する。
+クライアントは、TEEが署名した `signed_json` をオフチェーンストレージにアップロードし、取得可能なURIを得る。`signed_json` にはTEE署名が含まれるため、保存先に関わらず改竄検知が可能であり、保存先の選択はプロトコルとして規定しない。
 
 **Phase 2: Sign（署名・発行）**
 
@@ -715,7 +715,7 @@ WASMの入力パターンは以下の二種類に分かれるが、パイプラ�
 
 | パターン | 補助入力 | 例 |
 | --- | --- | --- |
-| 内部完結型 | 不要（コンテンツの生データのみで算出可能） | pHash、メタデータ抽出、ハードウェア署名検証 |
+| 内部完結型 | 不要（コンテンツの生データのみで算出可能） | 知覚ハッシュ（PDQ）、メタデータ抽出、証明書チェーン検証 |
 | 外部検証型 | 必要（外部で計算された結果とその証明を受け取り、WASM内で検証する） | ZK証明付きAI特徴量、外部署名付き分析結果 |
 
 外部検証型の場合、重い計算（大規模AIモデルの推論等）は外部サービスが実行し、TEE内のWASMはその計算結果の正当性を検証するだけである。これにより、TEEのハードウェアスペックに依存せず、任意の複雑さの計算結果をExtensionとして記録できる。
@@ -726,11 +726,11 @@ WASMの入力パターンは以下の二種類に分かれるが、パイプラ�
 
 ```
 extension_inputs:
-  "zkml-image-v1": { proof, features }
-  "c2pa-license-v1": (なし)
+  "image-pdq": (なし)
+  "cert-google": (なし)
 
-→ zkml-image-v1 WASM には { proof, features } のみが渡される
-→ c2pa-license-v1 WASM には補助入力は渡されない（コンテンツのみ）
+→ 各WASMには自身のextension_idに対応する補助入力のみが渡される
+→ 補助入力が存在しない場合、コンテンツのみが渡される
 ```
 
 ### 属性の構造
@@ -743,13 +743,13 @@ Coreが出力する来歴グラフは、ノード（content_hash）とエッジ�
 | 構造的 | フラット |
 | コンテンツ**間**の関係 | コンテンツ**の**性質 |
 
-例えば、pHashとは知覚ハッシュとよばれるコンテンツの見た目を表す特徴量であるが、これを属性として記録することができる。
+例えば、知覚ハッシュ（PDQ）とはコンテンツの見た目を表す特徴量であるが、これを属性として記録することができる。
 
-pHashの属性を記録することにより、見た目がほぼ同じコンテンツを検出することが可能となる。これは、無断転載したコンテンツを使って利益を得る行為を防ぐ抑止力としての効果が期待される。
+知覚ハッシュの属性を記録することにより、見た目がほぼ同じコンテンツを検出することが可能となる。これは、無断転載したコンテンツを使って利益を得る行為を防ぐ抑止力としての効果が期待される。
 
 ```
-extension_id: "phash-v1"
-phash: "0x1234abcd..."
+extension_id: "image-pdq"
+pdqhash: "a95669d1..."
 ```
 
 WASMはコンテンツデータに含まれるデータに基づいた任意の処理を実行可能だが、その他の実用的な例を挙げるとすれば、ハードウェア署名の有無による撮影された未編集のコンテンツである証明の付与や、メタデータの抽出による、商用利用可否・ライセンス表示など、多くの拡張可能性が考えられる。
@@ -779,7 +779,7 @@ WASMはコンテンツデータに含まれるデータに基づいた任意の�
 
 属性は `signed_json` 内に記録され、cNFTのメタデータURIを通じてオフチェーンデータとして参照可能となる。
 
-CoreとExtensionは同一リクエストで処理できる。`processor_ids` に `["core-c2pa", "phash-v1"]` を指定すれば、来歴グラフと知覚ハッシュの両方が算出され、それぞれ別のcNFTとして発行される。
+CoreとExtensionは同一リクエストで処理できる。`processor_ids` に `["core-c2pa", "image-pdq"]` を指定すれば、来歴グラフと知覚ハッシュの両方が算出され、それぞれ別のcNFTとして発行される。
 
 ### 解決フローの拡張
 
@@ -882,19 +882,19 @@ Extensionが提供するものは、**コンテンツの生データから決定
 
 AI生成コンテンツの増加により、「本物」と「生成物」の区別が困難になっている。Extensionは、この混乱に対して客観的な判定基準を提供する。
 
-C2PAのハードウェア署名チェーンを検証するWASM（例: `hardware-google`）を実行すれば、そのコンテンツがGoogle Pixel等のTitan M2チップ搭載端末で実際に撮影されたことを証明できる。この証明はTEE署名で封印され、ブロックチェーン上に永続化される。
+C2PAのハードウェア署名チェーンを検証するWASM（例: `cert-google`）を実行すれば、そのコンテンツがGoogle Pixel等のTitan M2チップ搭載端末で実際に撮影されたことを証明できる。この証明はTEE署名で封印され、ブロックチェーン上に永続化される。
 
 報道機関、裁判所、保険会社——「この写真は実際にカメラで撮影されたものか」という問いに対して、第三者が独立に検証可能な回答を提供できるようになる。
 
 ### AI学習許諾の機械的な判定
 
-C2PAの `c2pa.training-mining` アサーションには、クリエイターがAI学習への利用を許可するか否かのフラグが含まれている。`c2pa-training-v1` WASMはこのフラグを抽出し、Extension cNFTとして記録する。
+C2PAの `c2pa.training-mining` アサーションには、クリエイターがAI学習への利用を許可するか否かのフラグが含まれている。このフラグを抽出するWASMモジュールを実装すれば、Extension cNFTとして記録できる。
 
 AI開発者は、学習データセットの構築時に、Title ProtocolのExtensionインデックスを参照することで、クリエイターの意思を機械的に確認できる。権利情報がプログラマティックにアクセス可能な形でブロックチェーン上に存在するため、大規模なデータセットに対しても自動的にフィルタリングが可能になる。
 
 ### メタデータ消失後の追跡
 
-例えば、pHash Extensionにより、C2PAメタデータが削除された後でもコンテンツの追跡が可能になる。
+例えば、知覚ハッシュ Extension（image-pdq）により、C2PAメタデータが削除された後でもコンテンツの追跡が可能になる。
 
 SNSで流れてきた画像から所有者を特定する、マーケットプレイスで新規出品時に既存コンテンツとの重複を検知する——これらはいずれも、content_hashではなく視覚的特徴量によるインデックスに依存する。
 
@@ -910,7 +910,7 @@ SNSで流れてきた画像から所有者を特定する、マーケットプ�
 
 ### ライセンス情報の機械的な参照
 
-C2PAのCreative Workアサーションに含まれるライセンス種別・条件を `c2pa-license-v1` WASMで抽出し、Extension cNFTとして記録する。アプリケーションは、コンテンツを利用する前にそのライセンス条件をプログラマティックに参照できる。
+C2PAのCreative Workアサーションに含まれるライセンス種別・条件を抽出するWASMモジュールを実装すれば、Extension cNFTとして記録できる。アプリケーションは、コンテンツを利用する前にそのライセンス条件をプログラマティックに参照できる。
 
 ---
 
@@ -945,7 +945,7 @@ Title Protocolは「登記所」であり「警察」ではない。この原則
 - 来歴の長さ・時系列の妥当性の評価
 - 特定のカメラメーカー・ソフトウェアの署名のみを信頼するポリシー
 - 不自然なパターンの検知
-- pHash Extensionによる既存コンテンツとの類似検知
+- 知覚ハッシュ Extensionによる既存コンテンツとの類似検知
 
 ### Burnは権利の完全な放棄である
 
@@ -1075,7 +1075,7 @@ Title Protocolの価値は、C2PAの普及に正比例する。これは意図�
 }
 ```
 
-`extension_inputs` はOptionalフィールドである。キーはextension_id、値はそのWASMが期待する任意のJSONオブジェクトである。内部完結型のExtension（pHash等）のみをリクエストする場合は省略できる。
+`extension_inputs` はOptionalフィールドである。キーはextension_id、値はそのWASMが期待する任意のJSONオブジェクトである。内部完結型のExtension（image-pdq等）のみをリクエストする場合は省略できる。
 
 コンテンツはBase64変換せず、rawバイナリとしてメタデータの直後に結合される。これにより5MBのコンテンツが17MBに膨張する問題を排除する。
 
@@ -1102,7 +1102,7 @@ TEEは先頭32Bの `ephemeral_pubkey` と自身の秘密鍵でECDHを実行し�
 ```json
 {
   "download_url": "Temporary Storage上の暗号化ペイロードのURL",
-  "processor_ids": ["core-c2pa", "phash-v1"]
+  "processor_ids": ["core-c2pa", "image-pdq"]
 }
 ```
 
@@ -1165,23 +1165,23 @@ TEEは復号・検証を完了し、検証結果をJSONにまとめてTEE署名�
     "content_hash": "0xCurrentHash",
     "content_type": "image/jpeg",
     "creator_wallet": "Base58エンコードされたウォレットアドレス",
-    "extension_id": "phash-v1",
-    "wasm_source": "ar://WASMバイナリのArweave URI",
+    "extension_id": "image-pdq",
+    "wasm_source": "WASMバイナリの取得可能なURI",
     "wasm_hash": "0x（TEEが実行前に計算したWASMバイナリのSHA-256ハッシュ）",
     "extension_input_hash": "(Optional) 0x（extension_inputs[extension_id]のSHA-256ハッシュ）",
-    "phash": "0x..."
+    "pdqhash": "..."
   },
   "attributes": [
     { "trait_type": "protocol", "value": "Title-Extension-v1" },
     { "trait_type": "content_hash", "value": "0xCurrentHash" },
-    { "trait_type": "extension_id", "value": "phash-v1" }
+    { "trait_type": "extension_id", "value": "image-pdq" }
   ]
 }
 ```
 
-`payload` 内の `extension_id` 以降のフィールドはWASMごとに異なる。上記はpHash WASMの例であり、他のWASMでは異なる属性フィールドが出力される。
+`payload` 内の `extension_id` 以降のフィールドはWASMごとに異なる。上記はimage-pdq WASMの例であり、他のWASMでは異なる属性フィールドが出力される。
 
-`extension_input_hash` は、WASMが補助入力（`extension_inputs`）を使用した場合にのみ含まれる。補助入力の元データ自体はプロトコルに保存されないが、入力の提供者が元データを公開すればハッシュとの照合で完全な再現検証が可能となる。内部完結型のWASM（pHash等）では省略される。
+`extension_input_hash` は、WASMが補助入力（`extension_inputs`）を使用した場合にのみ含まれる。補助入力の元データ自体はプロトコルに保存されないが、入力の提供者が元データを公開すればハッシュとの照合で完全な再現検証が可能となる。内部完結型のWASM（image-pdq等）では省略される。
 
 外殻（`protocol`, `tee_type`, `tee_pubkey`, `tee_signature`, `tee_attestation`, `attributes`）はCoreと同一の構造である。
 
@@ -1212,7 +1212,7 @@ TEEは復号・検証を完了し、検証結果をJSONにまとめてTEE署名�
       "signed_json": { ... }
     },
     {
-      "processor_id": "phash-v1",
+      "processor_id": "image-pdq",
       "signed_json": { ... }
     }
   ]
@@ -1226,11 +1226,11 @@ TEEは復号・検証を完了し、検証結果をJSONにまとめてTEE署名�
 
 ### Step 7: オフチェーンストレージへのアップロード
 
-クライアントは `signed_json` をオフチェーンストレージ（CoreはArweave, Extensionは任意）にアップロードし、URIを取得する。
+クライアントは `signed_json` をオフチェーンストレージにアップロードし、取得可能なURIを得る。保存先はプロトコルとして規定しない。
 
 ```
-Core:      ar://abc123...
-Extension: r2://def456...
+例: https://storage.example.com/abc123...
+例: ar://def456...
 ```
 
 ---
@@ -1403,7 +1403,7 @@ WasmModuleAccount (PDA: seeds=[b"wasm-module", &extension_id])
   ],
   "trusted_wasm_modules": [
     {
-      "extension_id": "phash-v1",
+      "extension_id": "image-pdq",
       "wasm_source": "ar://...",
       "wasm_hash": "SHA-256ハッシュ",
       "version": 1,
@@ -1554,9 +1554,9 @@ cNFTの `content.json_uri` からオフチェーンデータを取得する。
   "payload": {
     "content_hash": "0x...",
     "creator_wallet": "Base58エンコードされたウォレットアドレス",
-    "extension_id": "phash-v1",
+    "extension_id": "image-pdq",
     "wasm_source": "ar://...",
-    "phash": "0x..."
+    "pdqhash": "..."
   },
   "attributes": [ ... ]
 }
@@ -1706,7 +1706,7 @@ Client (SDK) → Gateway → Temporary Storage → TEE → Solana
 | Gateway | 認証、レート制限、ルーティング、署名付きURL発行 | Rust (axum) on EC2 |
 | Temporary Storage | 暗号化コンテンツの一時保管 | AWS S3 |
 | TEE | C2PA検証、署名、Tx部分署名 | AWS Nitro Enclaves |
-| オフチェーンストレージ | `signed_json` の永続保存（Coreは必須でArweave） | Arweave (via Irys) |
+| オフチェーンストレージ | `signed_json` の保存（取得可能なURIを提供） | 任意（リファレンス実装: Arweave via Irys） |
 
 ノード運営者は、プロトコルの要件を満たす限り、任意のインフラストラクチャを選択できる。
 
@@ -1754,7 +1754,7 @@ Client → Gateway → TEE
 ```json
 {
   "download_url": "Temporary Storage上の暗号化ペイロードのURL",
-  "processor_ids": ["core-c2pa", "phash-v1"]
+  "processor_ids": ["core-c2pa", "image-pdq"]
 }
 ```
 
@@ -1770,7 +1770,7 @@ Gatewayは、クライアントのリクエスト本文をそのまま `body` �
   "path": "/verify",
   "body": {
     "download_url": "Temporary Storage上の暗号化ペイロードのURL",
-    "processor_ids": ["core-c2pa", "phash-v1"]
+    "processor_ids": ["core-c2pa", "image-pdq"]
   },
   "resource_limits": {
     "max_single_content_bytes": 2147483648,
@@ -1796,7 +1796,7 @@ Gatewayは、クライアントのリクエスト本文をそのまま `body` �
   "path": "/verify",
   "body": {
     "download_url": "Temporary Storage上の暗号化ペイロードのURL",
-    "processor_ids": ["core-c2pa", "phash-v1"]
+    "processor_ids": ["core-c2pa", "image-pdq"]
   },
   "resource_limits": {
     "max_single_content_bytes": 2147483648,
@@ -1872,7 +1872,7 @@ const Conditions = [
 ```json
 {
   "download_url": "Temporary Storage上の暗号化ペイロードのURL",
-  "processor_ids": ["core-c2pa", "phash-v1"]
+  "processor_ids": ["core-c2pa", "image-pdq"]
 }
 ```
 
@@ -1888,7 +1888,7 @@ const Conditions = [
       "signed_json": { ... }
     },
     {
-      "processor_id": "phash-v1",
+      "processor_id": "image-pdq",
       "signed_json": { ... }
     }
   ]
@@ -2219,7 +2219,7 @@ GatewayからのGateway認証済みリクエストを受け取り、以下を実
 
 **第2層: クライアントによるwasm_hash検証**
 
-クライアント（SDK）はレスポンス復号後、Extension signed_jsonに含まれる `wasm_hash` を、自身がSolana RPCに直接接続して取得したGlobal Configの `trusted_wasm_modules` と照合する。不一致が検出された場合、signed_jsonは破棄され、Arweaveへのアップロードは実行されない。
+クライアント（SDK）はレスポンス復号後、Extension signed_jsonに含まれる `wasm_hash` を、自身がSolana RPCに直接接続して取得したGlobal Configの `trusted_wasm_modules` と照合する。不一致が検出された場合、signed_jsonは破棄され、オフチェーンストレージへのアップロードは実行されない。
 
 この防御モデルにより、TEEがGlobal Configを取得する経路（vsock経由の親インスタンス）を保護する必要がない。攻撃者が不正なWASMの実行に成功したとしても、レスポンス暗号化によりGateway通過時の傍受が不可能であり、wasm_hash検証により不正が検出される。攻撃の影響は `/verify` の失敗（DoS）に限定されるが、ノード運営者はもともとリクエスト中継を拒否できるため、追加の脅威とはならない。
 
@@ -2289,56 +2289,39 @@ C2PA検証（c2pa-rs）はコンテンツ全体をメモリ上に保持する必
 → 他の正規ユーザーがメモリ不足で処理拒否される
 ```
 
-**解決策: ResourcePool + Ticket（漸進的予約）**
+**解決策: ResourcePool + Ticket（二段階閾値 + 漸進的予約）**
 
-メモリ予約を「宣言時」ではなく「実際のデータ受信時」に行う。`ResourcePool` は単一の `AtomicUsize` で全予約の合計使用量を CAS 管理し、`Ticket` は Drop で自動解放される予約チケットである。rawバイナリのダウンロードとデコード済みデータのメモリ予算を同一プールで統合管理する。
+メモリ予約を「宣言時」ではなく「実際のデータ受信時」に行う。`ResourcePool` は単一の `AtomicUsize` で全予約の合計使用量を CAS 管理し、`Ticket` は Drop で自動解放される予約チケットである。ダウンロード、復号、デコード、変換の全ステージを同一プールで統合管理する。
+
+**二段階閾値（Admission Control）:**
+
+ResourcePoolは2つの閾値を持つ:
 
 ```
-1. クライアントが content_size: 2GB を宣言
-2. TEEは pool.ticket() で0バイトチケットを発行、ストリーミング読み取りを開始
-3. 64KBチャンクを受信するたびに ticket.extend(64KB) で漸進的に予約
-4. 予約失敗（メモリ上限到達）→ 即座に接続切断（Ticket の Drop で予約解放）
-5. 全データ受信完了 → Ticket を呼び出し元に返却（raw binary メモリが追跡される）
+|← 新規リクエスト受付可能 →|← 進行中リクエスト専用 →|← OS/管理外 →|
+0                   admission_limit           total_limit     Enclave上限
 ```
 
-```rust
-// 疑似コード
-const CHUNK_SIZE: usize = 64 * 1024; // 64KB
+- `admission_limit`: 新規リクエストの受付上限。`pool.try_ticket()` で判定。これを超えるとHTTP 503を返し、新規リクエストを拒否する。
+- `total_limit`: 進行中リクエストの `ticket.extend()` の絶対上限。admission_limit ～ total_limit の範囲は進行中リクエスト専用のヘッドルームであり、新規リクエストに奪われない。
+- `Enclave上限 - total_limit`: OS、TEEバイナリ、ライブラリ内部バッファ等の管理外メモリの安全マージン。
 
-async fn stream_with_incremental_reservation(
-    stream: impl AsyncRead,
-    declared_size: usize,
-    pool: &Arc<ResourcePool>,
-) -> Result<(Vec<u8>, Ticket)> {
-    let mut buffer = Vec::new();
-    let ticket = pool.ticket(); // 0バイトチケット発行
+この設計により、フル稼働時に進行中リクエストが途中でメモリ不足になる確率を大幅に低減する。途中打ち切りは total_limit 付近でのみ発生する。
 
-    // 宣言サイズを超えるデータの読み取りを物理的に遮断
-    let mut limited = stream.take(declared_size as u64);
+**Ticketのライフサイクル:**
 
-    loop {
-        // チャンク単位のRead Timeout（Slowloris対策）
-        let chunk = timeout(
-            Duration::from_secs(30),
-            read_chunk(&mut limited, CHUNK_SIZE)
-        ).await??;
-
-        if chunk.is_empty() {
-            break; // EOF
-        }
-
-        // 実際に受信したデータ量に応じてのみメモリを予約
-        if !ticket.extend(chunk.len()) {
-            return Err(Error::MemoryLimitExceeded);
-            // ticket は Drop で自動解放
-        }
-
-        buffer.extend(chunk);
-    }
-
-    Ok((buffer, ticket)) // Ticket を呼び出し元に返却
-}
 ```
+1. 新規リクエスト到着 → pool.try_ticket() で受付判定
+2. ダウンロード中: 64KBチャンクごとに ticket.extend(64KB) で漸進的予約
+3. 復号時: ticket.extend(plaintext分) → 復号 → drop(ciphertext) → ticket.shrink(ciphertext分)
+4. content抽出: ticket.extend(content分) → drop(plaintext) → ticket.shrink(plaintext分)
+5. processor並列起動: ticket.extend(clone数 × content_size)
+6. TicketをArc<Ticket>にラップし、各processorのWasmRunnerに共有
+7. ホスト関数内: decode/Jarosz/ffmpeg等のメモリ確保でextend、解放でshrink
+8. handler終了 → Arc最後の参照がdrop → Ticket::drop → 全予約解放
+```
+
+各ステップで実メモリ使用量とTicketのreserved値が一致する。shrink忘れはメモリリークではなく過大予約（安全側）に倒れるため、新機能追加時にshrinkを書き忘れてもOOMは発生しない。
 
 ---
 
@@ -2485,10 +2468,10 @@ const client = new TitleClient(config);
 const result = await client.register({
   content: imageBuffer,
   ownerWallet: walletAddress,
-  processorIds: ['core-c2pa', 'phash-v1'],
+  processorIds: ['core-c2pa', 'image-pdq'],
   storeSignedJson: async (json) => {
     // signed_jsonの永続化。取得可能なURIを返す。
-    return await uploadToArweave(json);
+    return await uploadToStorage(json);
   },
   recentBlockhash: blockhash,
 });
@@ -2509,7 +2492,7 @@ const result = await client.register({
 
 **`storeSignedJson` コールバック:**
 
-signed\_jsonの永続化先はプロトコルとして規定しない。コールバックはJSON文字列を受け取り、取得可能なURIを返す。Arweave（Irys経由）が推奨されるが、IPFS等任意のストレージを使用できる。SDKはストレージ実装に依存しない。
+signed\_jsonの保存先はプロトコルとして規定しない。コールバックはJSON文字列を受け取り、取得可能なURIを返す。`signed_json` にはTEE署名が含まれるため、保存先の信頼性に関わらず改竄検知が可能である。SDKはストレージ実装に依存しない。
 
 **内部処理フロー:**
 
@@ -2628,7 +2611,7 @@ WASM                                     TEE Host
 
 - WASMの線形メモリ使用量を最小化
 - ResourcePool + Ticket による漸進的予約との整合性を維持
-- ストリーム処理的な属性抽出（pHash計算等）が可能
+- ストリーム処理的な属性抽出（PDQ計算等）が可能
 
 ### WASMからの補助入力アクセス
 
@@ -2656,7 +2639,7 @@ WASMは最初にバッファサイズ0で呼び出して実サイズを取得し
 - **フォーマット追加困難**: 新フォーマット対応にはWASM再ビルドが必要
 - **メモリ不可視**: デコード時のメモリ展開がホスト側のリソース管理から見えない
 
-これらを解決するため、TEEホストはコンテンツのデコード変換をホスト関数として提供する。ホスト側はコンテンツをネイティブフォーマット（JPEG→RGB, PNG→RGBA等）でデコードし、グレースケール変換等の後処理はWASM側で行う。これによりホスト側での中間バッファが不要となり、デコード時のピークメモリ = 出力サイズ = ResourcePool予約量が一致する。デコード済みデータはホストメモリ上に保持され、WASMはPull型で64KBチャンク単位で読み取る。
+これらを解決するため、TEEホストはコンテンツのデコード変換をホスト関数として提供する。ホスト側はコンテンツをネイティブフォーマット（JPEG→RGB, PNG→RGBA等）でデコードし、グレースケール変換等の後処理はWASM側で行う。デコード中の一時的なピークメモリ（ライブラリ内部の中間バッファ含む）はヘッダから推定してTicketで事前予約し、デコード完了後に実データサイズとの差分をshrinkする。デコード済みデータはホストメモリ上に保持され、WASMはPull型で64KBチャンク単位で読み取る。
 
 ```
 WASM                                           TEE Host
@@ -2664,11 +2647,10 @@ WASM                                           TEE Host
   │  rc = decode_content(0, 0, metadata_ptr)      │
   │──────────────────────────────────────────────>│
   │                                               │  ① ヘッダ読み（dimensions + format 取得）
-  │                                               │  ② native_ch = format別推定（JPEG→3, PNG→4, …）
-  │                                               │  ③ peak_size = w × h × native_ch
-  │                                               │  ④ ResourcePool.acquire(peak_size) → Ticket
-  │                                               │  ⑤ image::load_from_memory でネイティブデコード
-  │                                               │  ⑥ デコード済みデータをホストメモリに保持
+  │                                               │  ② ピーク推定 → ticket.extend(decode_peak)
+  │                                               │  ③ image::load_from_memory でネイティブデコード
+  │                                               │  ④ ticket.shrink(decode_peak) → extend(実データサイズ)
+  │                                               │  ⑤ デコード済みデータをホストメモリに保持
   │<──────────────────────────────────────────────│
   │    rc=0（成功）、metadata_ptr に w/h/ch 書込済み  │
   │                                               │
@@ -2686,7 +2668,20 @@ WASM                                           TEE Host
   │                                               │
 ```
 
-**ネイティブフォーマット:**
+**コンテンツ種別の自動判定:**
+
+`decode_content` はコンテンツのマジックバイトから種別を自動判定する。判定には `file-format` crateを使用し、画像・動画・カメラRAW・音声を統一的に検出する。
+
+| 種別 | 対応フォーマット | デコード方式 |
+| --- | --- | --- |
+| Image | JPEG, PNG, WebP, GIF, BMP, HEIC/HEIF, AVIF | `image` crate |
+| Video | MP4, MKV, MOV, AVI, FLV | ffmpeg CLI（メタデータ取得のみ。フレームは `video_frame_grayscale` で逐次抽出） |
+| RawImage | ARW, CR2/CR3, NEF, RAF, ORF, RW2, DNG/TIFF系RAW | exiftool CLI（埋め込みJPEGプレビュー抽出）→ `image` crateでデコード |
+| Audio | MP3, WAV, FLAC, M4A, AAC, OGG Vorbis/Opus/FLAC, AIFF | 認識のみ（デコード未実装、-7を返す） |
+
+TIFF構造のファイル（DNG, NEF等）はRawImageパスを通り、exiftoolでプレビューJPEG抽出を試みる。プレビューが見つからない場合（plain TIFF）は `image` crateでフォールバックデコードする。
+
+**ネイティブフォーマット（Image/RawImage）:**
 
 `decode_content` は `target_format` パラメータを持たず、常にコンテンツのネイティブフォーマットでデコードする。metadata の `channels` はデコード結果の実チャネル数を返す。
 
@@ -2698,9 +2693,11 @@ WASM                                           TEE Host
 | GIF | RGBA | 4 |
 | BMP | RGB | 3 |
 | TIFF | RGBA | 4 |
+| HEIC/HEIF/AVIF | `image` crateのデコード結果に依存 | 3 または 4 |
+| カメラRAW | 埋め込みJPEGプレビューのデコード結果 | 3 |
 | Luma画像 | Grayscale | 1 |
 
-WASMモジュールは `channels` の値を確認し、必要に応じて自前でgrayscale変換等の後処理を行う（例: phash-v1 は ITU-R BT.601 係数でグレースケール変換）。
+WASMモジュールは `channels` の値を確認し、必要に応じて自前でgrayscale変換等の後処理を行う（例: image-pdq は ITU-R BT.601 係数でグレースケール変換）。
 
 **戻り値:**
 
@@ -2713,15 +2710,23 @@ WASMモジュールは `channels` の値を確認し、必要に応じて自前�
 
 **metadata_ptr のレイアウト:**
 
-`decode_content` 成功時、`metadata_ptr` が指すWASMリニアメモリ上の12バイトに以下が書き込まれる：
+`decode_content` 成功時、`metadata_ptr` が指すWASMリニアメモリにコンテンツ種別に応じたメタデータが書き込まれる：
 
+**Image / RawImage（12バイト）:**
 ```
 [4バイト LE: width][4バイト LE: height][4バイト LE: channels]
 ```
 
+**Video（20バイト）:**
+```
+[4バイト LE: frame_count][4バイト LE: fps_x100][4バイト LE: width][4バイト LE: height][4バイト LE: duration_ms]
+```
+
+WASMモジュールはメタデータの長さ（12B vs 20B）でコンテンツ種別を判別できる。
+
 **複数回呼び出し:**
 
-`decode_content` は同一WASM実行内で複数回呼び出すことができる。2回目以降の呼び出しでは、前回のデコード済みデータとTicket予約を解放してから新規デコードを実行する。常にネイティブフォーマットでデコードされるため、再デコードは同一結果を返す。
+`decode_content` は同一WASM実行内で複数回呼び出すことができる。2回目以降の呼び出しでは、前回のデコード済みデータを解放し、対応するTicket予約をshrinkしてから新規デコードを実行する。常にネイティブフォーマットでデコードされるため、再デコードは同一結果を返す。
 
 **圧縮爆弾対策:**
 
@@ -2738,7 +2743,7 @@ Ticketは `Drop` トレイトを実装しており、WASM実行完了時（正�
 
 **コンテンツデータとの共存:**
 
-デコード済みデータはコンテンツの生バイナリとは独立にホストメモリ上に保持される。WASMは `read_content_chunk`（生バイナリ）と `read_decoded_chunk`（デコード済みデータ）の両方に同時にアクセスできる。これにより、例えばpHash計算（デコード済みピクセルが必要）と `get_content_feature`（生バイナリに対するハッシュ計算）を同一WASM実行内で組み合わせることが可能である。
+デコード済みデータはコンテンツの生バイナリとは独立にホストメモリ上に保持される。WASMは `read_content_chunk`（生バイナリ）と `read_decoded_chunk`（デコード済みデータ）の両方に同時にアクセスできる。これにより、例えばPDQ計算（デコード済みピクセルが必要）と `get_content_feature`（生バイナリに対するハッシュ計算）を同一WASM実行内で組み合わせることが可能である。
 
 ---
 
@@ -2766,12 +2771,12 @@ WASM                                                TEE Host
   │      n=32（out_bufに32バイトのハッシュ値を書込済み）  │
   │                                                    │
   │  n = get_decoded_feature(spec, len, out_buf)       │
-  │  spec = {"op":"grayscale_resize","width":32,...}   │
+  │  spec = {"op":"grayscale_resize","width":64,...}   │
   │───────────────────────────────────────────────────>│
   │                                                    │  デコード済みピクセルから
-  │                                                    │  grayscale + resize をネイティブ実行
+  │                                                    │  f32 luminance + Jaroszダウンサンプル
   │<───────────────────────────────────────────────────│
-  │      n=1024（32×32 grayscale = 1024バイト）         │
+  │      n=4096（64×64 grayscale = 4096バイト）         │
   │                                                    │
 ```
 
@@ -2782,7 +2787,7 @@ WASM                                                TEE Host
 | `sha256` | `{"op":"sha256"}` | 32バイト | SHA-256ハッシュ |
 | `sha384` | `{"op":"sha384"}` | 48バイト | SHA-384ハッシュ |
 | `sha512` | `{"op":"sha512"}` | 64バイト | SHA-512ハッシュ |
-| `c2pa_verify_active_cert_chain` | `{"op":"c2pa_verify_active_cert_chain","root_spki_hex":"..."}` | 1バイト | C2PAアクティブマニフェストの署名チェーンが指定されたルートSPKIに連鎖するか検証。0x01=成功、0x00=失敗 |
+| `c2pa_verify_active_cert_chain` | `{"op":"c2pa_verify_active_cert_chain","root_spki_hex":"..."}` | 可変（JSON） | C2PAアクティブマニフェストの署名チェーンが指定されたルートSPKIに連鎖するか検証。結果JSON: `{"verified":bool,"chain":[{"subject":"..."},...]}`。エラー時は -5 を返す |
 
 ハッシュ系操作（`sha256`, `sha384`, `sha512`）はオプションの `offset`（デフォルト0）、`length`（デフォルト: コンテンツ全長）で範囲指定可能。
 
@@ -2790,9 +2795,10 @@ WASM                                                TEE Host
 
 | op | spec例 | 出力サイズ | 説明 |
 | --- | --- | --- | --- |
-| `grayscale_resize` | `{"op":"grayscale_resize","width":32,"height":32}` | width×height バイト | ITU-R BT.601グレースケール変換 + バイリニア補間リサイズ |
+| `grayscale_resize` | `{"op":"grayscale_resize","width":64,"height":64}` | width×height バイト | ITU-R BT.601 f32 luminance変換 + Jaroszフィルタダウンサンプル（Meta ThreatExchange PDQ互換）。Image/RawImageデコード後に使用 |
+| `video_frame_grayscale` | `{"op":"video_frame_grayscale","frame":0,"width":64,"height":64}` | width×height バイト | 動画から指定フレームを抽出し、Jaroszダウンサンプルで grayscale 化。Videoデコード後に使用。フレーム番号からタイムスタンプを計算（frame / fps） |
 
-`grayscale_resize` は `decode_content` 後に呼び出す必要がある。デコード前に呼び出すと -4 を返す。
+`grayscale_resize` / `video_frame_grayscale` は `decode_content` 後に呼び出す必要がある。デコード前に呼び出すと -4 を返す。コンテンツ種別が合わない場合は -1 を返す（Image に video_frame_grayscale を呼ぶ等）。
 
 **エラーコード:**
 
@@ -2802,11 +2808,9 @@ WASM                                                TEE Host
 | -2 | コンテンツ範囲外（get_content_feature のみ） |
 | -3 | 出力バッファ境界外 |
 | -4 | デコード未実行（get_decoded_feature のみ） |
-| -5 | チャネル数不正 / データサイズ不一致（get_decoded_feature のみ）、またはC2PA構造エラー（c2pa_verify_active_cert_chain のみ） |
-
-**HMAC計算:**
-
-`hmac_content` は鍵パラメータが必要なため別途維持する。
+| -5 | チャネル数不正 / データサイズ不一致（get_decoded_feature のみ）、またはC2PA構造エラー（c2pa_verify_active_cert_chain のみ）、またはビデオメタデータ取得失敗 |
+| -6 | ビデオフレーム抽出エラー（video_frame_grayscale のみ） |
+| -7 | 音声デコード未実装（Audio形式が検出された場合） |
 
 **WASMリニアメモリ上のデータに対する暗号計算:**
 
@@ -2822,8 +2826,7 @@ WASM                                                TEE Host
 | `read_content_chunk` | `(offset: u32, length: u32, buf_ptr: u32) -> u32` | 指定範囲をWASMリニアメモリの `buf_ptr` に書き込む。実際にコピーしたバイト数を返す |
 | `get_extension_input` | `(buf_ptr: u32, buf_len: u32) -> u32` | 補助入力をWASMリニアメモリの `buf_ptr` に書き込む。補助入力の実サイズを返す（0=補助入力なし） |
 | `get_content_feature` | `(spec_ptr: u32, spec_len: u32, output_ptr: u32) -> i32` | JSON specに基づきコンテンツの特徴量を計算し `output_ptr` に書き込む。出力バイト数（正値）またはエラーコード（負値）を返す |
-| `hmac_content` | `(algorithm: u32, key_ptr: u32, key_len: u32, offset: u32, length: u32, out_ptr: u32) -> u32` | コンテンツの指定範囲のHMACを `out_ptr` に書き込む。鍵はWASMリニアメモリの `key_ptr` から読み取る。出力バイト数を返す（エラー時0） |
-| `decode_content` | `(params_ptr: u32, params_len: u32, metadata_ptr: u32) -> i32` | コンテンツをネイティブフォーマットでデコードしてホストメモリに保持する。`metadata_ptr` に `[width:u32 LE, height:u32 LE, channels:u32 LE]` を書き込む。戻り値: 0=成功, -1=非対応, -2=メモリ超過, -3=デコードエラー |
+| `decode_content` | `(params_ptr: u32, params_len: u32, metadata_ptr: u32) -> i32` | コンテンツをデコードしてホストメモリに保持する。Image/RawImage: `metadata_ptr` に `[width:u32 LE, height:u32 LE, channels:u32 LE]` (12B)。Video: `[frame_count:u32, fps_x100:u32, width:u32, height:u32, duration_ms:u32]` (20B)。戻り値: 0=成功, -1=非対応, -2=メモリ超過, -3=デコードエラー |
 | `read_decoded_chunk` | `(offset: u32, length: u32, buf_ptr: u32) -> u32` | デコード済みデータの指定範囲をWASMリニアメモリの `buf_ptr` に書き込む。実際にコピーしたバイト数を返す |
 | `get_decoded_length` | `() -> u32` | デコード済みデータの総バイト数を返す（デコード前は0） |
 | `get_decoded_feature` | `(spec_ptr: u32, spec_len: u32, output_ptr: u32) -> i32` | JSON specに基づきデコード済みデータの特徴量を計算し `output_ptr` に書き込む。出力バイト数（正値）またはエラーコード（負値）を返す |
@@ -2860,7 +2863,9 @@ TEEホストはこのバッファからJSONを読み取り、Extension payload�
 
 ## 7.2 WASMの透明性
 
-WASMバイナリはArweave上に公開・永続化される。Extension cNFTのオフチェーンデータには、実行されたWASMのArweave URI（`wasm_source`）が記録される。
+WASMバイナリは取得可能なストレージ上に公開され、Extension cNFTのオフチェーンデータには取得URI（`wasm_source`）とSHA-256ハッシュ（`wasm_hash`）が記録される。`wasm_hash` により、取得したバイナリがTEEが実行したものと同一であることを検証できる。
+
+公式GlobalConfig（DAOが管理するPDA）では、WASMバイナリの保存先として永続保存ストレージ（Arweave）を採用している。これはプロトコルの技術的制約ではなく、ガバナンス上のルールである。
 
 第三者は以下の手順で属性値を独立検証できる。
 
@@ -2920,22 +2925,27 @@ WASM実行           エラーを返却
 
 | WASM ID | 入力ソース | 出力 |
 | --- | --- | --- |
-| phash-v1 | ピクセルデータ（ホスト側デコード） | 画像の知覚ハッシュ値（pHash-DCT, 64bit） |
-| hardware-google | C2PA署名チェーン | ハードウェア撮影証明（Titan M2等） |
-| c2pa-training-v1 | c2pa.training-mining アサーション | AI学習許可/禁止フラグ |
-| c2pa-license-v1 | Creative Work アサーション | ライセンス種別・条件 |
+| image-phash | ピクセルデータ（ホスト側デコード） | 画像の知覚ハッシュ値（pHash-DCT, 64bit）— deprecated |
+| image-pdq | ピクセルデータ（ホスト側Jaroszダウンサンプル） | 画像の知覚ハッシュ値（PDQ 256-bit, Meta ThreatExchange互換） |
+| video-vpdq | ビデオフレーム（ホスト側ffmpegフレーム抽出 + Jarosz） | フレームごとのPDQハッシュ列（vPDQ, Meta ThreatExchange互換） |
+| cert-google | C2PA署名チェーン（生バイナリ） | Google C2PA Root CA G3 に対する証明書チェーン検証結果 |
+| cert-sony | C2PA署名チェーン（生バイナリ） | SONY C2PA Root CA G2 に対する証明書チェーン検証結果 |
+| cert-leica | C2PA署名チェーン（生バイナリ） | Leica C2PA Root CA に対する証明書チェーン検証結果 |
+| cert-rootlens | C2PA署名チェーン（生バイナリ） | RootLens Root CA に対する証明書チェーン検証結果 |
 
 全てのWASMは「C2PAコンテンツから導出可能な属性」を対象とする。
 
-WASMモジュールはコンテンツデータのアクセスに `read_content_chunk` を、大容量データに対する暗号計算に `hash_content` 等のホスト関数を使用できる。画像処理が必要なWASM（phash-v1等）は `decode_content` でホスト側デコードを利用し、デコード済みピクセルデータに `read_decoded_chunk` でアクセスする。外部検証型WASMにおけるBinding確認（補助入力がこのコンテンツに対して生成されたものであることの検証）には、`hash_content` によるコンテンツハッシュの計算とWASM内での照合を組み合わせる方式が推奨される。
+WASMモジュールはコンテンツデータのアクセスに `read_content_chunk` を、暗号計算に `get_content_feature` のSHA系opを使用できる。画像処理が必要なWASM（image-pdq等）は `decode_content` でホスト側デコードを利用し、`get_decoded_feature(grayscale_resize)` でJaroszダウンサンプル済みのluminanceバッファを取得する。動画のWASM（video-vpdq）は `get_decoded_feature(video_frame_grayscale)` でフレーム単位のluminanceバッファを取得する。cert-* WASMは `get_content_feature(c2pa_verify_active_cert_chain)` でC2PA証明書チェーン検証をホスト側に委譲し、Root CA SPKIをハードコード定数として保持する。
 
-phash-v1はpHash (DCT) アルゴリズムを使用する。ホスト側でグレースケールにデコードした画像を32×32にバイリニア補間リサイズし、分離型2D DCT（離散コサイン変換）で周波数領域に変換する。左上8×8の低周波ブロックからDC成分を除く63値の平均と各値を比較し、64bitの知覚ハッシュを生成する。ハミング距離が小さいほど画像の類似度が高い。
+**image-pdq** はMeta ThreatExchange PDQアルゴリズムを使用する。ホスト側でJaroszフィルタ（Meta `downscaling.cpp` 互換の4パスボックスフィルタ、f32 luminanceパイプライン）を通して64×64にダウンサンプルし、WASM側で分離型2D DCT（DC成分スキップ、周波数1〜16を使用）で16×16低周波ブロックを取得、Torben中央値で256bitに量子化する。Meta `pdqhash` Pythonパッケージとの互換性は距離 ≤ 2。
+
+**video-vpdq** は動画の各フレーム（1fpsサンプリング）にimage-pdqと同一のPDQ計算を適用し、フレームハッシュ列として出力する。quality < 50 のフレームと前フレームと同一ハッシュのフレームは除去される。
 
 ---
 
 ## 7.5 バージョン管理
 
-WASMのバージョニングは `phash-v1` → `phash-v2` のようにextension_idレベルで自然に行える。
+WASMのバージョニングは extension_id レベルで自然に行える（例: `image-pdq` の後継として `image-pdq-v2` を登録）。
 
 同一extension_id内でのマイナーバージョン管理は、WasmModuleAccount PDA内のバージョンリスト（`Vec<WasmVersionEntry>`）で管理される。各バージョンエントリには以下のフィールドが含まれる。
 

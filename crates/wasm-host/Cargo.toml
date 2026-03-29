@@ -13,7 +13,6 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-hmac = { workspace = true }
 image = { workspace = true }
 ciborium = { workspace = true }
 p256 = { workspace = true }
@@ -24,6 +23,7 @@ der = { workspace = true }
 hex = { workspace = true }
 kamadak-exif = { workspace = true }
 c2pa = { workspace = true }
+file-format = "0.29.0"
 
 [dev-dependencies]
 wat = "1"

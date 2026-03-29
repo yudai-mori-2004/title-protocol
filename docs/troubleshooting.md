@@ -1,6 +1,6 @@
 # Troubleshooting
 
-全環境共通 → ローカル固有 → AWS 固有の順で構成。
+Organized as: Common → Local-specific → AWS-specific.
 
 ---
 
@@ -15,7 +15,7 @@ Error: Address already in use (os error 48)
 A previous session's process is still running. Stop everything and retry:
 
 ```bash
-# ローカル
+# Local
 ./deploy/local/teardown.sh
 ./deploy/local/setup.sh
 
@@ -46,7 +46,7 @@ solana airdrop 2 $(solana-keygen pubkey keys/operator.json) --url devnet
 
 Then re-run `setup.sh` — it skips already-running services and retries the failed steps.
 
-> **EC2 からのエアドロップはレート制限されやすい。** ローカルから送金する方が確実:
+> **Airdrops from EC2 are often rate-limited.** Sending SOL from a local machine is more reliable:
 > ```bash
 > solana transfer <EC2_WALLET_PUBKEY> 2 --url devnet
 > ```
@@ -54,7 +54,7 @@ Then re-run `setup.sh` — it skips already-running services and retries the fai
 ### AES-GCM decryption failure on `/verify`
 
 ```
-ペイロードの復号に失敗: AES-GCM復号に失敗しました
+Payload decryption failed: AES-GCM decryption failed
 ```
 
 The SDK encrypted the payload with a **stale TEE node's key**. TEE nodes regenerate keys on every restart, but old node entries remain on-chain. The SDK (`selectNode()`) deduplicates by gateway endpoint and uses the most recently registered entry.
@@ -62,7 +62,7 @@ The SDK encrypted the payload with a **stale TEE node's key**. TEE nodes regener
 **Fix:** Restart the node to force re-registration:
 
 ```bash
-# ローカル
+# Local
 ./deploy/local/teardown.sh
 ./deploy/local/setup.sh
 
@@ -83,10 +83,10 @@ Port 5432 may conflict with a local PostgreSQL installation. Stop it or change t
 ### `network.json` not found
 
 ```
-ERROR: network.json が見つかりません。
+ERROR: network.json not found.
 ```
 
-Phase 1 が未完了。先に `title-cli init-global` を実行する:
+Phase 1 is not complete. Run `title-cli init-global` first:
 
 ```bash
 cargo build --release -p title-cli
@@ -97,23 +97,23 @@ See [`programs/title-config/README.md`](../programs/title-config/README.md) for 
 
 ### `CORE_COLLECTION_MINT` / `EXT_COLLECTION_MINT` not set
 
-TEE が cNFT をミントできない場合、コレクションアドレスの設定漏れが原因であることが多い。
+If the TEE cannot mint cNFTs, missing collection addresses are the most common cause.
 
-**自動設定の仕組み:**
+**How auto-configuration works:**
 
-`setup.sh` / `setup-ec2.sh` は `network.json` から `core_collection_mint` / `ext_collection_mint` を読み取り、環境変数としてTEEプロセスに渡す（`setup.sh:120-133`, `setup-ec2.sh:92-105`）。`.env` で明示設定した場合はそちらが優先される。
+`setup.sh` / `setup-ec2.sh` reads `core_collection_mint` / `ext_collection_mint` from `network.json` and passes them as environment variables to the TEE process. If explicitly set in `.env`, those values take precedence.
 
-**確認方法:**
+**How to verify:**
 
 ```bash
-# network.json の値を確認
+# Check network.json values
 python3 -c "import json; d=json.load(open('network.json')); print('Core:', d['core_collection_mint']); print('Ext:', d['ext_collection_mint'])"
 
-# TEE プロセスの環境変数を確認（ローカル）
+# Check TEE process environment (local)
 ps aux | grep title-tee
 cat /proc/<PID>/environ | tr '\0' '\n' | grep COLLECTION_MINT
 
-# Docker コンテナの環境変数を確認（AWS）
+# Check Docker container environment (AWS)
 docker inspect $(docker ps -q --filter name=gateway) | python3 -c "
 import sys, json
 env = json.load(sys.stdin)[0]['Config']['Env']
@@ -122,10 +122,10 @@ for e in env:
 "
 ```
 
-**手動で設定する場合:**
+**To set manually:**
 
 ```bash
-# .env に追加
+# Add to .env
 CORE_COLLECTION_MINT=<address from network.json>
 EXT_COLLECTION_MINT=<address from network.json>
 ```
@@ -136,13 +136,13 @@ EXT_COLLECTION_MINT=<address from network.json>
 
 ### `setup.sh` fails midway
 
-`setup.sh` は冪等（何度実行しても安全）。既に稼働中のサービスはスキップされる。途中で失敗した場合はそのまま再実行:
+`setup.sh` is idempotent — safe to run multiple times. Already-running services are skipped. If it fails partway through, just re-run:
 
 ```bash
 ./deploy/local/setup.sh
 ```
 
-完全にリセットしたい場合:
+For a full reset:
 
 ```bash
 ./deploy/local/teardown.sh
@@ -151,7 +151,7 @@ EXT_COLLECTION_MINT=<address from network.json>
 
 ### Services not responding after `setup.sh` completes
 
-ログを確認:
+Check the logs:
 
 ```bash
 tail -20 /tmp/title-tee.log
@@ -166,18 +166,18 @@ tail -20 /tmp/title-indexer.log
 
 ### `docker: permission denied`
 
-EC2 に SSH した直後は docker グループが反映されていないことがある:
+The docker group may not be applied immediately after SSH:
 
 ```bash
-# 方法1: 再接続
+# Option 1: reconnect
 exit
 ssh -i deploy/aws/keys/title-protocol-devnet.pem ec2-user@NODE_IP
 
-# 方法2: sg コマンド
+# Option 2: sg command
 sg docker bash
 ```
 
-> `setup-ec2.sh` は自動で `sg docker` による再実行を試みる。
+> `setup-ec2.sh` automatically retries with `sg docker`.
 
 ### C compiler not found during `cargo build`
 
@@ -187,7 +187,7 @@ sudo dnf install -y gcc gcc-c++
 
 ### Enclave startup failure
 
-`enclave_memory_mib` がインスタンスの利用可能メモリを超えている可能性がある。`setup-ec2.sh` 内の `ENCLAVE_MEMORY_MIB` を調整:
+`enclave_memory_mib` may exceed available instance memory. Adjust `ENCLAVE_MEMORY_MIB` in `setup-ec2.sh`:
 
 ```bash
 ENCLAVE_MEMORY_MIB=512 ./deploy/aws/setup-ec2.sh
@@ -195,7 +195,7 @@ ENCLAVE_MEMORY_MIB=512 ./deploy/aws/setup-ec2.sh
 
 ### S3 presigned URL returns 403
 
-Terraform output で S3 認証情報を再確認:
+Re-check S3 credentials from Terraform output:
 
 ```bash
 cd deploy/aws/terraform
@@ -204,24 +204,24 @@ terraform output -raw s3_secret_access_key
 terraform output -raw s3_bucket_name
 ```
 
-`.env` の `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_BUCKET` と一致していることを確認。
+Verify they match `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_BUCKET` in `.env`.
 
 ### Proxy log permission error
 
-`title-proxy` が `/var/log/` への書き込み権限がなくクラッシュする場合:
+If `title-proxy` crashes because it cannot write to `/var/log/`:
 
 ```bash
-# ログファイルをホームディレクトリに変更
+# Redirect logs to home directory
 nohup ./target/release/title-proxy > ~/title-proxy.log 2>&1 &
 ```
 
-> この問題は `setup-ec2.sh` では修正済み（`~/title-proxy.log` を使用）。
+> This is already fixed in `setup-ec2.sh` (uses `~/title-proxy.log`).
 
 ### `solana: command not found`
 
-SSH セッションで PATH が未設定:
+PATH is not set in the SSH session:
 
 ```bash
 source ~/.bashrc
-# または新しい SSH セッションを開く
+# or open a new SSH session
 ```

@@ -14,7 +14,6 @@
 //! - `get_content_length`: コンテンツの全長取得
 //! - `get_extension_input`: Extension補助入力の取得
 //! - `get_content_feature`: コンテンツの特徴量計算（JSON spec指定: sha256/sha384/sha512）
-//! - `hmac_content`: コンテンツのHMAC計算
 //! - `decode_content`: コンテンツのデコード（画像→ピクセル等）
 //! - `read_decoded_chunk`: デコード済みデータのチャンク読み取り
 //! - `get_decoded_length`: デコード済みデータの全長取得
@@ -26,6 +25,7 @@
 
 pub mod c2pa_cert;
 pub mod decode;
+pub mod raw;
 pub mod resource_pool;
 pub mod video;
 
@@ -36,7 +36,6 @@ mod jarosz;
 use std::panic;
 use std::sync::Arc;
 
-use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use wasmtime::{Caller, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Trap};
 
@@ -75,15 +74,21 @@ pub struct ExtensionResult {
 /// メタデータ（画像: width/height/channels 等）はデコード時にWASMリニアメモリに書き込まれ、
 /// 同時に本構造体にも保存される（get_decoded_feature で参照するため）。
 /// 仕様書 §7.1
-struct DecodedContent {
-    /// デコード済み生データ（コンテンツ種別に依存しない）
-    data: Vec<u8>,
-    /// 画像幅（ピクセル）
-    width: u32,
-    /// 画像高さ（ピクセル）
-    height: u32,
-    /// チャネル数（1=Luma, 3=RGB, 4=RGBA）
-    channels: u32,
+/// Decoded content, variant per content type.
+enum DecodedContent {
+    /// Image or RAW preview — pixel data available immediately.
+    Image {
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+        channels: u32,
+    },
+    /// Video — metadata only; frames extracted on demand via video_frame_grayscale.
+    Video {
+        width: u32,
+        height: u32,
+        fps: f64,
+    },
 }
 
 /// wasmtime Store内部の状態。
@@ -98,31 +103,22 @@ struct InnerHostState {
     /// メモリ制限
     limiter: StoreLimits,
     /// デコード済みコンテンツ（decode_content 呼び出し後に Some）
-    /// 仕様書 §7.1
     decoded: Option<DecodedContent>,
-    /// ResourcePool 参照（デコード予約用）
-    /// 仕様書 §7.1
-    resource_pool: Option<Arc<ResourcePool>>,
-    /// デコード済みデータのメモリ予約チケット（Drop で自動解放）
-    /// 仕様書 §7.1
-    decode_ticket: Option<Ticket>,
+    /// リクエスト単位のメモリ追跡チケット（handler所有のTicketをArcで共有）。
+    /// ホスト関数がメモリを確保/解放するたびにextend/shrinkする。
+    ticket: Option<Arc<Ticket>>,
 }
 
 /// WASM実行ランナー。
 /// 仕様書 §7.1
 pub struct WasmRunner {
-    /// Fuel制限（命令実行数の上限）
     fuel_limit: u64,
-    /// Memory制限（バイト）
     memory_limit: usize,
-    /// ResourcePool（デコード済みデータのメモリ予算管理用）
-    /// 仕様書 §7.1
-    resource_pool: Option<Arc<ResourcePool>>,
+    ticket: Option<Arc<Ticket>>,
 }
 
 impl WasmRunner {
-    /// 新しいWasmRunnerを作成する（後方互換）。
-    /// 仕様書 §7.1
+    /// 新しいWasmRunnerを作成する。
     ///
     /// # 引数
     /// - `fuel_limit`: 命令実行数の上限（無限ループ防止）
@@ -131,21 +127,17 @@ impl WasmRunner {
         Self {
             fuel_limit,
             memory_limit,
-            resource_pool: None,
+            ticket: None,
         }
     }
 
-    /// ResourcePool付きのWasmRunnerを作成する。
-    /// 仕様書 §7.1
-    pub fn with_resource_pool(
-        fuel_limit: u64,
-        memory_limit: usize,
-        pool: Arc<ResourcePool>,
-    ) -> Self {
+    /// メモリ追跡Ticket付きのWasmRunnerを作成する。
+    /// ホスト関数がメモリを確保/解放するたびにTicketをextend/shrinkする。
+    pub fn with_ticket(fuel_limit: u64, memory_limit: usize, ticket: Arc<Ticket>) -> Self {
         Self {
             fuel_limit,
             memory_limit,
-            resource_pool: Some(pool),
+            ticket: Some(ticket),
         }
     }
 
@@ -169,7 +161,7 @@ impl WasmRunner {
     ) -> Result<ExtensionResult, WasmError> {
         let fuel_limit = self.fuel_limit;
         let memory_limit = self.memory_limit;
-        let resource_pool = self.resource_pool.clone();
+        let ticket = self.ticket.clone();
         let wasm_bytes = wasm_bytes.to_vec();
         let content = content.to_vec();
         let mime_type = mime_type.to_string();
@@ -181,7 +173,7 @@ impl WasmRunner {
             Self::execute_inner(
                 fuel_limit,
                 memory_limit,
-                resource_pool,
+                ticket,
                 &wasm_bytes,
                 content,
                 mime_type,
@@ -221,7 +213,7 @@ impl WasmRunner {
     fn execute_inner(
         fuel_limit: u64,
         memory_limit: usize,
-        resource_pool: Option<Arc<ResourcePool>>,
+        ticket: Option<Arc<Ticket>>,
         wasm_bytes: &[u8],
         content: Vec<u8>,
         mime_type: String,
@@ -246,8 +238,7 @@ impl WasmRunner {
             extension_input,
             limiter,
             decoded: None,
-            resource_pool,
-            decode_ticket: None,
+            ticket,
         };
 
         let mut store = Store::new(&engine, inner_state);
@@ -462,84 +453,6 @@ impl WasmRunner {
                 WasmError::ExecutionError(format!("get_content_featureの登録に失敗: {e}"))
             })?;
 
-        // hmac_content(algorithm: u32, key_ptr: u32, key_len: u32, offset: u32, length: u32, out_ptr: u32) -> u32
-        // コンテンツの指定範囲に対するHMACを計算する。
-        // algorithm: 0=HMAC-SHA256(32B), 1=HMAC-SHA384(48B), 2=HMAC-SHA512(64B)
-        // key はWASMリニアメモリ上のバイト列。
-        // 仕様書 §7.1
-        linker
-            .func_wrap(
-                "env",
-                "hmac_content",
-                |mut caller: Caller<'_, InnerHostState>,
-                 algorithm: u32,
-                 key_ptr: u32,
-                 key_len: u32,
-                 offset: u32,
-                 length: u32,
-                 out_ptr: u32|
-                 -> u32 {
-                    let memory = match caller.get_export("memory") {
-                        Some(ext) => match ext.into_memory() {
-                            Some(m) => m,
-                            None => return 0,
-                        },
-                        None => return 0,
-                    };
-                    let (mem_data, state) = memory.data_and_store_mut(&mut caller);
-
-                    // WASMメモリからHMACキーを読み取る
-                    let kp = key_ptr as usize;
-                    let kl = key_len as usize;
-                    if kp + kl > mem_data.len() {
-                        return 0;
-                    }
-                    let key = &mem_data[kp..kp + kl];
-
-                    // コンテンツの指定範囲を取得
-                    let start = offset as usize;
-                    if start >= state.content.len() {
-                        return 0;
-                    }
-                    let end = (start + length as usize).min(state.content.len());
-                    let data_slice = &state.content[start..end];
-
-                    // HMAC計算（仕様書 §7.1）
-                    let mac_bytes: Vec<u8> = match algorithm {
-                        0 => {
-                            let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(key) else {
-                                return 0;
-                            };
-                            mac.update(data_slice);
-                            mac.finalize().into_bytes().to_vec()
-                        }
-                        1 => {
-                            let Ok(mut mac) = Hmac::<Sha384>::new_from_slice(key) else {
-                                return 0;
-                            };
-                            mac.update(data_slice);
-                            mac.finalize().into_bytes().to_vec()
-                        }
-                        2 => {
-                            let Ok(mut mac) = Hmac::<Sha512>::new_from_slice(key) else {
-                                return 0;
-                            };
-                            mac.update(data_slice);
-                            mac.finalize().into_bytes().to_vec()
-                        }
-                        _ => return 0,
-                    };
-
-                    let dest = out_ptr as usize;
-                    if dest + mac_bytes.len() > mem_data.len() {
-                        return 0;
-                    }
-                    mem_data[dest..dest + mac_bytes.len()].copy_from_slice(&mac_bytes);
-                    mac_bytes.len() as u32
-                },
-            )
-            .map_err(|e| WasmError::ExecutionError(format!("hmac_contentの登録に失敗: {e}")))?;
-
         // get_extension_input(buf_ptr: u32, buf_len: u32) -> u32
         // Extension補助入力をWASMメモリにコピーする。
         // 実際のサイズを返す。buf_len未満の場合もサイズのみ返す（データはコピーされない）。
@@ -620,43 +533,73 @@ impl WasmRunner {
                         }
                     };
 
-                    // 2. ピークメモリ推定（ヘッダのみ読み、圧縮爆弾対策）
-                    let peak_size = {
-                        let state = caller.data();
-                        match crate::decode::estimate_peak_bytes(kind, &state.content) {
-                            Ok(s) => s,
-                            Err(rc) => return rc,
-                        }
-                    };
-
-                    // 3. 2回目以降の呼び出し: 前回のチケットを解放
+                    // 2. 2回目以降の呼び出し: 前回のデコード結果を解放
                     {
                         let state = caller.data_mut();
-                        state.decode_ticket = None;
+                        if let Some(DecodedContent::Image { ref data, .. }) = state.decoded {
+                            let prev_size = data.len();
+                            if let Some(ref t) = state.ticket {
+                                t.shrink(prev_size);
+                            }
+                        }
                         state.decoded = None;
                     }
 
-                    // 4. ResourcePool で予約（Ticket 発行）
-                    {
-                        let pool_opt = caller.data().resource_pool.clone();
-                        if let Some(ref pool) = pool_opt {
-                            match pool.acquire(peak_size) {
-                                Some(ticket) => {
-                                    caller.data_mut().decode_ticket = Some(ticket);
-                                }
-                                None => return -2, // メモリ予算超過
+                    // 3. デコードピーク推定 + 予約
+                    //    image crate内部の中間バッファ + /dev/shm一時ファイル(RAW/Video)を含む
+                    let decode_peak = {
+                        let state = caller.data();
+                        let image_peak = crate::decode::estimate_decode_peak(kind, &state.content);
+                        let shm_peak = match kind {
+                            crate::decode::DecoderKind::Video | crate::decode::DecoderKind::RawImage
+                                => state.content.len(),
+                            _ => 0,
+                        };
+                        image_peak + shm_peak
+                    };
+                    if decode_peak > 0 {
+                        let state = caller.data();
+                        if let Some(ref t) = state.ticket {
+                            if !t.extend(decode_peak) {
+                                return -2;
                             }
                         }
                     }
 
-                    // 5. フルデコード
+                    // 4. フルデコード
                     let result = {
                         let state = caller.data();
                         match crate::decode::decode(kind, &state.content) {
                             Ok(r) => r,
-                            Err(rc) => return rc,
+                            Err(rc) => {
+                                // デコード失敗: ピーク予約を返却
+                                if decode_peak > 0 {
+                                    let state = caller.data();
+                                    if let Some(ref t) = state.ticket {
+                                        t.shrink(decode_peak);
+                                    }
+                                }
+                                return rc;
+                            }
                         }
                     };
+
+                    // 5. デコード完了: 中間バッファ分を返却し、結果データ分だけ保持
+                    //    decode_peak(中間+shm) → shrink → extend(実際のdata.len())
+                    {
+                        let state = caller.data();
+                        let decoded_size = result.data.len();
+                        if let Some(ref t) = state.ticket {
+                            // 中間バッファ+shmを全返却
+                            if decode_peak > 0 {
+                                t.shrink(decode_peak);
+                            }
+                            // デコード結果のデータ分だけ再確保
+                            if decoded_size > 0 && !t.extend(decoded_size) {
+                                return -2;
+                            }
+                        }
+                    }
 
                     // 6. メタデータをWASMメモリに書き込み（フォーマット非依存）
                     let memory = match caller.get_export("memory") {
@@ -674,28 +617,26 @@ impl WasmRunner {
                     mem_data[mp..mp + result.metadata.len()]
                         .copy_from_slice(&result.metadata);
 
-                    // 7. デコード済みデータを格納（メタデータも保持）
-                    // 画像: metadata=12B [width, height, channels], data=pixels
-                    // 動画: metadata=20B [frame_count, fps_x100, width, height, duration_ms], data=empty
-                    let (w, h, ch) = if result.metadata.len() == 20 {
-                        // Video: width/height are at offset 8 and 12
-                        let w = u32::from_le_bytes([result.metadata[8], result.metadata[9], result.metadata[10], result.metadata[11]]);
-                        let h = u32::from_le_bytes([result.metadata[12], result.metadata[13], result.metadata[14], result.metadata[15]]);
-                        (w, h, 0u32) // channels=0 signals video mode
-                    } else {
-                        // Image: standard 12-byte metadata
-                        let w = u32::from_le_bytes([result.metadata[0], result.metadata[1], result.metadata[2], result.metadata[3]]);
-                        let h = u32::from_le_bytes([result.metadata[4], result.metadata[5], result.metadata[6], result.metadata[7]]);
-                        let ch = u32::from_le_bytes([result.metadata[8], result.metadata[9], result.metadata[10], result.metadata[11]]);
-                        (w, h, ch)
+                    // 7. DecoderKindに基づいてDecodedContentを構築
+                    let decoded = match result.kind {
+                        crate::decode::DecoderKind::Video => {
+                            let fps_x100 = u32::from_le_bytes([result.metadata[4], result.metadata[5], result.metadata[6], result.metadata[7]]);
+                            let w = u32::from_le_bytes([result.metadata[8], result.metadata[9], result.metadata[10], result.metadata[11]]);
+                            let h = u32::from_le_bytes([result.metadata[12], result.metadata[13], result.metadata[14], result.metadata[15]]);
+                            DecodedContent::Video { width: w, height: h, fps: fps_x100 as f64 / 100.0 }
+                        }
+                        crate::decode::DecoderKind::Image | crate::decode::DecoderKind::RawImage => {
+                            let w = u32::from_le_bytes([result.metadata[0], result.metadata[1], result.metadata[2], result.metadata[3]]);
+                            let h = u32::from_le_bytes([result.metadata[4], result.metadata[5], result.metadata[6], result.metadata[7]]);
+                            let ch = u32::from_le_bytes([result.metadata[8], result.metadata[9], result.metadata[10], result.metadata[11]]);
+                            DecodedContent::Image { data: result.data, width: w, height: h, channels: ch }
+                        }
+                        crate::decode::DecoderKind::Audio => {
+                            return -7; // Audio decoding not yet implemented
+                        }
                     };
                     let state = caller.data_mut();
-                    state.decoded = Some(DecodedContent {
-                        data: result.data,
-                        width: w,
-                        height: h,
-                        channels: ch,
-                    });
+                    state.decoded = Some(decoded);
 
                     0 // 成功
                 },
@@ -730,11 +671,15 @@ impl WasmRunner {
                         None => return 0,
                     };
 
+                    let data = match decoded {
+                        DecodedContent::Image { data, .. } => data,
+                        DecodedContent::Video { .. } => return 0,
+                    };
                     let start = offset as usize;
-                    if start >= decoded.data.len() {
+                    if start >= data.len() {
                         return 0;
                     }
-                    let end = (start + length as usize).min(decoded.data.len());
+                    let end = (start + length as usize).min(data.len());
                     let chunk_len = end - start;
 
                     let dest = buf_ptr as usize;
@@ -742,7 +687,7 @@ impl WasmRunner {
                         return 0;
                     }
                     mem_data[dest..dest + chunk_len]
-                        .copy_from_slice(&decoded.data[start..end]);
+                        .copy_from_slice(&data[start..end]);
                     chunk_len as u32
                 },
             )
@@ -758,11 +703,10 @@ impl WasmRunner {
                 "env",
                 "get_decoded_length",
                 |caller: Caller<'_, InnerHostState>| -> u32 {
-                    caller
-                        .data()
-                        .decoded
-                        .as_ref()
-                        .map_or(0, |d| d.data.len() as u32)
+                    match &caller.data().decoded {
+                        Some(DecodedContent::Image { data, .. }) => data.len() as u32,
+                        _ => 0,
+                    }
                 },
             )
             .map_err(|e| {
@@ -819,6 +763,10 @@ impl WasmRunner {
 
                     match op {
                         "grayscale_resize" => {
+                            let (data, width, height, channels) = match decoded {
+                                DecodedContent::Image { data, width, height, channels } => (data, *width, *height, *channels),
+                                DecodedContent::Video { .. } => return -1,
+                            };
                             let target_w = match spec.get("width").and_then(|v| v.as_u64()) {
                                 Some(w) => w as u32,
                                 None => return -1,
@@ -828,19 +776,20 @@ impl WasmRunner {
                                 None => return -1,
                             };
 
-                            // PDQ準拠 f32 luminanceパイプライン (BT.601):
-                            // RGB/RGBA/Gray → f32 luminance → Jarosz 4パスボックスフィルタ → decimate → u8
-                            // Meta ThreatExchange PDQリファレンス実装と互換。
+                            // Jarosz uses buffer1 + buffer2 = width*height*4*2 bytes
+                            let jarosz_peak = (width as usize) * (height as usize) * 4 * 2;
+                            if let Some(ref t) = state.ticket {
+                                if !t.extend(jarosz_peak) { return -2; }
+                            }
+
                             let output = jarosz::downsample_from_decoded(
-                                &decoded.data,
-                                decoded.width,
-                                decoded.height,
-                                decoded.channels,
-                                target_w,
-                                target_h,
+                                data, width, height, channels, target_w, target_h,
                             );
 
-                            // WASMメモリに出力
+                            if let Some(ref t) = state.ticket {
+                                t.shrink(jarosz_peak);
+                            }
+
                             let dest = output_ptr as usize;
                             if dest + output.len() > mem_data.len() {
                                 return -3;
@@ -849,9 +798,10 @@ impl WasmRunner {
                             output.len() as i32
                         }
                         "video_frame_grayscale" => {
-                            // Extract a single video frame and return it as a
-                            // Jarosz-downsampled grayscale buffer.
-                            // Spec: {"op":"video_frame_grayscale","frame":N,"width":64,"height":64}
+                            let (vid_w, vid_h, fps) = match decoded {
+                                DecodedContent::Video { width, height, fps } => (*width, *height, *fps),
+                                DecodedContent::Image { .. } => return -1,
+                            };
                             let frame_idx = match spec.get("frame").and_then(|v| v.as_u64()) {
                                 Some(f) => f as u32,
                                 None => return -1,
@@ -865,52 +815,46 @@ impl WasmRunner {
                                 None => return -1,
                             };
 
-                            // Read video metadata from decoded state
-                            // Video decode stores metadata only (no pixel data)
-                            if decoded.data.is_empty() && decoded.channels == 0 {
-                                // This is a video — extract frame via ffmpeg
-                                // Re-probe to get fps for timestamp calculation
-                                let video_meta = match video::probe(&state.content) {
-                                    Ok(m) => m,
-                                    Err(_) => return -5,
-                                };
-
-                                let timestamp = if video_meta.fps > 0.0 {
-                                    frame_idx as f64 / video_meta.fps
-                                } else {
-                                    frame_idx as f64 / 30.0
-                                };
-
-                                // Extract frame as RGB24 at original resolution
-                                let rgb = match video::extract_frame_rgb(
-                                    &state.content,
-                                    timestamp,
-                                    video_meta.width,
-                                    video_meta.height,
-                                ) {
-                                    Ok(data) => data,
-                                    Err(_) => return -6, // Frame extraction error
-                                };
-
-                                // Jarosz downsample: RGB → f32 luma → filter → decimate → u8
-                                let output = jarosz::downsample_from_decoded(
-                                    &rgb,
-                                    video_meta.width,
-                                    video_meta.height,
-                                    3, // RGB24
-                                    target_w,
-                                    target_h,
-                                );
-
-                                let dest = output_ptr as usize;
-                                if dest + output.len() > mem_data.len() {
-                                    return -3;
-                                }
-                                mem_data[dest..dest + output.len()].copy_from_slice(&output);
-                                output.len() as i32
+                            let timestamp = if fps > 0.0 {
+                                frame_idx as f64 / fps
                             } else {
-                                -1 // Not a video
+                                frame_idx as f64 / 30.0
+                            };
+
+                            // ffmpeg RGB24 frame + Jarosz buffers
+                            let frame_size = (vid_w as usize) * (vid_h as usize) * 3;
+                            let jarosz_peak = (vid_w as usize) * (vid_h as usize) * 4 * 2;
+                            let temp_peak = frame_size + jarosz_peak;
+                            if let Some(ref t) = state.ticket {
+                                if !t.extend(temp_peak) { return -2; }
                             }
+
+                            let rgb = match video::extract_frame_rgb(
+                                &state.content, timestamp, vid_w, vid_h,
+                            ) {
+                                Ok(data) => data,
+                                Err(_) => {
+                                    if let Some(ref t) = state.ticket { t.shrink(temp_peak); }
+                                    return -6;
+                                }
+                            };
+
+                            let output = jarosz::downsample_from_decoded(
+                                &rgb, vid_w, vid_h, 3, target_w, target_h,
+                            );
+
+                            // rgb and jarosz buffers freed when output is computed
+                            drop(rgb);
+                            if let Some(ref t) = state.ticket {
+                                t.shrink(temp_peak);
+                            }
+
+                            let dest = output_ptr as usize;
+                            if dest + output.len() > mem_data.len() {
+                                return -3;
+                            }
+                            mem_data[dest..dest + output.len()].copy_from_slice(&output);
+                            output.len() as i32
                         }
                         _ => -1,
                     }
@@ -937,7 +881,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             ;; 結果JSON: {"result":"ok"} (15バイト)
@@ -976,7 +919,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) (i32.const 0))
@@ -1009,7 +951,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) (i32.const 0))
@@ -1041,7 +982,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) (i32.const 4096))
@@ -1081,7 +1021,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             ;; JSON spec: {"op":"sha256"} (15 bytes) at offset 256
@@ -1117,54 +1056,6 @@ mod tests {
         assert_eq!(result.output["hash_size"], 32);
     }
 
-    /// テスト: hmac_contentがHMAC-SHA256を正しく計算する
-    /// 仕様書 §7.1
-    #[test]
-    fn test_hmac_content_sha256() {
-        let wasm = wat::parse_str(
-            r#"(module
-            (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
-            (import "env" "get_content_length" (func $len (result i32)))
-            (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
-            (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
-            (memory (export "memory") 1)
-            ;; HMACキー "secret" (6バイト) をオフセット256に配置
-            (data (i32.const 256) "secret")
-            ;; 成功時の結果: {"hmac_size":32} = 16バイト
-            (data (i32.const 1024) "\10\00\00\00{\"hmac_size\":32}")
-            ;; 失敗時の結果: {"hmac_size":0}  = 15バイト
-            (data (i32.const 2048) "\0f\00\00\00{\"hmac_size\":0}")
-            (func (export "alloc") (param i32) (result i32) (i32.const 4096))
-            (func (export "compute_phash") (result i32)
-                (local $hmac_size i32)
-                ;; HMAC-SHA256(key="secret", コンテンツ全体)をオフセット8192に書き込む
-                (local.set $hmac_size (call $hmac
-                    (i32.const 0)     ;; algorithm=0 (SHA256)
-                    (i32.const 256)   ;; key_ptr
-                    (i32.const 6)     ;; key_len ("secret" = 6 bytes)
-                    (i32.const 0)     ;; offset
-                    (i32.const 65535) ;; length (全コンテンツ)
-                    (i32.const 8192)  ;; out_ptr
-                ))
-                ;; hmac_sizeが32であれば成功
-                (if (result i32) (i32.eq (local.get $hmac_size) (i32.const 32))
-                    (then (i32.const 1024))
-                    (else (i32.const 2048))
-                )
-            )
-        )"#,
-        )
-        .unwrap();
-
-        let runner = WasmRunner::new(10_000_000, 16 * 1024 * 1024);
-        let result = runner
-            .execute(&wasm, b"test data for hmac", "application/octet-stream", None, "compute_phash")
-            .expect("WASM実行に成功するべき");
-
-        assert_eq!(result.output["hmac_size"], 32);
-    }
-
     /// テスト: 不正WASMバイナリでCompileError
     #[test]
     fn test_invalid_wasm_binary() {
@@ -1182,7 +1073,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
         )"#,
@@ -1203,7 +1093,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (func (export "process") (result i32)
@@ -1227,7 +1116,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             ;; json_len = 0 at offset 1024
@@ -1253,7 +1141,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (import "env" "decode_content" (func $decode (param i32 i32 i32) (result i32)))
             (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
@@ -1317,23 +1204,6 @@ mod tests {
         assert_eq!(result.output["ok"], 0);
     }
 
-    /// テスト: decode_contentがメモリ予算超過で-2を返す
-    /// 仕様書 §7.1
-    #[test]
-    fn test_decode_content_memory_budget_exceeded() {
-        let wasm = decode_test_wat();
-        let content = include_bytes!("../../../tests/fixtures/test_2x2.png");
-
-        // 極小のResourcePool（1バイト）— 2x2 RGBA = 16バイトなので確実に超過
-        let pool = Arc::new(ResourcePool::new(1));
-        let runner = WasmRunner::with_resource_pool(100_000_000, 64 * 1024 * 1024, pool);
-        let result = runner
-            .execute(&wasm, content, "image/jpeg", None, "process")
-            .expect("WASM実行に成功するべき");
-
-        assert_eq!(result.output["ok"], 0);
-    }
-
     /// テスト: decode前のread_decoded_chunkが0を返す
     /// 仕様書 §7.1
     #[test]
@@ -1343,7 +1213,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (import "env" "decode_content" (func $decode (param i32 i32 i32) (result i32)))
             (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
@@ -1439,7 +1308,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (import "env" "decode_content" (func $decode (param i32 i32 i32) (result i32)))
             (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
@@ -1496,7 +1364,6 @@ mod tests {
             (import "env" "read_content_chunk" (func $read (param i32 i32 i32) (result i32)))
             (import "env" "get_content_length" (func $len (result i32)))
             (import "env" "get_content_feature" (func $gcf (param i32 i32 i32) (result i32)))
-            (import "env" "hmac_content" (func $hmac (param i32 i32 i32 i32 i32 i32) (result i32)))
             (import "env" "get_extension_input" (func $ext (param i32 i32) (result i32)))
             (import "env" "decode_content" (func $decode (param i32 i32 i32) (result i32)))
             (import "env" "read_decoded_chunk" (func $read_dec (param i32 i32 i32) (result i32)))
@@ -1532,22 +1399,4 @@ mod tests {
         assert_eq!(result.output["rc"], -4);
     }
 
-    /// テスト: ResourcePoolのDrop時にTicketが解放される
-    /// 仕様書 §7.1
-    #[test]
-    fn test_resource_pool_released_after_execution() {
-        let wasm = decode_test_wat();
-        let content = include_bytes!("../../../tests/fixtures/test_2x2.png");
-
-        let pool = Arc::new(ResourcePool::new(100 * 1024 * 1024));
-        let runner = WasmRunner::with_resource_pool(100_000_000, 64 * 1024 * 1024, pool.clone());
-
-        // 実行前: 使用量0
-        assert_eq!(pool.total_used(), 0);
-
-        let _result = runner.execute(&wasm, content, "image/jpeg", None, "process").unwrap();
-
-        // 実行後: InnerHostState がDropされ、Ticketが解放済み
-        assert_eq!(pool.total_used(), 0);
-    }
 }

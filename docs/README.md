@@ -2,48 +2,48 @@
 
 > Note: Technical specifications (`SPECS_JA.md`) are written in Japanese.
 
-Title Protocolの開発ドキュメント。バージョン単位で管理する。
+Development documentation for Title Protocol, organized by version.
 
-## 構造
+## Structure
 
-各バージョンは **SPECS → COVERAGE → tasks** の3点セットで構成される:
+Each version consists of a **SPECS → COVERAGE → tasks** three-piece set:
 
 ```
 docs/
-├── v0.1.0/                ← 初期実装（2026-02-21）
-│   ├── SPECS_JA.md        ← 技術仕様書（人間が書く）
-│   ├── COVERAGE.md        ← 仕様→実装の対応表（橋渡し）
-│   └── tasks/             ← 作業単位（AI開発タスク + メモ）
-├── v0.2.0/                ← 次のフェーズ（将来）
+├── v0.1.0/                ← Initial implementation (2026-02-21)
+│   ├── SPECS_JA.md        ← Technical specification (written by humans)
+│   ├── COVERAGE.md        ← Spec-to-implementation mapping
+│   └── tasks/             ← Work units (AI development tasks + notes)
+├── v0.1.1/                ← Next iteration
 │   ├── SPECS_JA.md
 │   ├── COVERAGE.md
 │   └── tasks/
-└── README.md              ← このファイル
+└── README.md              ← This file
 ```
 
-## データフロー
+## Data Flow
 
 ```
-SPECS（何を作るか）→ COVERAGE（何が作られたか）→ tasks（どう作るか + 学び）
+SPECS (what to build) → COVERAGE (what was built) → tasks (how to build + learnings)
 ```
 
-- **SPECS**: 人間が書く技術仕様。プロトコルの設計・データ構造・セキュリティモデルを定義
-- **COVERAGE**: 仕様の各セクションに対する実装状況。仕様と実コードの橋渡し
-- **tasks**: COVERAGEの未実装項目から導出されるAI開発タスク。作業中のメモも同梱
+- **SPECS**: Human-written technical specification. Defines protocol design, data structures, and security model
+- **COVERAGE**: Implementation status for each spec section. Bridges specification and code
+- **tasks**: AI development tasks derived from unimplemented COVERAGE items. Includes work-in-progress notes
 
-## バージョンの運用
+## Versioning
 
-- 各バージョンは自己完結した開発フェーズを表す
-- COVERAGEは**累積的**: v2のCOVERAGEはv1の完了分を前提とし、v2で追加された仕様のみを追跡する
-- 新バージョンの作成手順:
-  1. `docs/vN/SPECS_JA.md` に新仕様を記述
-  2. `docs/vN/COVERAGE.md` でv(N-1)からの差分を整理
-  3. `docs/vN/tasks/` にタスクを定義
-  4. `CLAUDE.md` の参照パスを最新バージョンに更新
+- Each version represents a self-contained development phase
+- COVERAGE is **cumulative**: vN assumes v(N-1) is complete and tracks only specs added in vN
+- To create a new version:
+  1. Write the new spec in `docs/vN/SPECS_JA.md`
+  2. Create `docs/vN/COVERAGE.md` tracking the delta from v(N-1)
+  3. Define tasks in `docs/vN/tasks/`
+  4. Update `CLAUDE.md` to reference the latest version
 
-## バージョン一覧
+## Versions
 
-| バージョン | 作成日 | 内容 | 状態 |
-|-----------|--------|------|------|
-| [v0.1.0](./v0.1.0/) | 2026-02-21 | 初期実装: C2PA検証、TEE、Gateway、WASM、SDK、Indexer（タスク01〜13） | **完了** |
-| [v0.1.1](./v0.1.1/) | 2026-03-13 | ドキュメント再構成（Diataxis）、コレクション権限委譲の原子化、デプロイスクリプト修正 | 進行中 |
+| Version | Date | Content | Status |
+|---------|------|---------|--------|
+| [v0.1.0](./v0.1.0/) | 2026-02-21 | Initial implementation: C2PA verification, TEE, Gateway, WASM, SDK, Indexer (tasks 01–13) | **Complete** |
+| [v0.1.1](./v0.1.1/) | 2026-03-13 | Documentation restructure (Diataxis), collection authority atomization, deploy script fixes | In progress |

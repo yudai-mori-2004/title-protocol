@@ -26,6 +26,7 @@ pub(crate) async fn process_extension(
     owner_wallet: &str,
     extension_id: &str,
     extension_input: Option<&serde_json::Value>,
+    ticket: std::sync::Arc<title_wasm_host::Ticket>,
 ) -> Result<serde_json::Value, String> {
     // WASMローダーを取得
     let loader = state
@@ -54,10 +55,10 @@ pub(crate) async fn process_extension(
 
     // WASMランナーで実行（仕様書 §7.1）
     // 標準エクスポート関数名 "process" を使用
-    let runner = title_wasm_host::WasmRunner::with_resource_pool(
+    let runner = title_wasm_host::WasmRunner::with_ticket(
         1_000_000_000, // Fuel制限: 10億命令
         64 * 1024 * 1024, // Memory制限: 64MB
-        std::sync::Arc::clone(&state.resource_pool),
+        ticket,
     );
 
     let wasm_result = runner

@@ -1,41 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Video frame extraction via ffmpeg CLI subprocess.
+//! ffmpeg CLIサブプロセスによる動画フレーム抽出。
 //!
-//! Extracts individual frames from video content by invoking ffmpeg as a
-//! subprocess. Content is written to a RAM-backed tmpfs (`/dev/shm`) to
-//! avoid disk I/O while providing the seekable file interface that ffmpeg
-//! requires for MP4 container parsing (moov atom).
+//! 仕様書 §7.1 — ffmpegをサブプロセスとして呼び出し、動画コンテンツから
+//! 個別フレームを抽出する。コンテンツはRAMバック型tmpfs (`/dev/shm`) に書き込み、
+//! ディスクI/Oを回避しつつffmpegが必要とするシーク可能なファイルインターフェースを提供する
+//! （MP4コンテナのmoovアトムパースに必要）。
 //!
-//! # Security model
+//! # セキュリティモデル
 //!
-//! The ffmpeg binary runs inside the TEE (included in the attestable image).
-//! Content written to `/dev/shm` resides in the TEE's memory space and is
-//! not accessible to the host operator. Files are deleted immediately after
-//! frame extraction.
+//! ffmpegバイナリはTEE内で実行される（アテステーション対象イメージに含まれる）。
+//! `/dev/shm` に書き込まれたコンテンツはTEEのメモリ空間内にあり、
+//! ホストオペレータからはアクセス不可。フレーム抽出後に即座に削除される。
 //!
-//! # Fallback
+//! # フォールバック
 //!
-//! When `/dev/shm` is not available (e.g., local development on macOS),
-//! falls back to `std::env::temp_dir()`.
+//! `/dev/shm` が利用不可の場合（macOSでのローカル開発等）、
+//! `std::env::temp_dir()` にフォールバックする。
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Metadata extracted from a video file header via ffprobe.
+/// ffprobeで動画ファイルヘッダから抽出されたメタデータ。
+/// 仕様書 §7.1
 #[derive(Debug, Clone)]
 pub struct VideoMeta {
     pub width: u32,
     pub height: u32,
     pub frame_count: u32,
-    /// Frames per second (e.g., 29.97, 30.0, 60.0)
+    /// フレームレート（例: 29.97, 30.0, 60.0）
     pub fps: f64,
-    /// Duration in milliseconds
+    /// 再生時間（ミリ秒）
     pub duration_ms: u64,
 }
 
-/// Temporary file handle that deletes on drop.
+/// Drop時に自動削除される一時ファイルハンドル。
 struct TempVideoFile {
     path: PathBuf,
 }
@@ -70,7 +70,8 @@ impl Drop for TempVideoFile {
     }
 }
 
-/// Extract video metadata using ffprobe.
+/// ffprobeで動画メタデータを抽出する。
+/// 仕様書 §7.1
 pub fn probe(content: &[u8]) -> Result<VideoMeta, String> {
     let tmp = TempVideoFile::new(content)?;
 
@@ -122,9 +123,9 @@ pub fn probe(content: &[u8]) -> Result<VideoMeta, String> {
     Ok(VideoMeta { width, height, frame_count, fps, duration_ms })
 }
 
-/// Extract a single frame as raw RGB24 pixels at the specified timestamp.
+/// 指定タイムスタンプのフレームをRGB24ピクセルとして抽出する。
 ///
-/// Returns `width * height * 3` bytes of RGB data.
+/// 仕様書 §7.1 — `width * height * 3` バイトのRGBデータを返す。
 pub fn extract_frame_rgb(content: &[u8], timestamp_secs: f64, width: u32, height: u32) -> Result<Vec<u8>, String> {
     let tmp = TempVideoFile::new(content)?;
 

@@ -1,43 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Resource pool with two-tier admission control.
+//! 二段階閾値によるリソースプール。
 //!
-//! Manages concurrent memory usage across all requests with a single
-//! `AtomicUsize` counter and two thresholds:
+//! 仕様書 §7.1 — TEE内の並行リクエスト間でメモリ使用量を管理する。
+//! 単一の `AtomicUsize` カウンタと2つの閾値で制御:
 //!
-//! - **`admission_limit`**: New requests are accepted only when
-//!   `used < admission_limit`. This reserves headroom for in-progress
-//!   requests to extend without being starved by new arrivals.
+//! - **`admission_limit`**: 新規リクエストの受付閾値。
+//!   `used < admission_limit` の場合のみ新規リクエストを受理する。
+//!   処理中リクエストのextendに必要なヘッドルームを確保する。
 //!
-//! - **`total_limit`**: Absolute ceiling for all extend() calls.
-//!   In-progress requests can use memory up to this limit. Beyond this,
-//!   extend() fails and the specific operation returns an error.
+//! - **`total_limit`**: 全extend()呼び出しの絶対上限。
+//!   処理中リクエストはこの上限までメモリを使用可能。超過時はextend()が失敗する。
 //!
 //! ```text
-//! |← new requests OK →|← in-progress only →|← OS/unmanaged →|
-//! 0              admission_limit        total_limit      enclave_max
+//! |← 新規受付可 →|← 処理中のみ →|← OS/非管理 →|
+//! 0          admission_limit   total_limit   enclave_max
 //! ```
 //!
-//! `Ticket` is a RAII handle that tracks a reservation. It supports:
-//! - `extend(n)`: atomically reserve `n` more bytes (CAS loop, non-blocking)
-//! - `shrink(n)`: release `n` bytes back to the pool
-//! - `Drop`: release all remaining reservation
+//! `Ticket` はRAIIハンドルで予約量を追跡する:
+//! - `extend(n)`: CASループで `n` バイトを追加予約（ノンブロッキング）
+//! - `shrink(n)`: `n` バイトをプールに返却
+//! - `Drop`: 残余予約を全て解放
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// Resource pool with two-tier admission control.
+/// 二段階閾値によるリソースプール。
+/// 仕様書 §7.1
 #[derive(Debug)]
 pub struct ResourcePool {
-    /// Threshold for accepting new requests (new ticket creation).
+    /// 新規リクエスト受付閾値（Ticket発行時に参照）。
     admission_limit: usize,
-    /// Absolute memory ceiling for all extend() calls.
+    /// 全extend()呼び出しの絶対メモリ上限。
     total_limit: usize,
-    /// Total bytes currently reserved across all tickets.
+    /// 全Ticketの予約合計バイト数。
     used: AtomicUsize,
 }
 
-/// RAII reservation handle. Released automatically on drop.
+/// RAII予約ハンドル。Drop時に予約を自動解放する。
+/// 仕様書 §7.1
 #[derive(Debug)]
 pub struct Ticket {
     pool: Arc<ResourcePool>,
@@ -45,10 +46,10 @@ pub struct Ticket {
 }
 
 impl ResourcePool {
-    /// Create a pool with separate admission and total limits.
+    /// 受付閾値と絶対上限を指定してプールを作成する。
     ///
-    /// - `admission_limit`: max `used` for accepting new requests
-    /// - `total_limit`: absolute ceiling for all reservations
+    /// - `admission_limit`: 新規リクエスト受付時の`used`上限
+    /// - `total_limit`: 全予約の絶対上限
     pub fn new(admission_limit: usize, total_limit: usize) -> Self {
         assert!(admission_limit <= total_limit);
         Self {
@@ -58,20 +59,20 @@ impl ResourcePool {
         }
     }
 
-    /// Create a pool with a single limit (admission = total).
-    /// Convenience for tests where two-tier control is not needed.
+    /// 単一閾値でプールを作成する（admission = total）。
+    /// テスト用の簡易コンストラクタ。
     pub fn with_single_limit(limit: usize) -> Self {
         Self::new(limit, limit)
     }
 
-    /// Check if the pool can accept a new request.
-    /// Returns true if `used < admission_limit`.
+    /// 新規リクエストを受付可能か判定する。
+    /// `used < admission_limit` の場合 true。
     pub fn can_admit(&self) -> bool {
         self.used.load(Ordering::Acquire) < self.admission_limit
     }
 
-    /// Issue a new 0-byte ticket for a new request.
-    /// Fails if the pool has exceeded the admission limit.
+    /// 新規リクエスト用に0バイトのTicketを発行する。
+    /// 受付閾値を超過している場合はNoneを返す。
     pub fn try_ticket(self: &Arc<Self>) -> Option<Ticket> {
         if self.can_admit() {
             Some(Ticket {
@@ -83,7 +84,7 @@ impl ResourcePool {
         }
     }
 
-    /// Issue a 0-byte ticket unconditionally (for in-progress operations).
+    /// 無条件で0バイトのTicketを発行する（処理中操作用）。
     pub fn ticket(self: &Arc<Self>) -> Ticket {
         Ticket {
             pool: Arc::clone(self),
@@ -91,7 +92,7 @@ impl ResourcePool {
         }
     }
 
-    /// One-shot reserve: issue ticket + extend. Fails if over total_limit.
+    /// ワンショット予約: Ticket発行 + extend。total_limit超過時はNone。
     pub fn acquire(self: &Arc<Self>, size: usize) -> Option<Ticket> {
         let ticket = self.ticket();
         if ticket.extend(size) {
@@ -101,15 +102,15 @@ impl ResourcePool {
         }
     }
 
-    /// Current total usage (for monitoring/tests).
+    /// 現在の合計使用量（監視・テスト用）。
     pub fn total_used(&self) -> usize {
         self.used.load(Ordering::Relaxed)
     }
 }
 
 impl Ticket {
-    /// Reserve additional bytes. Fails if total_limit would be exceeded.
-    /// CAS loop, non-blocking. Existing reservation is preserved on failure.
+    /// 追加バイトを予約する。total_limit超過時はfalseを返す。
+    /// CASループによるノンブロッキング実装。失敗時も既存予約は保持される。
     pub fn extend(&self, additional: usize) -> bool {
         if additional == 0 {
             return true;
@@ -135,7 +136,7 @@ impl Ticket {
         }
     }
 
-    /// Release bytes back to the pool.
+    /// 指定バイト数をプールに返却する。
     pub fn shrink(&self, amount: usize) {
         if amount == 0 {
             return;
@@ -144,7 +145,7 @@ impl Ticket {
         self.pool.used.fetch_sub(amount, Ordering::AcqRel);
     }
 
-    /// Current reservation of this ticket.
+    /// このTicketの現在の予約量。
     pub fn reserved(&self) -> usize {
         self.reserved.load(Ordering::Acquire)
     }

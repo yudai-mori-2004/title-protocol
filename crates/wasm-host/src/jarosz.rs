@@ -1,42 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Jarosz filter downsampling for PDQ perceptual hashing.
+//! PDQ知覚ハッシュ用Jaroszフィルタダウンサンプリング。
 //!
-//! Rust port of the Jarosz filter from Meta's ThreatExchange PDQ reference
-//! implementation (BSD-licensed C++). The algorithm uses two passes of a 1D box
-//! filter to approximate a triangle (tent) window, providing anti-aliased
-//! downsampling suitable for perceptual hashing.
+//! 仕様書 §7.1 — Meta ThreatExchange PDQリファレンス実装（BSD C++）の
+//! Jaroszフィルタを Rust に移植。1Dボックスフィルタ2パスで三角（テント）
+//! ウィンドウを近似し、知覚ハッシュに適したアンチエイリアスダウンサンプリングを行う。
 //!
-//! # References
+//! # 参考文献
 //!
-//! - Original C++ source: <https://github.com/facebook/ThreatExchange/blob/main/pdq/cpp/downscaling/downscaling.cpp>
+//! - 元C++ソース: <https://github.com/facebook/ThreatExchange/blob/main/pdq/cpp/downscaling/downscaling.cpp>
 //! - Jarosz, W. (2001). *Fast Image Convolutions*. ACM SIGGRAPH.
-//! - PDQ algorithm paper: <https://github.com/facebook/ThreatExchange/blob/main/pdq/pdqhash-2017-10-09.pdf>
+//! - PDQアルゴリズム論文: <https://github.com/facebook/ThreatExchange/blob/main/pdq/pdqhash-2017-10-09.pdf>
 //!
-//! # License of original work
+//! # 元実装のライセンス
 //!
-//! The original C++ implementation is Copyright (c) Meta Platforms, Inc. and
-//! affiliates, licensed under the BSD License. This Rust port is licensed under
-//! Apache-2.0 as part of the Title Protocol project.
+//! 元C++実装は Copyright (c) Meta Platforms, Inc. and affiliates、
+//! BSDライセンス。本Rust移植はTitle Protocolの一部としてApache-2.0。
 
-/// Compute the Jarosz filter window size for downscaling from `old_dim` to `new_dim`.
+/// `old_dim` → `new_dim` ダウンスケール時のJaroszフィルタウィンドウサイズを計算する。
 ///
-/// Matches the C++ `computeJaroszFilterWindowSize`. The window is sized so that
-/// two passes of the box filter cover approximately `old_dim / new_dim` pixels,
-/// producing a triangle-weighted average over the full block.
+/// C++ `computeJaroszFilterWindowSize` と同一。ボックスフィルタ2パスが
+/// 約 `old_dim / new_dim` ピクセルをカバーし、ブロック全体の三角加重平均を生成する。
 fn compute_window_size(old_dim: u32, new_dim: u32) -> usize {
     ((old_dim as usize) + 2 * (new_dim as usize) - 1) / (2 * new_dim as usize)
 }
 
-/// 1D box filter with adaptive boundary handling.
+/// 適応的境界処理を持つ1Dボックスフィルタ。
 ///
-/// Port of C++ `box1DFloat`. The filter operates in four phases to avoid
-/// boundary padding: it gradually widens the window at the start and narrows
-/// it at the end, dividing by the actual number of accumulated samples in
-/// each phase.
-///
-/// This approach produces exact results without requiring mirror/clamp padding,
-/// and matches the original implementation's output.
+/// C++ `box1DFloat` の移植。4フェーズで動作し、境界パディングを回避する:
+/// 開始時にウィンドウを漸次拡大、終了時に漸次縮小し、各フェーズで
+/// 実際の累積サンプル数で除算する。ミラー/クランプパディング不要で
+/// 元実装と同一の結果を生成する。
 fn box_1d_float(
     invec: &[f32],
     outvec: &mut [f32],
@@ -97,7 +91,7 @@ fn box_1d_float(
     }
 }
 
-/// Apply horizontal box filter to each row. Port of C++ `boxAlongRowsFloat`.
+/// 各行に水平ボックスフィルタを適用する。C++ `boxAlongRowsFloat` の移植。
 fn box_along_rows(
     input: &[f32],
     output: &mut [f32],
@@ -117,7 +111,7 @@ fn box_along_rows(
     }
 }
 
-/// Apply vertical box filter to each column. Port of C++ `boxAlongColsFloat`.
+/// 各列に垂直ボックスフィルタを適用する。C++ `boxAlongColsFloat` の移植。
 fn box_along_cols(
     input: &[f32],
     output: &mut [f32],
@@ -130,11 +124,11 @@ fn box_along_cols(
     }
 }
 
-/// Apply the full Jarosz filter: alternating row and column box filter passes.
+/// Jaroszフィルタ全体を適用: 行・列ボックスフィルタパスの交互実行。
 ///
-/// Port of C++ `jaroszFilterFloat`. Uses a double-buffer scheme where each
-/// pass reads from one buffer and writes to the other. For PDQ, `nreps` is 2
-/// (two passes of row+column filtering approximate a 2D triangle kernel).
+/// C++ `jaroszFilterFloat` の移植。ダブルバッファ方式で各パスは一方から
+/// 読み取り他方に書き込む。PDQでは `nreps=2`（行+列フィルタ2パスで
+/// 2D三角カーネルを近似）。
 fn jarosz_filter(
     buffer1: &mut [f32],
     buffer2: &mut [f32],
@@ -150,10 +144,10 @@ fn jarosz_filter(
     }
 }
 
-/// Subsample a filtered buffer to the target size using center-pixel sampling.
+/// フィルタ済みバッファを中心ピクセルサンプリングで目標サイズにサブサンプルする。
 ///
-/// Port of C++ `decimateFloat`. Each output pixel samples the input at the
-/// center of its corresponding region: `ini = (outi + 0.5) * in_dim / out_dim`.
+/// C++ `decimateFloat` の移植。各出力ピクセルは対応領域の中心を
+/// サンプリング: `ini = (outi + 0.5) * in_dim / out_dim`。
 fn decimate(
     input: &[f32],
     in_rows: usize,
@@ -171,19 +165,19 @@ fn decimate(
     }
 }
 
-/// Downsample decoded pixel data to a target size using the PDQ Jarosz filter.
+/// デコード済みピクセルデータをPDQ Jaroszフィルタで目標サイズにダウンサンプルする。
 ///
-/// Converts RGB/RGBA/grayscale pixels to f32 luminance (ITU-R BT.601), applies
-/// the Jarosz filter at full resolution, then decimates to the target size.
-/// The f32 pipeline avoids u8 quantization until the final output, matching
-/// the precision of the C++ reference implementation.
+/// 仕様書 §7.1 — RGB/RGBA/グレースケールピクセルをf32輝度（ITU-R BT.601）に変換し、
+/// フル解像度でJaroszフィルタを適用後、目標サイズにデシメートする。
+/// f32パイプラインにより最終出力までu8量子化を回避し、C++リファレンス実装と
+/// 同等の精度を維持する。
 ///
-/// # Arguments
+/// # 引数
 ///
-/// * `data` - Raw decoded pixel data (interleaved RGB, RGBA, or grayscale)
-/// * `width`, `height` - Source image dimensions
-/// * `channels` - Number of channels per pixel (1, 3, or 4)
-/// * `target_w`, `target_h` - Target output dimensions
+/// * `data` - デコード済みピクセルデータ（インターリーブRGB, RGBA, またはグレースケール）
+/// * `width`, `height` - 元画像の寸法
+/// * `channels` - ピクセル当たりのチャネル数 (1, 3, or 4)
+/// * `target_w`, `target_h` - 出力目標サイズ
 pub fn downsample_from_decoded(
     data: &[u8],
     width: u32,

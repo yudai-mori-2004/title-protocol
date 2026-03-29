@@ -1,61 +1,61 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Content decoder with unified format detection.
+//! コンテンツデコーダ（統一フォーマット判定）。
 //!
-//! Uses the `file-format` crate for format detection across all content types
-//! (images, video, camera RAW, audio). Delegates decoding to format-specific
-//! backends:
+//! 仕様書 §7.1 — `file-format` クレートによるマジックバイト判定で
+//! 全コンテンツ種別（画像・動画・カメラRAW・音声）を自動識別し、
+//! 種別ごとのバックエンドにデコードを委譲する:
 //!
-//! - **Image** (JPEG, PNG, WebP, TIFF, etc.): `image` crate
-//! - **Video** (MP4, WebM, MOV, AVI): ffmpeg CLI via `video.rs`
-//! - **RAW image** (ARW, NEF, CR3, etc.): exiftool CLI via `raw.rs` → embedded JPEG → `image` crate
-//! - **Audio** (MP3, WAV, FLAC, M4A): recognized but decoding not yet implemented
+//! - **画像** (JPEG, PNG, WebP, TIFF等): `image` クレート
+//! - **動画** (MP4, WebM, MOV, AVI): ffmpeg CLI (`video.rs`)
+//! - **カメラRAW** (ARW, NEF, CR3等): exiftool CLI (`raw.rs`) → 埋め込みJPEG → `image` クレート
+//! - **音声** (MP3, WAV, FLAC, M4A): 認識のみ（デコード未実装）
 //!
-//! DNG is TIFF-based and detected as TIFF by `file-format`. If the `image`
-//! crate fails to decode it (unsupported TIFF variant), it falls back to
-//! RAW preview extraction.
+//! DNGはTIFFベースであり `file-format` はTIFFとして検出する。
+//! `image` クレートがデコードに失敗した場合（非対応TIFFバリアント）、
+//! RAWプレビュー抽出にフォールバックする。
 
 use std::io::Cursor;
 
 use file_format::FileFormat;
 
-/// Decoder kind, determined by format detection.
+/// フォーマット判定結果に基づくデコーダ種別。
+/// 仕様書 §7.1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecoderKind {
-    /// Standard image (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF, HEIC/HEIF).
-    /// Decoded by the `image` crate.
+    /// 標準画像 (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF, HEIC/HEIF)。
+    /// `image` クレートでデコード。
     Image,
-    /// Video (MP4, WebM, MOV, AVI).
-    /// Metadata via ffprobe; frames extracted on demand via ffmpeg.
+    /// 動画 (MP4, WebM, MOV, AVI)。
+    /// ffprobeでメタデータ取得、ffmpegでフレームをオンデマンド抽出。
     Video,
-    /// Camera RAW (ARW, NEF, CR3, DNG, RAF, ORF, RW2, etc.).
-    /// Embedded JPEG preview extracted via exiftool, then decoded as JPEG.
+    /// カメラRAW (ARW, NEF, CR3, DNG, RAF, ORF, RW2等)。
+    /// exiftoolで埋め込みJPEGプレビューを抽出し、JPEGとしてデコード。
     RawImage,
-    /// Audio (MP3, WAV, FLAC, M4A, OGG, AAC).
-    /// Recognized for C2PA manifest extraction, but pixel decoding is not
-    /// applicable. Future: waveform/spectrogram extraction or audio
-    /// fingerprinting (e.g., Chromaprint).
+    /// 音声 (MP3, WAV, FLAC, M4A, OGG, AAC)。
+    /// C2PAマニフェスト抽出用に認識するが、ピクセルデコードは不要。
     Audio,
 }
 
-/// Decode result returned to the WASM host function.
+/// WASMホスト関数に返すデコード結果。
+/// 仕様書 §7.1
 pub struct DecodeResult {
-    /// Content type that produced this result.
+    /// この結果を生成したコンテンツ種別。
     pub kind: DecoderKind,
-    /// Decoded pixel data (empty for Video/Audio — extracted on demand or N/A).
+    /// デコード済みピクセルデータ（Video/Audioは空 — オンデマンド抽出または不要）。
     pub data: Vec<u8>,
-    /// Format-dependent metadata written to WASM linear memory.
-    /// - Image/RawImage: `[width:u32 LE, height:u32 LE, channels:u32 LE]` (12 bytes)
-    /// - Video: `[frame_count:u32, fps_x100:u32, width:u32, height:u32, duration_ms:u32]` (20 bytes)
-    /// - Audio: `[sample_rate:u32, channels:u32, duration_ms:u32]` (12 bytes) — reserved, not yet populated
+    /// フォーマット依存のメタデータ（WASMリニアメモリに書き込まれる）。
+    /// - Image/RawImage: `[width:u32 LE, height:u32 LE, channels:u32 LE]` (12バイト)
+    /// - Video: `[frame_count:u32, fps_x100:u32, width:u32, height:u32, duration_ms:u32]` (20バイト)
+    /// - Audio: `[sample_rate:u32, channels:u32, duration_ms:u32]` (12バイト) — 予約、未実装
     pub metadata: Vec<u8>,
 }
 
-/// Detect content format and return the appropriate decoder kind.
+/// コンテンツフォーマットを判定し、適切なデコーダ種別を返す。
 ///
-/// Uses `file-format` crate for unified magic-byte detection. For TIFF-based
-/// content (including DNG), first attempts `image` crate decoding; falls back
-/// to RAW if it fails.
+/// 仕様書 §7.1 — `file-format` クレートによるマジックバイト判定。
+/// TIFFベースのコンテンツ（DNG含む）はRawImageパスを優先し、
+/// プレビューが見つからない場合はimageクレートにフォールバックする。
 pub fn detect(content: &[u8]) -> Option<DecoderKind> {
     use FileFormat::*;
 
@@ -132,12 +132,12 @@ pub fn detect(content: &[u8]) -> Option<DecoderKind> {
     }
 }
 
-/// Estimate peak memory during image decode (header-only read).
+/// 画像デコード時のピークメモリを推定する（ヘッダのみ読み取り）。
 ///
-/// Returns the estimated peak memory that `image::load_from_memory` will use
-/// including intermediate decompression buffers. Conservative estimate: 2x the
-/// decoded pixel size (output + intermediate buffer).
-/// Returns 0 for non-image kinds or if header read fails.
+/// 仕様書 §7.1 — `image::load_from_memory` が使用するピークメモリの推定値。
+/// 中間展開バッファを含む保守的推定: デコード後ピクセルサイズの2倍
+/// （出力バッファ + 中間バッファ）。
+/// 画像以外の種別またはヘッダ読み取り失敗時は0を返す。
 pub fn estimate_decode_peak(kind: DecoderKind, content: &[u8]) -> usize {
     match kind {
         DecoderKind::Image | DecoderKind::RawImage => {
@@ -157,12 +157,13 @@ pub fn estimate_decode_peak(kind: DecoderKind, content: &[u8]) -> usize {
     }
 }
 
-/// Decode content according to its kind.
+/// 種別に応じてコンテンツをデコードする。
 ///
-/// - Image: full pixel decode via `image` crate.
-/// - Video: metadata only (frames extracted on demand via `video_frame_grayscale`).
-/// - RawImage: extract embedded JPEG via exiftool, then decode as JPEG.
-/// - Audio: not yet implemented (returns error code -7).
+/// 仕様書 §7.1
+/// - Image: `image` クレートでフルピクセルデコード。
+/// - Video: メタデータのみ（フレームは `video_frame_grayscale` でオンデマンド抽出）。
+/// - RawImage: exiftoolで埋め込みJPEGを抽出後、JPEGとしてデコード。
+/// - Audio: 未実装（エラーコード -7）。
 pub fn decode(kind: DecoderKind, content: &[u8]) -> Result<DecodeResult, i32> {
     match kind {
         DecoderKind::Image => image_decoder::decode(kind, content),
@@ -193,8 +194,8 @@ pub fn decode(kind: DecoderKind, content: &[u8]) -> Result<DecodeResult, i32> {
     }
 }
 
-/// Check if content is an ISO BMFF image (AVIF, HEIC) by ftyp box.
-/// Handles formats that file-format may not recognize by variant name.
+/// ISO BMFFイメージ（AVIF, HEIC）をftypボックスで判定する。
+/// `file-format` がバリアント名で認識できない形式に対応。
 fn is_iso_bmff_image(content: &[u8]) -> bool {
     if content.len() < 12 {
         return false;
@@ -217,7 +218,7 @@ fn is_iso_bmff_image(content: &[u8]) -> bool {
 mod image_decoder {
     use super::*;
 
-    /// Decode image to pixels, applying EXIF orientation.
+    /// 画像をピクセルにデコードし、EXIF回転を適用する。
     pub fn decode(kind: DecoderKind, content: &[u8]) -> Result<DecodeResult, i32> {
         let img = image::load_from_memory(content).map_err(|_| -3i32)?;
         let img = apply_exif_orientation(img, content);

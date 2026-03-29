@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! RAW image preview extraction via exiftool CLI subprocess.
+//! exiftool CLIサブプロセスによるRAW画像プレビュー抽出。
 //!
-//! Extracts the embedded JPEG preview from camera RAW files (ARW, DNG, NEF,
-//! CR3, etc.) using exiftool. The preview is then decoded through the normal
-//! image pipeline for perceptual hashing.
+//! 仕様書 §7.1 — カメラRAWファイル（ARW, DNG, NEF, CR3等）から
+//! exiftoolを使用して埋め込みJPEGプレビューを抽出する。
+//! 抽出されたプレビューは通常の画像パイプラインで知覚ハッシュ用にデコードされる。
 //!
-//! # Security model
+//! # セキュリティモデル
 //!
-//! Same as `video.rs`: the exiftool binary runs inside the TEE (included in
-//! the attestable Docker image). Content is written to `/dev/shm` (RAM-backed
-//! tmpfs) and deleted immediately after preview extraction.
+//! `video.rs` と同様: exiftoolバイナリはTEE内で実行される
+//! （アテステーション対象Dockerイメージに含まれる）。
+//! コンテンツは `/dev/shm`（RAMバック型tmpfs）に書き込まれ、
+//! プレビュー抽出後に即座に削除される。
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Temporary file on `/dev/shm` (or temp_dir fallback). Deleted on drop.
+/// `/dev/shm` 上の一時ファイル（temp_dirフォールバック）。Drop時に削除。
 struct TempRawFile {
     path: PathBuf,
 }
@@ -51,10 +52,11 @@ impl Drop for TempRawFile {
     }
 }
 
-/// Extract the embedded JPEG preview from a RAW file using exiftool.
+/// exiftoolでRAWファイルから埋め込みJPEGプレビューを抽出する。
 ///
-/// Tries `-b -JpgFromRaw` first (full-size preview), then falls back to
-/// `-b -PreviewImage` (medium-size). Returns the raw JPEG bytes.
+/// 仕様書 §7.1 — `-b -JpgFromRaw`（フルサイズプレビュー）を優先し、
+/// 失敗時は `-b -PreviewImage`（中サイズ）にフォールバックする。
+/// 生のJPEGバイト列を返す。
 pub fn extract_preview_jpeg(content: &[u8]) -> Result<Vec<u8>, String> {
     let tmp = TempRawFile::new(content)?;
 

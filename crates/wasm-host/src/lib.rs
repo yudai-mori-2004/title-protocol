@@ -73,17 +73,17 @@ pub struct ExtensionResult {
 /// decode_content ホスト関数の結果として InnerHostState に格納される。
 /// メタデータ（画像: width/height/channels 等）はデコード時にWASMリニアメモリに書き込まれ、
 /// 同時に本構造体にも保存される（get_decoded_feature で参照するため）。
+/// デコード済みコンテンツ（コンテンツ種別ごとのバリアント）。
 /// 仕様書 §7.1
-/// Decoded content, variant per content type.
 enum DecodedContent {
-    /// Image or RAW preview — pixel data available immediately.
+    /// 画像またはRAWプレビュー — ピクセルデータが即座に利用可能。
     Image {
         data: Vec<u8>,
         width: u32,
         height: u32,
         channels: u32,
     },
-    /// Video — metadata only; frames extracted on demand via video_frame_grayscale.
+    /// 動画 — メタデータのみ。フレームはvideo_frame_grayscaleでオンデマンド抽出。
     Video {
         width: u32,
         height: u32,

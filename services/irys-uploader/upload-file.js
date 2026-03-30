@@ -23,6 +23,8 @@ import fs from "node:fs";
 const SOLANA_RPC_URL =
   process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
 const IRYS_NETWORK = process.env.IRYS_NETWORK || "devnet";
+const IRYS_GATEWAY = process.env.IRYS_GATEWAY ||
+  (IRYS_NETWORK === "devnet" ? "https://devnet.irys.xyz" : "https://gateway.irys.xyz");
 
 async function main() {
   const [, , filePath, privateKey, contentType] = process.argv;
@@ -72,7 +74,7 @@ async function main() {
   // Upload
   const tags = [{ name: "Content-Type", value: ct }];
   const receipt = await irys.upload(dataBuffer, { tags });
-  const url = `https://gateway.irys.xyz/${receipt.id}`;
+  const url = `${IRYS_GATEWAY}/${receipt.id}`;
 
   console.error(`[irys] Uploaded → ${url}`);
 

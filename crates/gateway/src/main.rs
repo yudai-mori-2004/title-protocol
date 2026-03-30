@@ -70,9 +70,12 @@ fn create_signed_json_storage_router() -> anyhow::Result<Option<storage::SignedJ
     let mut routes: HashMap<String, Box<dyn storage::SignedJsonStorage>> = HashMap::new();
 
     if let Some(irys) = irys_storage {
-        // Irysにルーティングするprocessor_idの一覧（デフォルト: core-c2pa）
+        // Irysにルーティングするprocessor_idの一覧。
+        // gateway.irys.xyz の SSL が不安定なため (2026-03)、デフォルトを空に変更。
+        // 全 signed_json は S3 (default_storage) に保存される。
+        // Irys 復旧後: デフォルトを "core-c2pa" に戻すか、IRYS_PROCESSOR_IDS=core-c2pa を設定。
         let irys_ids = std::env::var("IRYS_PROCESSOR_IDS")
-            .unwrap_or_else(|_| "core-c2pa".to_string());
+            .unwrap_or_else(|_| String::new());
 
         // 1つ目のIDは直接保存、2つ目以降はクローンが必要だが
         // SignedJsonStorageはトレイトオブジェクトなのでArc経由で共有する

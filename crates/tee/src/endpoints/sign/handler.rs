@@ -143,8 +143,8 @@ pub async fn handle_sign(
                 "payload": signed_json.payload,
                 "attributes": signed_json.attributes,
             });
-            let sign_bytes = serde_json::to_vec(&sign_target)
-                .map_err(|e| TeeError::Internal(format!("署名対象のシリアライズに失敗: {e}")))?;
+            let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target)
+                .map_err(|e| TeeError::Internal(format!("署名対象のJCS正規化に失敗: {e}")))?;
 
             verifying_key
                 .verify_strict(&sign_bytes, &ed_signature)

@@ -45,7 +45,7 @@ fn build_test_signed_json(rt: &MockRuntime) -> SignedJson {
         "payload": payload,
         "attributes": attributes_value,
     });
-    let sign_bytes = serde_json::to_vec(&sign_target).unwrap();
+    let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target).unwrap();
 
     let signature = rt.sign(&sign_bytes);
     let tee_pubkey_b58 = base58::ToBase58::to_base58(rt.signing_pubkey().as_slice());

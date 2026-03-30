@@ -51,3 +51,8 @@ network.json
 
 # Integration test output
 integration-tests/output-*.json
+
+# Large perf test fixtures (generated locally, not committed)
+tests/fixtures/minimal/test_sized_*.mp4
+tests/fixtures/c2pa/signed/mp4-*mb.mp4
+tests/fixtures/DSC08440.ARW

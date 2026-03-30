@@ -25,6 +25,8 @@ const PORT = parseInt(process.env.PORT || "3001", 10);
 const SOLANA_RPC_URL =
   process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
 const IRYS_NETWORK = process.env.IRYS_NETWORK || "devnet";
+const IRYS_GATEWAY = process.env.IRYS_GATEWAY ||
+  (IRYS_NETWORK === "devnet" ? "https://devnet.irys.xyz" : "https://gateway.irys.xyz");
 
 /**
  * Irys uploader を初期化する。
@@ -68,7 +70,7 @@ async function uploadToIrys(irys, dataBuffer, contentType) {
 
   const tags = [{ name: "Content-Type", value: contentType }];
   const receipt = await irys.upload(dataBuffer, { tags });
-  return `https://gateway.irys.xyz/${receipt.id}`;
+  return `${IRYS_GATEWAY}/${receipt.id}`;
 }
 
 /**

@@ -68,7 +68,8 @@ async function uploadToIrys(irys, dataBuffer, contentType) {
 
   const tags = [{ name: "Content-Type", value: contentType }];
   const receipt = await irys.upload(dataBuffer, { tags });
-  return `https://gateway.irys.xyz/${receipt.id}`;
+  const host = IRYS_NETWORK === "devnet" ? "devnet.irys.xyz" : "gateway.irys.xyz";
+  return `https://${host}/${receipt.id}`;
 }
 
 /**

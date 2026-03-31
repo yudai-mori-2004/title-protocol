@@ -1408,14 +1408,14 @@ mod tests {
             Err(_) => { eprintln!("SKIP: /tmp/rootlens-video.mov not found"); return; }
         };
 
-        let rgb = crate::video::extract_frame_rgb(&content, 0.0, 1920, 1080).unwrap();
-        eprintln!("RGB[0..6]: {:?}", &rgb[0..6]);
+        let meta = crate::video::probe(&content).unwrap();
+        eprintln!("Video: {}x{}, fps={:.2}, frames={}", meta.width, meta.height, meta.fps, meta.frame_count);
 
-        let gray64 = crate::jarosz::downsample_from_decoded(&rgb, 1920, 1080, 3, 64, 64);
-        eprintln!("gray64 len: {}", gray64.len());
-        eprintln!("gray64[0..8]: {:?}", &gray64[0..8]);
-
-        for (i, chunk) in gray64.chunks(64).enumerate() {
-            eprintln!("row{}: {:?}", i, chunk);
-        }
+        // f1 の全 gray64 をダンプ
+        let t = 0.968;
+        eprintln!("\n=== f1 t={:.3}s FULL DUMP ===", t);
+        let rgb = crate::video::extract_frame_rgb(&content, t, meta.width, meta.height).unwrap();
+        eprintln!("  RGB[0..6]: {:?}", &rgb[0..6]);
+        let gray64 = crate::jarosz::downsample_from_decoded(&rgb, meta.width, meta.height, 3, 64, 64);
+        eprintln!("  gray64 ALL: {:?}", &gray64[..]);
     }

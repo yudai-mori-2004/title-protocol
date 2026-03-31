@@ -135,15 +135,13 @@ pub fn extract_frame_rgb(content: &[u8], timestamp_secs: f64, width: u32, height
         .args([
             // 決定論的なフレーム抽出:
             // - noautorotate: 回転メタデータを無効化し、センサー生データで取得。
-            // - output seeking (-ss を -i の後): フレーム精度のシーク。
-            //   input seeking はキーフレーム単位でシークするため、edit list 存在時に
-            //   非キーフレーム位置のフレームに正確に到達しない。
+            // - input seeking (-ss before -i): キーフレーム単位の高速シーク。
             "-noautorotate",
+            "-ss", &ts,
             "-i",
         ])
         .arg(&tmp.path)
         .args([
-            "-ss", &ts,
             "-frames:v", "1",
             "-s", &format!("{width}x{height}"),
             "-pix_fmt", "rgb24",

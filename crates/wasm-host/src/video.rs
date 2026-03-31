@@ -135,15 +135,15 @@ pub fn extract_frame_rgb(content: &[u8], timestamp_secs: f64, width: u32, height
         .args([
             // 決定論的なフレーム抽出:
             // - noautorotate: 回転メタデータを無効化し、センサー生データで取得。
-            //   回転の適用はデコーダごとに異なるため、生の向きで統一する。
-            // - edit list はデフォルト（適用する）。ffmpegとブラウザ(mp4box.js/WebCodecs)
-            //   の両方がedit list適用済みのプレゼンテーションタイムスタンプを使うため一致する。
+            // - output seeking (-ss を -i の後): フレーム精度のシーク。
+            //   input seeking はキーフレーム単位でシークするため、edit list 存在時に
+            //   非キーフレーム位置のフレームに正確に到達しない。
             "-noautorotate",
-            "-ss", &ts,
             "-i",
         ])
         .arg(&tmp.path)
         .args([
+            "-ss", &ts,
             "-frames:v", "1",
             "-s", &format!("{width}x{height}"),
             "-pix_fmt", "rgb24",

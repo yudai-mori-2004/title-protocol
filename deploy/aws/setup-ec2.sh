@@ -255,6 +255,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 1.5: 既存Enclaveの停止（ビルド用メモリ確保）
+# Enclaveはhugepageメモリを占有するため、Rust/Dockerビルドと共存するとOOMになりうる。
+# ビルド前に停止し、Step 4で再起動する。
+# ---------------------------------------------------------------------------
+if command -v nitro-cli &>/dev/null; then
+  EXISTING=$(nitro-cli describe-enclaves | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for e in data:
+    if e.get('State') == 'RUNNING':
+        print(e['EnclaveID'])
+" 2>/dev/null || true)
+  if [ -n "$EXISTING" ]; then
+    echo "  既存Enclaveを停止（ビルド用メモリ解放）: $EXISTING"
+    nitro-cli terminate-enclave --enclave-id "$EXISTING"
+    sleep 2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Step 2: ホスト側バイナリのビルド
 # ---------------------------------------------------------------------------
 echo ""

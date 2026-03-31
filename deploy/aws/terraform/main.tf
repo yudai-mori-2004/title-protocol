@@ -303,12 +303,13 @@ resource "aws_instance" "node" {
     volume_type = "gp3"
   }
 
-  user_data = templatefile("${path.module}/user-data.sh", {
+  user_data                   = templatefile("${path.module}/user-data.sh", {
     aws_region         = var.aws_region
     s3_bucket_name     = var.s3_bucket_name
     enclave_cpu_count  = var.enclave_cpu_count
     enclave_memory_mib = var.enclave_memory_mib
   })
+  user_data_replace_on_change = true
 
   tags = {
     Name    = "${var.project_name}-node-${count.index}"

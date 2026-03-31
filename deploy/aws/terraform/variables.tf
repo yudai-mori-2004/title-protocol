@@ -67,7 +67,7 @@ variable "enclave_cpu_count" {
 }
 
 variable "enclave_memory_mib" {
-  description = "Enclaveに割り当てるメモリ（MiB）"
+  description = "Enclaveに割り当てるメモリ（MiB）— allocator.yamlもこの値に同期される"
   type        = number
-  default     = 3072
+  default     = 10240
 }

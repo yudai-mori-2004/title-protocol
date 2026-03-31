@@ -255,11 +255,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 1.5: 既存Enclaveの停止（ビルド用メモリ確保）
-# Enclaveはhugepageメモリを占有するため、Rust/Dockerビルドと共存するとOOMになりうる。
-# ビルド前に停止し、Step 4で再起動する。
+# Step 1.5: hugepage予約をENCLAVE_MEMORY_MIBに同期
+# allocator.yamlの値とENCLAVE_MEMORY_MIBがずれるとhugepageの過剰予約でOOMになる。
+# Enclave停止 → allocator.yaml更新 → allocator再起動 でhugepageを正しいサイズに合わせる。
 # ---------------------------------------------------------------------------
+ENCLAVE_CPU="${ENCLAVE_CPU_COUNT:-2}"
+ENCLAVE_MEM="${ENCLAVE_MEMORY_MIB:-3072}"
+
 if command -v nitro-cli &>/dev/null; then
+  # 既存Enclaveの停止
   EXISTING=$(nitro-cli describe-enclaves | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -268,10 +272,24 @@ for e in data:
         print(e['EnclaveID'])
 " 2>/dev/null || true)
   if [ -n "$EXISTING" ]; then
-    echo "  既存Enclaveを停止（ビルド用メモリ解放）: $EXISTING"
+    echo "  既存Enclaveを停止: $EXISTING"
     nitro-cli terminate-enclave --enclave-id "$EXISTING"
     sleep 2
   fi
+
+  # allocator.yamlをENCLAVE_MEMORY_MIBに同期
+  CURRENT_ALLOC=$(grep 'memory_mib' /etc/nitro_enclaves/allocator.yaml 2>/dev/null | grep -o '[0-9]*')
+  if [ "$CURRENT_ALLOC" != "$ENCLAVE_MEM" ]; then
+    echo "  allocator.yaml更新: ${CURRENT_ALLOC:-unknown} → $ENCLAVE_MEM MiB"
+    sudo tee /etc/nitro_enclaves/allocator.yaml > /dev/null <<ALLOC_EOF
+---
+memory_mib: $ENCLAVE_MEM
+cpu_count: $ENCLAVE_CPU
+ALLOC_EOF
+    sudo systemctl restart nitro-enclaves-allocator
+    sleep 2
+  fi
+  echo "  hugepage: $(grep Hugetlb /proc/meminfo)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -305,6 +323,7 @@ EIF_PATH="$PROJECT_ROOT/title-tee.eif"
 TEE_MEASUREMENTS="{}"
 
 if command -v nitro-cli &>/dev/null; then
+  docker builder prune -f 2>/dev/null || true
   docker build -t title-tee-enclave -f deploy/aws/docker/tee.Dockerfile .
 
   nitro-cli build-enclave \
@@ -330,9 +349,6 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "[Step 4/11] TEE の起動..."
-
-ENCLAVE_CPU="${ENCLAVE_CPU_COUNT:-2}"
-ENCLAVE_MEM="${ENCLAVE_MEMORY_MIB:-3072}"
 
 if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
   # 既存Enclaveの停止

@@ -133,10 +133,11 @@ pub fn extract_frame_rgb(content: &[u8], timestamp_secs: f64, width: u32, height
 
     let output = Command::new("ffmpeg")
         .args([
-            // 決定論的なフレーム抽出のため、デコーダ依存の処理を無効化:
-            // - ignore_editlist: edit list の解釈差異を排除し、生PTSで参照
-            // - noautorotate: 回転メタデータの適用を無効化し、センサー生データで取得
-            "-ignore_editlist", "1",
+            // 決定論的なフレーム抽出:
+            // - noautorotate: 回転メタデータを無効化し、センサー生データで取得。
+            //   回転の適用はデコーダごとに異なるため、生の向きで統一する。
+            // - edit list はデフォルト（適用する）。ffmpegとブラウザ(mp4box.js/WebCodecs)
+            //   の両方がedit list適用済みのプレゼンテーションタイムスタンプを使うため一致する。
             "-noautorotate",
             "-ss", &ts,
             "-i",

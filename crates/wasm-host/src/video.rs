@@ -133,10 +133,11 @@ pub fn extract_frame_rgb(content: &[u8], timestamp_secs: f64, width: u32, height
 
     let output = Command::new("ffmpeg")
         .args([
-            // edit list を無視し、生PTSベースでフレームを特定する。
-            // edit list の解釈はデコーダ実装ごとに異なるため、
-            // 生PTSを基準にすることで決定論的なフレーム参照を保証する。
+            // 決定論的なフレーム抽出のため、デコーダ依存の処理を無効化:
+            // - ignore_editlist: edit list の解釈差異を排除し、生PTSで参照
+            // - noautorotate: 回転メタデータの適用を無効化し、センサー生データで取得
             "-ignore_editlist", "1",
+            "-noautorotate",
             "-ss", &ts,
             "-i",
         ])

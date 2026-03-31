@@ -1400,3 +1400,22 @@ mod tests {
     }
 
 }
+
+    #[test]
+    fn dump_gray64_for_rootlens_video() {
+        let content = match std::fs::read("/tmp/rootlens-video.mov") {
+            Ok(c) => c,
+            Err(_) => { eprintln!("SKIP: /tmp/rootlens-video.mov not found"); return; }
+        };
+
+        let rgb = crate::video::extract_frame_rgb(&content, 0.0, 1920, 1080).unwrap();
+        eprintln!("RGB[0..6]: {:?}", &rgb[0..6]);
+
+        let gray64 = crate::jarosz::downsample_from_decoded(&rgb, 1920, 1080, 3, 64, 64);
+        eprintln!("gray64 len: {}", gray64.len());
+        eprintln!("gray64[0..8]: {:?}", &gray64[0..8]);
+
+        for (i, chunk) in gray64.chunks(64).enumerate() {
+            eprintln!("row{}: {:?}", i, chunk);
+        }
+    }

@@ -33,6 +33,9 @@ pub struct VideoMeta {
     pub fps: f64,
     /// 再生時間（ミリ秒）
     pub duration_ms: u64,
+    /// キーフレーム（Iフレーム）のPTS一覧（秒）。
+    /// vPDQではキーフレームのみサンプリングしてデコーダ間差異を回避する。
+    pub keyframe_pts: Vec<f64>,
 }
 
 /// Drop時に自動削除される一時ファイルハンドル。
@@ -70,8 +73,10 @@ impl Drop for TempVideoFile {
     }
 }
 
-/// ffprobeで動画メタデータを抽出する。
-/// 仕様書 §7.1
+/// ffprobeで動画メタデータとキーフレームPTSを同時に抽出する。
+///
+/// 仕様書 §7.1 — 1回のffprobe呼び出しでstream情報とパケットフラグを同時取得し、
+/// temp file書き出しとプロセス起動を最小化する。
 pub fn probe(content: &[u8]) -> Result<VideoMeta, String> {
     let tmp = TempVideoFile::new(content)?;
 
@@ -81,6 +86,7 @@ pub fn probe(content: &[u8]) -> Result<VideoMeta, String> {
             "-select_streams", "v:0",
             "-show_entries", "stream=width,height,r_frame_rate,nb_frames,duration",
             "-show_entries", "format=duration",
+            "-show_entries", "packet=pts_time,flags",
             "-of", "json",
         ])
         .arg(&tmp.path)
@@ -101,11 +107,8 @@ pub fn probe(content: &[u8]) -> Result<VideoMeta, String> {
 
     let width = stream["width"].as_u64().unwrap_or(0) as u32;
     let height = stream["height"].as_u64().unwrap_or(0) as u32;
-
-    // Parse r_frame_rate (e.g., "30000/1001" or "30/1")
     let fps = parse_frame_rate(stream["r_frame_rate"].as_str().unwrap_or("30/1"));
 
-    // Duration: prefer stream duration, fall back to format duration
     let duration_secs = stream["duration"].as_str()
         .and_then(|s| s.parse::<f64>().ok())
         .or_else(|| {
@@ -115,12 +118,24 @@ pub fn probe(content: &[u8]) -> Result<VideoMeta, String> {
         .unwrap_or(0.0);
     let duration_ms = (duration_secs * 1000.0) as u64;
 
-    // Frame count: prefer nb_frames, fall back to fps * duration
     let frame_count = stream["nb_frames"].as_str()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or_else(|| (fps * duration_secs).ceil() as u32);
 
-    Ok(VideoMeta { width, height, frame_count, fps, duration_ms })
+    // キーフレームPTSをパケット情報から抽出
+    let mut keyframe_pts = Vec::new();
+    if let Some(packets) = json["packets"].as_array() {
+        for pkt in packets {
+            let flags = pkt["flags"].as_str().unwrap_or("");
+            if flags.contains('K') {
+                if let Some(pts) = pkt["pts_time"].as_str().and_then(|s| s.parse::<f64>().ok()) {
+                    keyframe_pts.push(pts);
+                }
+            }
+        }
+    }
+
+    Ok(VideoMeta { width, height, frame_count, fps, duration_ms, keyframe_pts })
 }
 
 /// 指定タイムスタンプのフレームをRGB24ピクセルとして抽出する。

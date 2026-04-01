@@ -2,20 +2,20 @@
 
 //! vPDQ video perceptual hash (Meta ThreatExchange compatible).
 //!
-//! Computes a per-frame PDQ 256-bit hash sequence for video content. Each
-//! frame is sampled at approximately 1-second intervals, hashed with the
-//! PDQ algorithm, and annotated with quality and timestamp. Low-quality
-//! frames (quality < 50) and consecutive duplicate frames are filtered out.
+//! Computes a per-keyframe PDQ 256-bit hash sequence for video content.
+//! Only I-frames (keyframes) are sampled, ensuring deterministic frame
+//! selection across decoders (ffmpeg, WebCodecs) and eliminating P/B-frame
+//! drift that causes hash divergence between implementations.
 //!
 //! # Algorithm
 //!
-//! 1. Host decodes video metadata (frame count, fps) via `decode_content`.
-//! 2. For each sampled frame (every `floor(fps)` frames ≈ 1 per second):
-//!    a. Host extracts the frame via ffmpeg and returns a 64×64 Jarosz-
-//!       downsampled luminance buffer (`video_frame_grayscale` op).
+//! 1. Host decodes video metadata (keyframe count) via `decode_content`.
+//! 2. For each keyframe (identified by ffprobe `K__` flag):
+//!    a. Host extracts the frame via ffmpeg at the keyframe's PTS and
+//!       returns a 64×64 Jarosz-downsampled luminance buffer.
 //!    b. This module computes the PDQ hash (DCT + Torben median) and quality.
-//!    c. Frames with quality < 50 or identical hash to the previous frame
-//!       are pruned.
+//!    c. Frames with quality < 50 or PDQ distance ≤ DEDUP_THRESHOLD to the
+//!       previous emitted frame are pruned (distance-based dedup).
 //! 3. Output is a JSON array of per-frame hashes with timestamps.
 //!
 //! # References
@@ -32,7 +32,6 @@
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::fmt::Write;
 
 #[global_allocator]
@@ -211,26 +210,37 @@ fn hash_to_hex(hash: &[u8; HASH_BYTES]) -> String {
     hex
 }
 
-fn hashes_equal(a: &[u8; HASH_BYTES], b: &[u8; HASH_BYTES]) -> bool {
-    a == b
+/// 2つのPDQハッシュ間のハミング距離を計算する。
+fn hamming_distance(a: &[u8; HASH_BYTES], b: &[u8; HASH_BYTES]) -> u32 {
+    let mut dist = 0u32;
+    for i in 0..HASH_BYTES {
+        dist += (a[i] ^ b[i]).count_ones();
+    }
+    dist
 }
+
+/// 静止シーンのキーフレーム重複を除去するための距離閾値。
+/// キーフレーム間で視覚的にほぼ同一（distance ≤ 10）なら省略する。
+const DEDUP_THRESHOLD: u32 = 10;
 
 // ---------------------------------------------------------------------------
 // WASM export
 // ---------------------------------------------------------------------------
 
-/// Compute vPDQ frame hash sequence for a video.
+/// キーフレームベースのvPDQハッシュ列を計算する。
+///
+/// 仕様書 §7.4 — Iフレームのみサンプリングすることでデコーダ間差異を回避。
 ///
 /// Output JSON:
 /// ```json
 /// {
 ///   "frames": [
-///     {"pdqhash": "<64 hex>", "quality": 85, "timestamp": 0.0},
+///     {"pdqhash": "<64 hex>", "quality": 85, "keyframe": 0},
+///     {"pdqhash": "<64 hex>", "quality": 92, "keyframe": 1},
 ///     ...
 ///   ],
-///   "frame_count": 42,
-///   "algorithm": "vpdq",
-///   "sampling_fps": 1
+///   "frame_count": 5,
+///   "algorithm": "vpdq-keyframe"
 /// }
 /// ```
 #[no_mangle]
@@ -238,39 +248,32 @@ pub extern "C" fn process() -> u32 {
     let _ = (get_extension_input, read_content_chunk, get_content_length);
 
     // 1. Decode video header → metadata
-    //    Video metadata: [frame_count:u32, fps_x100:u32, width:u32, height:u32, duration_ms:u32]
-    let mut metadata = [0u8; 20];
+    //    [frame_count:u32, fps_x100:u32, width:u32, height:u32,
+    //     duration_ms:u32, keyframe_count:u32] = 24 bytes
+    let mut metadata = [0u8; 24];
     let rc = unsafe { decode_content(0, 0, metadata.as_mut_ptr() as u32) };
     if rc != 0 {
         return write_result("{\"error\":\"video decode failed\"}");
     }
 
-    let total_frames = u32::from_le_bytes([metadata[0], metadata[1], metadata[2], metadata[3]]);
-    let fps_x100 = u32::from_le_bytes([metadata[4], metadata[5], metadata[6], metadata[7]]);
-    let fps = fps_x100 as f64 / 100.0;
+    let keyframe_count = u32::from_le_bytes([metadata[20], metadata[21], metadata[22], metadata[23]]);
 
-    if total_frames == 0 || fps <= 0.0 {
-        return write_result("{\"error\":\"invalid video metadata\"}");
+    if keyframe_count == 0 {
+        return write_result("{\"error\":\"no keyframes found\"}");
     }
 
-    // 2. Sampling interval: 1 frame per second
-    let sampling_mod = if fps >= 1.0 { fps as u32 } else { 1 };
-
-    // 3. Iterate frames, compute PDQ for each sampled frame
+    // 2. Iterate keyframes, compute PDQ for each
     let mut frames_json = String::with_capacity(4096);
     frames_json.push('[');
     let mut prev_hash = [0u8; HASH_BYTES];
     let mut has_prev = false;
     let mut output_count = 0u32;
 
-    let mut frame = 0u32;
-    while frame < total_frames {
-        // Build spec JSON for video_frame_grayscale
-        let mut spec = String::with_capacity(80);
+    for kf_idx in 0..keyframe_count {
+        let mut spec = String::with_capacity(96);
         let _ = write!(
             &mut spec,
-            "{{\"op\":\"video_frame_grayscale\",\"frame\":{},\"width\":64,\"height\":64}}",
-            frame
+            "{{\"op\":\"video_keyframe_grayscale\",\"keyframe\":{kf_idx},\"width\":64,\"height\":64}}"
         );
         let spec_bytes = spec.as_bytes();
         let spec_ptr = alloc(spec_bytes.len() as u32);
@@ -295,29 +298,22 @@ pub extern "C" fn process() -> u32 {
         };
 
         if rc != (SIZE * SIZE) as i32 {
-            // Frame extraction failed — skip
-            frame += sampling_mod;
-            continue;
+            continue; // Keyframe extraction failed — skip
         }
 
         let quality = compute_quality(&gray);
-
-        // Quality filter (Meta default: 50)
         if quality < QUALITY_THRESHOLD {
-            frame += sampling_mod;
             continue;
         }
 
         let hash = compute_pdq_hash(&gray);
 
-        // Dedupe: skip if identical to previous hash
-        if has_prev && hashes_equal(&hash, &prev_hash) {
-            frame += sampling_mod;
+        // Distance-based dedup: skip if too similar to previous emitted frame
+        if has_prev && hamming_distance(&hash, &prev_hash) <= DEDUP_THRESHOLD {
             continue;
         }
 
-        // Append to output
-        let timestamp = frame as f64 / fps;
+        // per-indexマッチング: ブラウザ側もキーフレームインデックスで対応付け
         let hex = hash_to_hex(&hash);
 
         if output_count > 0 {
@@ -325,22 +321,20 @@ pub extern "C" fn process() -> u32 {
         }
         let _ = write!(
             &mut frames_json,
-            "{{\"pdqhash\":\"{hex}\",\"quality\":{quality},\"timestamp\":{timestamp:.3}}}"
+            "{{\"pdqhash\":\"{hex}\",\"quality\":{quality},\"keyframe\":{kf_idx}}}"
         );
 
         prev_hash = hash;
         has_prev = true;
         output_count += 1;
-        frame += sampling_mod;
     }
 
     frames_json.push(']');
 
-    // 4. Build final result
     let mut json = String::with_capacity(frames_json.len() + 100);
     json.push_str("{\"frames\":");
     json.push_str(&frames_json);
-    let _ = write!(&mut json, ",\"frame_count\":{output_count},\"algorithm\":\"vpdq\",\"sampling_fps\":1}}");
+    let _ = write!(&mut json, ",\"frame_count\":{output_count},\"algorithm\":\"vpdq-keyframe\"}}");
 
     write_result(&json)
 }

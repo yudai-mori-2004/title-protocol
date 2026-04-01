@@ -169,13 +169,22 @@ pub fn decode(kind: DecoderKind, content: &[u8]) -> Result<DecodeResult, i32> {
         DecoderKind::Image => image_decoder::decode(kind, content),
         DecoderKind::Video => {
             let meta = crate::video::probe(content).map_err(|_| -3i32)?;
-            let mut metadata = Vec::with_capacity(20);
+            // Metadata (WASM向け 24バイト):
+            //   [0-3]  frame_count, [4-7] fps_x100, [8-11] width,
+            //   [12-15] height, [16-19] duration_ms, [20-23] keyframe_count
+            let mut metadata = Vec::with_capacity(24);
             metadata.extend_from_slice(&meta.frame_count.to_le_bytes());
             metadata.extend_from_slice(&((meta.fps * 100.0) as u32).to_le_bytes());
             metadata.extend_from_slice(&meta.width.to_le_bytes());
             metadata.extend_from_slice(&meta.height.to_le_bytes());
             metadata.extend_from_slice(&(meta.duration_ms as u32).to_le_bytes());
-            Ok(DecodeResult { kind, data: vec![], metadata })
+            metadata.extend_from_slice(&(meta.keyframe_pts.len() as u32).to_le_bytes());
+            // Data (Rust内部用): キーフレームPTS を f64 LE でパック
+            let mut data = Vec::with_capacity(meta.keyframe_pts.len() * 8);
+            for &pts in &meta.keyframe_pts {
+                data.extend_from_slice(&pts.to_le_bytes());
+            }
+            Ok(DecodeResult { kind, data, metadata })
         }
         DecoderKind::RawImage => {
             // Try exiftool preview extraction first. If no preview is found

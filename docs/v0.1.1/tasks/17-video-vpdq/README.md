@@ -199,6 +199,57 @@ Frame 2: hash=8f4e2132...ff65 quality=100 ts=2.000
 - [x] cNFTオンチェーン発行 — Finalized確認済み
 - [x] deploy スクリプト更新 — WASM_TARGETS, TRUSTED_EXTENSIONS に video-vpdq 追加
 
+## クライアント側 vPDQ 検証の知見 (2026-04-01)
+
+RootLens (root-lens/web) のブラウザ検証で、TEEが登録した動画のvPDQハッシュとブラウザ再計算のハッシュが一致しない問題を調査した。
+
+### 検証に使用した動画
+
+- RootLens撮影動画 (iPhone, H.264, 1920×1080, rotation:-90°, ~6秒)
+- edit list: empty edit (media_time=-1) + play from media_time=0
+- キーフレーム間隔: 約1秒
+
+### 排除した仮説
+
+| 仮説 | 結果 | 検証方法 |
+|------|------|---------|
+| Jarosz実装差 (Rust vs TS) | 無関係 | 同一ピクセルデータで両実装ともdist=0。half_window計算の差は1920×1080→64×64では丸め後に消失 |
+| edit listオフセット未適用 | 無関係 | mp4box.jsはedit list適用済みCTSを返す。ffmpegの-ssも同じdisplay time空間で動作。オフセット調整は逆効果 |
+| -noautorotateの問題 | 無関係 | TEE/ブラウザ共にraw sensor orientationで処理 |
+
+### 根本原因
+
+ffmpeg input seeking (`-ss T -i`) とWebCodecs のフレーム選択ロジックの差異:
+
+- **ffmpeg**: target PTS **以上**の最初のフレームを返す (ceil)
+- **WebCodecs**: target PTS に**最も近い**フレームを返す (nearest)
+
+30fpsで1フレーム=0.033秒。targetがフレーム境界の直前にあると、ffmpegは次のフレーム、WebCodecsは前のフレームを選ぶ。隣接フレームでも暗い/均一なシーンではPDQ距離が100以上になりうる（DCT係数がメディアン付近に集中し、微差で符号反転するため）。
+
+### 全フレームPDQ解析で確認
+
+動画の全175フレームのPDQハッシュをffmpegデコーダで計算し、TEEの6ハッシュと照合:
+
+| TEE timestamp | closest frame (nearest) | first-at-or-after (ceil) |
+|--------------|------------------------|--------------------------|
+| 0s | frame[0] dist=2 | frame[0] dist=2 |
+| 0.968s | frame[29] dist=18 | frame[30] dist=0 |
+| 1.935s | frame[58] dist=156 | frame[59] dist=2 |
+| 2.903s | frame[87] dist=122 | frame[88] dist=0 |
+| 3.871s | frame[116] dist=116 | frame[117] dist=4 |
+| 4.838s | frame[145] dist=30 | frame[146] dist=2 |
+
+nearest方式: 3/6 matched → FAIL。ceil方式: 6/6 matched (dist 0-4) → PASS。
+
+### 修正 (root-lens/web)
+
+`web/lib/verify/pdq.ts` の `extractFrames` で、WebCodecsのデコーダ出力から各タイムスタンプに対して「target以上の最初のフレーム」を選択するよう変更。
+
+### 残存リスク
+
+- WebCodecsとffmpegのH.264デコーダはピクセル単位で一致しない（Iフレームでもdist 2程度）。P/Bフレームではデコーダドリフトが蓄積しうる。
+- 上記の全フレーム解析はffmpegのピクセルデータ同士の比較。ブラウザのWebCodecsデコーダ出力ではdistが数ビット増加する可能性がある。
+
 ## 依存関係
 
 - Task 16 の image-pdq + jarosz.rs — **完了済み**

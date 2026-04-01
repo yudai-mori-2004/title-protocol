@@ -83,11 +83,12 @@ enum DecodedContent {
         height: u32,
         channels: u32,
     },
-    /// 動画 — メタデータのみ。フレームはvideo_frame_grayscaleでオンデマンド抽出。
+    /// 動画 — メタデータのみ。フレームはvideo_keyframe_grayscaleでオンデマンド抽出。
     Video {
         width: u32,
         height: u32,
-        fps: f64,
+        /// キーフレーム（Iフレーム）のPTS一覧（秒）。
+        keyframe_pts: Vec<f64>,
     },
 }
 
@@ -620,10 +621,18 @@ impl WasmRunner {
                     // 7. DecoderKindに基づいてDecodedContentを構築
                     let decoded = match result.kind {
                         crate::decode::DecoderKind::Video => {
-                            let fps_x100 = u32::from_le_bytes([result.metadata[4], result.metadata[5], result.metadata[6], result.metadata[7]]);
                             let w = u32::from_le_bytes([result.metadata[8], result.metadata[9], result.metadata[10], result.metadata[11]]);
                             let h = u32::from_le_bytes([result.metadata[12], result.metadata[13], result.metadata[14], result.metadata[15]]);
-                            DecodedContent::Video { width: w, height: h, fps: fps_x100 as f64 / 100.0 }
+                            let kf_count = u32::from_le_bytes([result.metadata[20], result.metadata[21], result.metadata[22], result.metadata[23]]) as usize;
+                            let mut kf_pts = Vec::with_capacity(kf_count);
+                            for i in 0..kf_count {
+                                let off = i * 8;
+                                if off + 8 <= result.data.len() {
+                                    let pts = f64::from_le_bytes(result.data[off..off + 8].try_into().unwrap());
+                                    kf_pts.push(pts);
+                                }
+                            }
+                            DecodedContent::Video { width: w, height: h, keyframe_pts: kf_pts }
                         }
                         crate::decode::DecoderKind::Image | crate::decode::DecoderKind::RawImage => {
                             let w = u32::from_le_bytes([result.metadata[0], result.metadata[1], result.metadata[2], result.metadata[3]]);
@@ -797,15 +806,17 @@ impl WasmRunner {
                             mem_data[dest..dest + output.len()].copy_from_slice(&output);
                             output.len() as i32
                         }
-                        "video_frame_grayscale" => {
-                            let (vid_w, vid_h, fps) = match decoded {
-                                DecodedContent::Video { width, height, fps } => (*width, *height, *fps),
+                        "video_keyframe_grayscale" => {
+                            let (vid_w, vid_h, kf_pts) = match decoded {
+                                DecodedContent::Video { width, height, keyframe_pts } => (*width, *height, keyframe_pts),
                                 DecodedContent::Image { .. } => return -1,
                             };
-                            let frame_idx = match spec.get("frame").and_then(|v| v.as_u64()) {
-                                Some(f) => f as u32,
+                            let kf_idx = match spec.get("keyframe").and_then(|v| v.as_u64()) {
+                                Some(k) => k as usize,
                                 None => return -1,
                             };
+                            if kf_idx >= kf_pts.len() { return -6; }
+                            let timestamp = kf_pts[kf_idx];
                             let target_w = match spec.get("width").and_then(|v| v.as_u64()) {
                                 Some(w) => w as u32,
                                 None => return -1,
@@ -815,13 +826,6 @@ impl WasmRunner {
                                 None => return -1,
                             };
 
-                            let timestamp = if fps > 0.0 {
-                                frame_idx as f64 / fps
-                            } else {
-                                frame_idx as f64 / 30.0
-                            };
-
-                            // ffmpeg RGB24 frame + Jarosz buffers
                             let frame_size = (vid_w as usize) * (vid_h as usize) * 3;
                             let jarosz_peak = (vid_w as usize) * (vid_h as usize) * 4 * 2;
                             let temp_peak = frame_size + jarosz_peak;
@@ -843,7 +847,6 @@ impl WasmRunner {
                                 &rgb, vid_w, vid_h, 3, target_w, target_h,
                             );
 
-                            // rgb and jarosz buffers freed when output is computed
                             drop(rgb);
                             if let Some(ref t) = state.ticket {
                                 t.shrink(temp_peak);
@@ -1401,21 +1404,3 @@ mod tests {
 
 }
 
-    #[test]
-    fn dump_gray64_for_rootlens_video() {
-        let content = match std::fs::read("/tmp/rootlens-video.mov") {
-            Ok(c) => c,
-            Err(_) => { eprintln!("SKIP: /tmp/rootlens-video.mov not found"); return; }
-        };
-
-        let meta = crate::video::probe(&content).unwrap();
-        eprintln!("Video: {}x{}, fps={:.2}, frames={}", meta.width, meta.height, meta.fps, meta.frame_count);
-
-        // f1 の全 gray64 をダンプ
-        let t = 0.968;
-        eprintln!("\n=== f1 t={:.3}s FULL DUMP ===", t);
-        let rgb = crate::video::extract_frame_rgb(&content, t, meta.width, meta.height).unwrap();
-        eprintln!("  RGB[0..6]: {:?}", &rgb[0..6]);
-        let gray64 = crate::jarosz::downsample_from_decoded(&rgb, meta.width, meta.height, 3, 64, 64);
-        eprintln!("  gray64 ALL: {:?}", &gray64[..]);
-    }

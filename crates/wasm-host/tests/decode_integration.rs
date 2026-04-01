@@ -229,13 +229,16 @@ fn test_decode_video_metadata() {
     let kind = decode::detect(&data).unwrap();
     assert!(matches!(kind, DecoderKind::Video));
     let result = decode::decode(kind, &data).unwrap();
-    assert!(result.data.is_empty());
-    assert_eq!(result.metadata.len(), 20);
+    // data にはキーフレームPTS (f64 LE) がパックされている
+    assert_eq!(result.metadata.len(), 24);
     let frame_count = u32::from_le_bytes(result.metadata[0..4].try_into().unwrap());
     let fps_x100 = u32::from_le_bytes(result.metadata[4..8].try_into().unwrap());
-    eprintln!("Video: {frame_count} frames, {:.2} fps", fps_x100 as f64 / 100.0);
+    let keyframe_count = u32::from_le_bytes(result.metadata[20..24].try_into().unwrap());
+    eprintln!("Video: {frame_count} frames, {:.2} fps, {keyframe_count} keyframes", fps_x100 as f64 / 100.0);
     assert!(frame_count > 0);
     assert!(fps_x100 > 0);
+    assert!(keyframe_count > 0);
+    assert_eq!(result.data.len(), keyframe_count as usize * 8);
 }
 
 // -----------------------------------------------------------------------

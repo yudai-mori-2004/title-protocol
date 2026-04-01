@@ -6,18 +6,15 @@
 //! 仕様書 §7.1
 //!
 //! ## ローダー実装
-//! - `FileLoader`: ローカルディレクトリからWASMを読み込む（開発・テスト用）
-//! - `HttpLoader`: URL経由でWASMを取得する（本番用、Arweave等）
-//! - `OnChainLoader`: オンチェーンPDAからURL解決 → Arweave取得
+//! - `FileLoader`: ローカルディレクトリからWASMを読み込む
+//! - `ConfigLoader`: GlobalConfig PDAからURI解決 → HTTPS取得
 //! - `CachedWasmLoader`: 任意のローダーにLRUキャッシュを付加
 
 pub mod file;
-pub mod http;
-pub mod onchain;
+pub mod remote;
 
 pub use file::FileLoader;
-pub use http::HttpLoader;
-pub use onchain::OnChainLoader;
+pub use remote::ConfigLoader;
 
 use std::collections::HashMap;
 use std::future::Future;

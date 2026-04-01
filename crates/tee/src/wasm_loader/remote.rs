@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! # オンチェーン WASMローダー
+//! # GlobalConfig WASMローダー
 //!
 //! 仕様書 §7.1, §7.3
 //!
-//! WasmModuleAccount PDAからwasm_source URLを読み取り、
-//! Arweave等からWASMバイナリを取得する。
+//! GlobalConfigのWasmModuleAccount PDAからwasm_source URIを解決し、
+//! HTTPS経由でWASMバイナリを取得する。
 //!
 //! 通信は既存の `proxy_client::proxy_post` / `proxy_get` を経由し、
 //! vsockアーキテクチャに追加変更なく動作する。
@@ -16,13 +16,13 @@ use std::pin::Pin;
 use super::WasmBinary;
 use super::WasmLoader;
 
-/// オンチェーンPDAからWASM URLを解決し、Arweaveから取得するローダー。
+/// GlobalConfigのPDAからwasm_source URIを解決し、WASMバイナリを取得するローダー。
 ///
 /// 1. extension_idからWasmModuleAccount PDAアドレスを導出
-/// 2. `proxy_post` でSolana RPC getAccountInfo → PDAデータ取得
-/// 3. 最新activeバージョンのwasm_source URLを抽出
-/// 4. `proxy_get` でそのURLからWASMバイナリ取得
-pub struct OnChainLoader {
+/// 2. Solana RPC getAccountInfo → PDAデータ取得
+/// 3. 最新activeバージョンのwasm_source URIを抽出
+/// 4. そのURIからWASMバイナリ取得
+pub struct ConfigLoader {
     /// Solana RPC URL
     rpc_url: String,
     /// title-configプログラムID
@@ -31,7 +31,7 @@ pub struct OnChainLoader {
     proxy_addr: String,
 }
 
-impl OnChainLoader {
+impl ConfigLoader {
     pub fn new(rpc_url: String, program_id: [u8; 32], proxy_addr: String) -> Self {
         Self {
             rpc_url,
@@ -73,7 +73,7 @@ fn find_wasm_module_pda(extension_id: &[u8; 32], program_id: &[u8; 32]) -> [u8; 
     [0u8; 32]
 }
 
-impl WasmLoader for OnChainLoader {
+impl WasmLoader for ConfigLoader {
     fn load<'a>(
         &'a self,
         extension_id: &'a str,
@@ -139,11 +139,11 @@ impl WasmLoader for OnChainLoader {
                 ));
             }
 
-            // Step 4: proxy_get で Arweave から WASM バイナリ取得
+            // Step 4: proxy_get で WASM バイナリ取得
             tracing::info!(
                 url = %wasm_source,
                 extension_id = %extension_id,
-                "WASMをArweaveから取得中"
+                "WASMをリモートから取得中"
             );
 
             let wasm_response = crate::infra::proxy_client::proxy_get(

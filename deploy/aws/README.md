@@ -1,21 +1,63 @@
 # AWS Node Deployment
 
-Deploy a Title Protocol node on AWS with Nitro Enclaves. One EC2 instance = one TEE node. Idempotent — safe to re-run.
+Deploy a Title Protocol TEE node on AWS Nitro Enclaves. One EC2 instance = one node.
 
 > For local development, see [`deploy/local/README.md`](../local/README.md).
 
 ---
 
+## Architecture
+
+```
+Internet → Gateway (:3000) → socat bridge (:4000) → Nitro Enclave (vsock)
+                                                          ↕
+                                                    title-proxy (vsock:8000)
+                                                          ↓
+                                                    Solana RPC / Arweave
+```
+
+- **Nitro Enclave**: Isolated VM running `title-tee`. Cannot access host network, disk, or processes. All external communication goes through `title-proxy` via vsock.
+- **Gateway**: HTTP server on the host. Receives client requests, forwards to Enclave via socat, manages S3 temp storage.
+- **Proxy**: Runs on the host. Bridges Enclave's vsock to external HTTPS (Solana RPC, storage).
+
+### Stateless Design
+
+TEE nodes are **stateless**. Every restart:
+1. New Ed25519 signing key + X25519 encryption key generated in Enclave memory
+2. Node re-registers on-chain with the new keys
+3. Old on-chain node entry is replaced (same Enclave, new keys)
+
+No persistent state to back up or migrate.
+
+### Memory Model
+
+Nitro Enclaves reserve **hugepages** from host RAM. The reservation size is `ENCLAVE_MEMORY_MIB` in `.env` (default: 3072). The remainder is available for the host OS, builds, and services. Choose an instance type with enough total RAM for both the Enclave and build processes.
+
+Hugepages are a hard reservation — they reduce available host memory even when the Enclave is not running. `setup-ec2.sh` automatically releases hugepages before builds and re-reserves them before starting the Enclave, preventing OOM during compilation.
+
+### WASM Module Loading
+
+WASM modules (PDQ, vPDQ, certificate verifiers) run inside the Enclave. Two loading modes:
+
+| Mode | Config | Behavior |
+|------|--------|----------|
+| **FileLoader** | `WASM_DIR=/wasm-modules` in `.env` | Modules baked into Enclave image at build time. No external fetch. |
+| **ConfigLoader** | `WASM_DIR` unset | Resolves URIs from GlobalConfig PDA, fetches via HTTPS. |
+
+FileLoader is simpler and has no runtime dependency on external storage. WASM hashes are registered on-chain for client-side verification regardless of loading mode.
+
+---
+
 ## Prerequisites
 
-| Tool | Notes |
-|------|-------|
+| Requirement | Notes |
+|-------------|-------|
 | [AWS CLI](https://aws.amazon.com/cli/) configured | `aws configure` |
 | [Terraform](https://www.terraform.io/) 1.5+ | |
 | `network.json` | Created by Phase 1 (see [`programs/title-config/README.md`](../../programs/title-config/README.md)) |
-| ~0.6 SOL on devnet | For node registration + Merkle Tree creation |
+| ~0.6 SOL on devnet | Node registration + Merkle Tree creation |
 
-Phase 1 (program deploy + GlobalConfig init) must be completed first. See [QUICKSTART.md](../../QUICKSTART.md) or [`deploy/local/README.md`](../local/README.md).
+Phase 1 (program deploy + GlobalConfig init) must be completed first. See [QUICKSTART.md](../../QUICKSTART.md).
 
 ---
 
@@ -37,30 +79,26 @@ terraform apply
 cd ../../..
 ```
 
-Terraform creates everything from scratch:
+Terraform creates:
 
 | Resource | Purpose |
 |----------|---------|
 | EC2 (c5.xlarge) | Nitro Enclave capable. Amazon Linux 2023. ~$0.10/hr |
 | Elastic IP | Fixed public IP per node |
-| S3 bucket | Encrypted content temp storage (auto-expires after 1 day, shared across nodes) |
+| S3 bucket | Encrypted content temp storage (auto-expires 1 day) |
 | IAM user + access key | S3 authentication for Gateway |
 | Security Group | Inbound SSH (22) and Gateway (3000) |
 
-To scale to multiple nodes:
+To scale:
 
 ```bash
 terraform apply -var="node_count=3"   # scale up
-terraform apply -var="node_count=2"   # scale down (last node removed)
+terraform apply -var="node_count=2"   # scale down
 ```
-
-Each node registers independently on-chain. The SDK discovers available nodes automatically.
 
 ---
 
 ## Step 2: Configure `.env`
-
-Get the S3 credentials from Terraform output and set them in `.env`:
 
 ```bash
 cd deploy/aws/terraform
@@ -81,14 +119,11 @@ cd ../../..
 | `S3_SECRET_KEY` | `terraform output -raw s3_secret_access_key` |
 | `S3_REGION` | AWS region (e.g. `ap-northeast-1`) |
 | `SIGNED_JSON_S3_BUCKET` | `terraform output -raw signed_json_s3_bucket_name` |
-
-`SIGNED_JSON_S3_BUCKET` is the storage bucket for Extension signed_json. Terraform creates the `title-signed-json-devnet` bucket. See `.env.example` for all environment variables.
+| `WASM_DIR` | `/wasm-modules` (FileLoader, recommended) |
 
 ---
 
 ## Step 3: Deploy Node
-
-SSH into the instance, clone the repo, and run the setup script.
 
 ```bash
 # SSH in (replace NODE_IP with Elastic IP from terraform output)
@@ -98,7 +133,7 @@ ssh -i deploy/aws/keys/title-protocol-devnet.pem ec2-user@NODE_IP
 git clone https://github.com/yudai-mori-2004/title-protocol.git ~/title-protocol
 cd ~/title-protocol
 cp .env.example .env
-vim .env   # Set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY, S3_REGION, SIGNED_JSON_S3_BUCKET
+vim .env   # Set S3 credentials + WASM_DIR=/wasm-modules
 ```
 
 Copy keys from your local machine:
@@ -106,128 +141,162 @@ Copy keys from your local machine:
 ```bash
 # From local machine:
 scp -i deploy/aws/keys/title-protocol-devnet.pem \
-  network.json \
-  ec2-user@NODE_IP:~/title-protocol/
+  network.json ec2-user@NODE_IP:~/title-protocol/
 
 # authority.json is required for devnet (auto-sign mode)
 scp -i deploy/aws/keys/title-protocol-devnet.pem \
-  keys/authority.json \
-  ec2-user@NODE_IP:~/title-protocol/keys/
+  keys/authority.json ec2-user@NODE_IP:~/title-protocol/keys/
 ```
 
-`keys/operator.json` is optional — if not copied, `setup-ec2.sh` auto-creates one from `~/.config/solana/id.json` or generates a new keypair. If auto-created, fund it with SOL before proceeding (the script pauses and displays the address).
+`keys/operator.json` is optional — `setup-ec2.sh` auto-creates one if missing. Fund it with SOL when prompted.
 
 Run the setup:
 
 ```bash
-# On EC2:
 cd ~/title-protocol
 ./deploy/aws/setup-ec2.sh
 ```
 
-First run builds everything from source (WASM, Rust, Docker, EIF). Expect **20-40 minutes**. Subsequent runs use cached builds.
+First run: **20-40 minutes** (builds everything from source). Subsequent runs: **5-10 minutes** (cached builds).
 
-What `setup-ec2.sh` does:
+### What `setup-ec2.sh` does
 
 | Step | Action |
 |------|--------|
-| 0 | Check config (.env, network.json, keys, SOL balance) |
-| 1 | Build 4 WASM modules |
-| 2 | Build host binaries (Proxy or TEE, CLI) |
-| 3 | Build Enclave image (Docker → `nitro-cli build-enclave` → EIF) |
-| 4 | Start TEE (Nitro Enclave + socat bridge on TCP:4000) |
-| 5 | Start Proxy (vsock:8000 → external HTTP for Solana RPC / Arweave) |
-| 6 | Start Gateway via Docker Compose (:3000) |
-| 7 | Verify S3 bucket access |
-| 8 | Register TEE node on-chain (auto-signs if `keys/authority.json` exists) |
-| 9 | Create Merkle Trees (Core + Extension) |
-| 10 | Create Address Lookup Table (`title-cli create-alt`, TX compression) |
-| 11 | Health check all services |
+| 0 | Validate config (.env, network.json, keys, SOL balance) |
+| 1 | Build WASM modules |
+| 1.5 | Release hugepages for build memory |
+| 2 | Build host binaries (Proxy, CLI) |
+| 3 | Build Enclave image (Docker → EIF), reserve hugepages |
+| 4 | Start Enclave + socat bridge |
+| 5 | Start Proxy |
+| 6 | Start Gateway (Docker Compose) |
+| 7 | Verify S3 access |
+| 8 | Register node on-chain |
+| 9 | Create Merkle Trees |
+| 10 | Create Address Lookup Table |
+| 11 | Health check |
 
-Values auto-configured by `setup-ec2.sh` (no manual setup needed):
+Auto-configured values (no manual setup needed):
 
 | Value | Source |
 |-------|--------|
-| `GATEWAY_SIGNING_KEY` | Auto-generated (random), appended to `.env` |
-| `GATEWAY_SOLANA_KEYPAIR` | Derived from `keys/operator.json` (Base58), appended to `.env` |
-| `GLOBAL_CONFIG_PDA` | Read from `network.json`, appended to `.env` |
-| `CORE_COLLECTION_MINT` | Read from `network.json` |
-| `EXT_COLLECTION_MINT` | Read from `network.json` |
-| `PUBLIC_ENDPOINT` | Auto-detected from EC2 metadata (IMDSv2) |
-| `keys/operator.json` | Copied from `~/.config/solana/id.json`, or auto-generated |
+| `GATEWAY_SIGNING_KEY` | Random, appended to `.env` |
+| `GATEWAY_SOLANA_KEYPAIR` | From `keys/operator.json` |
+| `GLOBAL_CONFIG_PDA` | From `network.json` |
+| `PUBLIC_ENDPOINT` | EC2 metadata (IMDSv2) |
 
 ---
 
-## Verify the Node
+## Step 4: Register WASM Hashes
 
-From your local machine:
-
-```bash
-# Build the SDK
-cd sdk/ts && npm install && npm run build && cd ../..
-
-# Run verification (replace NODE_IP with the Elastic IP)
-cd integration-tests && npm install
-npx tsx register-photo.ts NODE_IP ./fixtures/pixel_photo_ramen.jpg \
-  --wallet ../keys/operator.json --skip-sign
-```
-
-You should see `tee_type: aws_nitro` in the output, confirming real Nitro Enclave verification.
-
-For the full flow (verify + Arweave upload + cNFT mint):
+After `setup-ec2.sh` completes, register the WASM module hashes on GlobalConfig so clients can verify WASM integrity. Run from your **local machine** (requires `keys/authority.json`):
 
 ```bash
-npx tsx register-photo.ts NODE_IP ./fixtures/pixel_photo_ramen.jpg \
-  --wallet ../keys/operator.json --broadcast
+# Copy WASM binaries from EC2
+mkdir -p /tmp/ec2-wasm
+scp -i deploy/aws/keys/title-protocol-devnet.pem \
+  ec2-user@NODE_IP:~/title-protocol/wasm-modules/*.wasm /tmp/ec2-wasm/
+
+# Register each module's hash on-chain
+for f in /tmp/ec2-wasm/*.wasm; do
+  name=$(basename "$f" .wasm)
+  ./target/release/title-cli add-wasm-version \
+    --extension-id "$name" \
+    --wasm-path "$f" \
+    --wasm-source local
+done
 ```
+
+This registers the SHA-256 hash of each WASM binary in GlobalConfig. The TEE loads modules locally (FileLoader), but clients verify the hash against on-chain data.
+
+---
+
+## Verify
+
+From your local machine using the SDK:
+
+```typescript
+import { fetchGlobalConfig, TitleClient } from "@title-protocol/sdk";
+
+const config = await fetchGlobalConfig("devnet");
+const client = new TitleClient(config);
+const result = await client.register({
+  content: imageBuffer,
+  ownerWallet: "YourWallet...",
+  processorIds: ["core-c2pa", "image-pdq"],
+  delegateMint: true,
+  gatewayEndpoint: "http://NODE_IP:3000",
+});
+```
+
+You should see `tee_type: aws_nitro` in the signed result, confirming Nitro Enclave execution.
+
+---
+
+## Update
+
+After code changes (pull new commits, update WASM modules, etc.):
+
+```bash
+# On EC2:
+cd ~/title-protocol
+git pull
+./deploy/aws/setup-ec2.sh
+```
+
+The script is idempotent:
+- Stops existing Enclave and releases hugepages
+- Rebuilds only changed components (incremental cargo/docker builds)
+- Re-reserves hugepages and starts new Enclave
+- Re-registers node with new signing key
+
+If WASM modules changed, re-run Step 4 from your local machine to update on-chain hashes.
+
+**Node re-registration**: Each restart generates new keys. The old on-chain node entry accumulates stale entries. Clean up with:
+
+```bash
+# From local machine:
+title-cli remove-node --signing-pubkey <OLD_PUBKEY>
+```
+
+Use the SDK's `fetchGlobalConfig("devnet")` to list current nodes and identify stale entries.
 
 ---
 
 ## Devnet vs Mainnet
 
-The presence of `keys/authority.json` determines behavior:
-
-| | Devnet (your own GlobalConfig) | Mainnet (DAO GlobalConfig) |
+| | Devnet | Mainnet |
 |---|---|---|
-| `keys/authority.json` | Exists locally (created by init-global) | **Does not exist** (DAO-controlled) |
-| Node registration | Auto co-signs and broadcasts immediately | Outputs partial TX for DAO approval |
+| `keys/authority.json` | Present (you control GlobalConfig) | Absent (DAO controls) |
+| Node registration | Auto co-signs immediately | Outputs partial TX for DAO approval |
+| WASM registration | You run `add-wasm-version` | DAO runs it |
 
-### Running a Mainnet Node
+### Mainnet Node Operators
 
-Node operators do **not** run Phase 1 — the DAO has already deployed the program and initialized GlobalConfig.
-
-**1. Get `network.json`** — Download from the protocol's public repository or DAO website. It contains the mainnet Program ID, GlobalConfig PDA, and collection mints.
-
-**2. Deploy your node** — Same steps as above, with these differences:
-- Use the mainnet `network.json` (not your own)
-- Set `SOLANA_RPC_URL` to a mainnet RPC endpoint in `.env`
-- Do **not** copy `keys/authority.json` (the DAO controls it)
-
-**3. Submit registration for DAO approval** — Since `keys/authority.json` is absent, `setup-ec2.sh` outputs a partially-signed transaction. Send it to the DAO via the designated governance channel. Once co-signed and broadcast, your node is registered.
-
-**4. Create Merkle Trees** — After registration is confirmed:
-
-```bash
-./target/release/title-cli create-tree \
-  --tee-url http://localhost:4000 \
-  --max-depth 14 --max-buffer-size 64
-```
-
-**5. Create Address Lookup Table** — After Merkle Trees are created:
-
-```bash
-./target/release/title-cli create-alt --tee-url http://localhost:4000
-```
+1. **Get `network.json`** from the protocol repository (contains program ID, GlobalConfig PDA, collection mints)
+2. **Deploy** — same steps, but use mainnet `network.json` and `SOLANA_RPC_URL`, omit `authority.json`
+3. **Submit registration** — `setup-ec2.sh` outputs a partial TX. Send to DAO for co-signing.
+4. **Create Merkle Trees** after registration is confirmed:
+   ```bash
+   ./target/release/title-cli create-tree --tee-url http://localhost:4000 --max-depth 14 --max-buffer-size 64
+   ```
+5. **Create ALT** after trees are created:
+   ```bash
+   ./target/release/title-cli create-alt --tee-url http://localhost:4000
+   ```
 
 ---
 
-## Logs
+## Operations
+
+### Logs
 
 ```bash
-# Gateway (Docker)
+# Gateway
 docker compose -f deploy/aws/docker-compose.production.yml logs -f
 
-# TEE (Nitro Enclave console)
+# TEE (Enclave console)
 sudo nitro-cli console --enclave-id $(nitro-cli describe-enclaves | \
   python3 -c "import sys,json; print(json.load(sys.stdin)[0]['EnclaveID'])")
 
@@ -235,9 +304,7 @@ sudo nitro-cli console --enclave-id $(nitro-cli describe-enclaves | \
 tail -f ~/title-proxy.log
 ```
 
----
-
-## Stop
+### Stop
 
 ```bash
 sudo nitro-cli terminate-enclave --all
@@ -245,26 +312,28 @@ docker compose -f deploy/aws/docker-compose.production.yml down
 pkill title-proxy || true
 ```
 
----
-
-## Restart
-
-TEE nodes are stateless — keys are regenerated on each restart and the node re-registers automatically.
+### Restart
 
 ```bash
 ./deploy/aws/setup-ec2.sh
 ```
 
----
-
-## Teardown
-
-To destroy all AWS resources:
+### Teardown
 
 ```bash
 cd deploy/aws/terraform
 terraform destroy
 ```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| OOM during build | Hugepages reserving too much RAM | `setup-ec2.sh` handles this automatically. If manual build, release hugepages first: set `memory_mib: 0` in `/etc/nitro_enclaves/allocator.yaml` then `sudo systemctl restart nitro-enclaves-allocator` |
+| `AES-GCM decryption failed` | Client using stale encryption key | Stale node entries in GlobalConfig. Remove old nodes with `title-cli remove-node` |
+| Enclave won't start | Insufficient hugepages | Check `grep Hugetlb /proc/meminfo`. Ensure no other Enclave is running. |
+| `wasm_trusted` check fails | On-chain WASM hash doesn't match Enclave binary | Re-run Step 4 (register WASM hashes) with the EC2-built binaries |
+| ALT creation fails after restart | New signing key, old ALT owner | Expected on re-registration. Run `title-cli create-alt` manually. |
 
 ---
 

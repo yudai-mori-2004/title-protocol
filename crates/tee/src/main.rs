@@ -93,11 +93,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // WASMローダー構築（仕様書 §7.1）
-    // デフォルト: OnChainLoader（PDAからwasm_source URLを読み取り、Arweaveから取得）
-    // WASM_DIR が設定されている場合はファイルローダー（開発用フォールバック）
+    // WASM_DIR設定時: FileLoader（ローカルファイル読み込み）
+    // 未設定時: RemoteLoader（PDAからURI解決 → HTTPS取得、キャッシュ付き）
     let wasm_loader: Option<Box<dyn wasm_loader::WasmLoader>> =
         if let Ok(wasm_dir) = std::env::var("WASM_DIR") {
-            tracing::info!(wasm_dir = %wasm_dir, "ファイル WASMローダーを使用します（開発用）");
+            tracing::info!(wasm_dir = %wasm_dir, "ローカル WASMローダーを使用します");
             Some(Box::new(wasm_loader::FileLoader::new(wasm_dir)))
         } else {
             let solana_rpc = std::env::var("SOLANA_RPC_URL")
@@ -107,13 +107,13 @@ async fn main() -> anyhow::Result<()> {
             let program_id_pubkey: solana_sdk::pubkey::Pubkey = program_id_str.parse()
                 .expect("PROGRAM_ID のパースに失敗");
             let program_id_bytes = program_id_pubkey.to_bytes();
-            tracing::info!(program_id = %program_id_str, rpc = %solana_rpc, "オンチェーン WASMローダーを使用します（キャッシュ付き）");
-            let inner = Box::new(wasm_loader::OnChainLoader::new(
+            tracing::info!(program_id = %program_id_str, rpc = %solana_rpc, "GlobalConfig WASMローダーを使用します（キャッシュ付き）");
+            let inner = Box::new(wasm_loader::ConfigLoader::new(
                 solana_rpc,
                 program_id_bytes,
                 proxy_addr.clone(),
             ));
-            let ttl = std::time::Duration::from_secs(3600); // 1時間キャッシュ
+            let ttl = std::time::Duration::from_secs(3600);
             Some(Box::new(wasm_loader::CachedWasmLoader::new(inner, ttl)))
         };
 

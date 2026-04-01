@@ -255,9 +255,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 1.5: hugepage予約をENCLAVE_MEMORY_MIBに同期
-# allocator.yamlの値とENCLAVE_MEMORY_MIBがずれるとhugepageの過剰予約でOOMになる。
-# Enclave停止 → allocator.yaml更新 → allocator再起動 でhugepageを正しいサイズに合わせる。
+# Step 1.5: ビルド用にhugepageを解放
+# Nitro Enclaveのhugepage予約はホストメモリから差し引かれる。
+# c5.xlarge(8GB)でmemory_mib:3072だとビルドに5GBしか使えずOOMになる。
+# Enclave停止 → hugepage全解放 → ビルド(全メモリ使用可) → Step 4で再予約。
 # ---------------------------------------------------------------------------
 ENCLAVE_CPU="${ENCLAVE_CPU_COUNT:-2}"
 ENCLAVE_MEM="${ENCLAVE_MEMORY_MIB:-3072}"
@@ -277,13 +278,13 @@ for e in data:
     sleep 2
   fi
 
-  # allocator.yamlをENCLAVE_MEMORY_MIBに同期
+  # hugepage解放: memory_mib:0 で allocator restart → nr_hugepages=0 → ホストに全返却
   CURRENT_ALLOC=$(grep 'memory_mib' /etc/nitro_enclaves/allocator.yaml 2>/dev/null | grep -o '[0-9]*')
-  if [ "$CURRENT_ALLOC" != "$ENCLAVE_MEM" ]; then
-    echo "  allocator.yaml更新: ${CURRENT_ALLOC:-unknown} → $ENCLAVE_MEM MiB"
+  if [ "${CURRENT_ALLOC:-0}" != "0" ]; then
+    echo "  hugepage解放: ${CURRENT_ALLOC} MiB → 0 (ビルド用にメモリ確保)"
     sudo tee /etc/nitro_enclaves/allocator.yaml > /dev/null <<ALLOC_EOF
 ---
-memory_mib: $ENCLAVE_MEM
+memory_mib: 0
 cpu_count: $ENCLAVE_CPU
 ALLOC_EOF
     sudo systemctl restart nitro-enclaves-allocator
@@ -351,7 +352,7 @@ echo ""
 echo "[Step 4/11] TEE の起動..."
 
 if command -v nitro-cli &>/dev/null && [ -f "$EIF_PATH" ]; then
-  # 既存Enclaveの停止
+  # 既存Enclaveの停止（Step 1.5で停止済みなら no-op）
   EXISTING=$(nitro-cli describe-enclaves | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -365,6 +366,17 @@ for e in data:
     nitro-cli terminate-enclave --enclave-id "$EXISTING"
     sleep 2
   fi
+
+  # hugepage再予約: ビルド完了後、Enclave用メモリを確保
+  echo "  hugepage予約: 0 → $ENCLAVE_MEM MiB"
+  sudo tee /etc/nitro_enclaves/allocator.yaml > /dev/null <<ALLOC_EOF
+---
+memory_mib: $ENCLAVE_MEM
+cpu_count: $ENCLAVE_CPU
+ALLOC_EOF
+  sudo systemctl restart nitro-enclaves-allocator
+  sleep 2
+  echo "  hugepage: $(grep Hugetlb /proc/meminfo)"
 
   ENCLAVE_OUTPUT=$(nitro-cli run-enclave \
     --eif-path "$EIF_PATH" \

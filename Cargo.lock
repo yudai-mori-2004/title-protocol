@@ -6926,6 +6926,7 @@ dependencies = [
 name = "title-wasm-host"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "c2pa",
  "ciborium",
  "der",

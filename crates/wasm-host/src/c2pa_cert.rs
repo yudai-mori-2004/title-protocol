@@ -415,27 +415,15 @@ pub fn verify_cert_chain(
 // エントリポイント
 // ---------------------------------------------------------------------------
 
-/// 証明書チェーン検証の詳細結果。
-/// チェーンの検証成否に加え、各証明書のSubject文字列を含む。
+/// 証明書チェーン検証結果。
+/// 検証成否 + x5chain内の各証明書DER（base64）をそのまま保持する。
+/// 構造化・フィールド抽出は消費側（cNFT検証者）の責任。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CertChainResult {
     /// チェーン検証成功（信頼されたRoot CAに連なる）
     pub verified: bool,
-    /// x5chain内の各証明書のSubject（Leaf → Intermediate順）
-    pub chain: Vec<CertSubject>,
-}
-
-/// 証明書のSubject情報。
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CertSubject {
-    pub subject: String,
-}
-
-/// DER証明書からSubject文字列を抽出する。
-fn extract_subject(cert_der: &[u8]) -> Result<String, &'static str> {
-    let cert = x509_cert::Certificate::from_der(cert_der)
-        .map_err(|_| "X.509証明書のDERパースに失敗")?;
-    Ok(cert.tbs_certificate.subject.to_string())
+    /// x5chain内の各証明書のDERバイト列（base64, Leaf → Intermediate順）
+    pub certs_der: Vec<String>,
 }
 
 /// コンテンツ内のC2PAアクティブマニフェストの証明書チェーンを
@@ -472,10 +460,10 @@ pub fn verify_active_cert_chain_with_mime(content: &[u8], root_spki_hex: &str, m
         .map_err(|e| format!("証明書チェーン検証エラー: {e}"))
 }
 
-/// コンテンツのC2PA証明書チェーンを検証し、チェーン詳細（Subject情報）を含む結果を返す。
+/// コンテンツのC2PA証明書チェーンを検証し、証明書DER（base64）を含む結果を返す。
 ///
-/// 仕様書 §7.1: cert-* WASMモジュール用の拡張エントリポイント。
-/// 検証成否に加え、x5chain内の各証明書のSubject文字列を返す。
+/// 仕様書 §7.1: cert-* WASMモジュール用エントリポイント。
+/// 検証成否 + x5chain内の各証明書のDERバイト列をそのまま返す。
 pub fn verify_active_cert_chain_detailed(content: &[u8], root_spki_hex: &str, mime_type: &str) -> Result<CertChainResult, String> {
     let root_spki = hex::decode(root_spki_hex)
         .map_err(|e| format!("root_spki_hexのデコードに失敗: {e}"))?;
@@ -493,13 +481,14 @@ pub fn verify_active_cert_chain_detailed(content: &[u8], root_spki_hex: &str, mi
     let verified = verify_cert_chain(&certs_der, &root_spki)
         .map_err(|e| format!("証明書チェーン検証エラー: {e}"))?;
 
-    // 各証明書のSubjectを抽出
-    let chain = certs_der
+    // 各証明書のDERをbase64エンコード
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let certs_b64 = certs_der
         .iter()
-        .filter_map(|der| extract_subject(der).ok().map(|s| CertSubject { subject: s }))
+        .map(|der| STANDARD.encode(der))
         .collect();
 
-    Ok(CertChainResult { verified, chain })
+    Ok(CertChainResult { verified, certs_der: certs_b64 })
 }
 
 // ---------------------------------------------------------------------------

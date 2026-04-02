@@ -67,23 +67,15 @@ fn test_cert_google_plane() {
         "plane.jpg should verify against Google Root CA"
     );
 
-    // chain should have 2 entries (leaf + intermediate)
-    let chain = result.output["chain"].as_array().expect("chain should be array");
-    assert_eq!(chain.len(), 2, "Should have 2 certs in chain");
+    // certs_der should have 2 entries (leaf + intermediate), base64-encoded DER
+    let certs = result.output["certs_der"].as_array().expect("certs_der should be array");
+    assert_eq!(certs.len(), 2, "Should have 2 certs in chain");
 
-    // Leaf subject should contain "Google Photos"
-    let leaf_subject = chain[0]["subject"].as_str().unwrap();
-    assert!(
-        leaf_subject.contains("Google Photos"),
-        "Leaf subject should contain 'Google Photos', got: {leaf_subject}"
-    );
-
-    // Intermediate subject should contain "Mobile"
-    let ica_subject = chain[1]["subject"].as_str().unwrap();
-    assert!(
-        ica_subject.contains("Mobile"),
-        "ICA subject should contain 'Mobile', got: {ica_subject}"
-    );
+    // Each entry should be a non-empty base64 string
+    for (i, cert) in certs.iter().enumerate() {
+        let b64 = cert.as_str().unwrap_or("");
+        assert!(b64.len() > 100, "cert[{i}] should be substantial base64, got len={}", b64.len());
+    }
 
     // root_ca should be present
     assert_eq!(

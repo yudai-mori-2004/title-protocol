@@ -21,6 +21,7 @@ ecdsa = { workspace = true }
 x509-cert = { workspace = true }
 der = { workspace = true }
 hex = { workspace = true }
+base64 = { workspace = true }
 kamadak-exif = { workspace = true }
 c2pa = { workspace = true }
 file-format = "0.29.0"

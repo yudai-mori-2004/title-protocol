@@ -18,52 +18,10 @@ use der::Decode;
 // JPEG APP11 → JUMBF 抽出
 // ---------------------------------------------------------------------------
 
-/// コンテンツからJUMBFデータを抽出する（形式自動判定）。
-/// JPEG は APP11 セグメント、その他は c2pa crate のパーサーを使用。
+/// コンテンツからJUMBFデータを抽出する。
+/// c2pa crateの公式パーサーに委譲し、全形式（JPEG, MP4, PNG等）を統一的に処理する。
 pub fn extract_jumbf(content: &[u8], mime_type: &str) -> Option<Vec<u8>> {
-    if mime_type == "image/jpeg" {
-        return extract_jumbf_from_jpeg(content);
-    }
-    // JPEG以外: c2pa crate の jumbf_io を使用
     c2pa::jumbf_io::load_jumbf_from_memory(mime_type, content).ok()
-}
-
-/// JPEG APP11マーカーからJUMBFデータを抽出する。
-///
-/// C2PA JUMBF はJPEGのAPP11 (0xFFEB) セグメントに埋め込まれている。
-/// 各セグメント先頭の8バイト（JP magic 4B + sequence number 4B）をスキップして
-/// JUMBFペイロードを返す。
-pub fn extract_jumbf_from_jpeg(data: &[u8]) -> Option<Vec<u8>> {
-    let mut jumbf = Vec::new();
-    let mut i = 0;
-
-    while i + 4 < data.len() {
-        if data[i] == 0xFF && data[i + 1] == 0xEB {
-            let seg_len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
-            let seg_start = i + 4;
-            let seg_end = (i + 2 + seg_len).min(data.len());
-            if seg_end <= seg_start + 8 {
-                i = seg_end;
-                continue;
-            }
-            let body = &data[seg_start..seg_end];
-
-            // JP magic: 0x4A50 0x00 0x01
-            if body.len() >= 8 && body[0] == 0x4A && body[1] == 0x50 {
-                // Skip 8-byte CI header (JP magic 4B + sequence 4B)
-                jumbf.extend_from_slice(&body[8..]);
-            }
-            i = seg_end;
-        } else {
-            i += 1;
-        }
-    }
-
-    if jumbf.is_empty() {
-        None
-    } else {
-        Some(jumbf)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -512,7 +470,7 @@ mod tests {
     #[test]
     fn test_extract_jumbf_from_plane() {
         let data = std::fs::read("../../tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
-        let jumbf = extract_jumbf_from_jpeg(&data).expect("JUMBF should be found");
+        let jumbf = extract_jumbf(&data, "image/jpeg").expect("JUMBF should be found");
         assert!(jumbf.len() > 1000);
         // Top box type should be 'jumb'
         assert_eq!(&jumbf[4..8], b"jumb");
@@ -521,7 +479,7 @@ mod tests {
     #[test]
     fn test_extract_cose_from_plane() {
         let data = std::fs::read("../../tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
-        let jumbf = extract_jumbf_from_jpeg(&data).unwrap();
+        let jumbf = extract_jumbf(&data, "image/jpeg").unwrap();
         let cose = find_active_cose_sign1(&jumbf).expect("COSE_Sign1 should be found");
         assert!(cose.len() > 100);
         // Should start with CBOR tag 18 (0xD2)
@@ -531,7 +489,7 @@ mod tests {
     #[test]
     fn test_extract_x5chain_from_plane() {
         let data = std::fs::read("../../tests/fixtures/images/jpeg/pixel_plane.jpg").unwrap();
-        let jumbf = extract_jumbf_from_jpeg(&data).unwrap();
+        let jumbf = extract_jumbf(&data, "image/jpeg").unwrap();
         let cose = find_active_cose_sign1(&jumbf).unwrap();
         let certs = extract_x5chain(&cose).expect("x5chain should be extracted");
         assert_eq!(certs.len(), 2, "Should have 2 certs (leaf + intermediate)");

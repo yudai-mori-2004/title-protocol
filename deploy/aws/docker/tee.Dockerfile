@@ -35,7 +35,7 @@ COPY --from=mwader/static-ffmpeg:7.1.1 /ffprobe /usr/local/bin/ffprobe
 
 # ExifTool — pure Perl, direct copy (no make/gcc needed)
 # exiftool.org only hosts the latest version; update EXIFTOOL_VERSION when rebuilding
-ENV EXIFTOOL_VERSION=13.53
+ENV EXIFTOOL_VERSION=13.54
 
 RUN dnf install -y --setopt=install_weak_deps=False \
     perl-interpreter \

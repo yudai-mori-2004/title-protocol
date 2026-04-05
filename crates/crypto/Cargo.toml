@@ -26,6 +26,11 @@ ecdsa = { workspace = true }
 x509-cert = { workspace = true }
 der = { workspace = true }
 
+[dependencies.rand]
+workspace = true
+
+[dependencies.serde]
+workspace = true
+
 [dev-dependencies]
-rand = { workspace = true }
 hex = { workspace = true }

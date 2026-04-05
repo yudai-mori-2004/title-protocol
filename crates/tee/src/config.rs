@@ -49,7 +49,7 @@ pub struct TeeAppState {
     /// Gateway認証用Ed25519公開鍵（環境変数 GATEWAY_PUBKEY で設定）
     /// 仕様書 §6.2: Global Configのgateway_pubkeyで署名を検証
     /// Noneの場合はGateway認証をスキップ（開発環境用）
-    pub gateway_pubkey: Option<title_crypto::Ed25519VerifyingKey>,
+    pub gateway_pubkey: Option<Box<dyn title_crypto::signing::Verifier>>,
     /// WASMバイナリローダー（Extension実行時に使用）
     /// 仕様書 §7.1: Extension WASMバイナリの取得を抽象化
     /// Noneの場合、Extension実行は不可（core-c2paのみ対応）

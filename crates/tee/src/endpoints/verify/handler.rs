@@ -18,7 +18,7 @@ use std::time::Duration;
 use axum::extract::State;
 use axum::Json;
 use base64::Engine;
-use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+use base64::engine::general_purpose::STANDARD as B64;
 
 use title_types::{
     EncryptedResponse, ProcessorResult, VerifyRequest, VerifyResponse,
@@ -29,7 +29,7 @@ use crate::error::TeeError;
 use crate::infra::security::{self, SecurityError};
 
 use super::{detect_mime_type, CORE_PROCESSOR_ID};
-use crate::endpoints::b64;
+
 
 /// /verify エンドポイントハンドラ。
 /// 仕様書 §1.1 Phase 1, §6.4
@@ -47,7 +47,7 @@ pub async fn handle_verify(
 
     // Step 1. Gateway署名の検証（§6.2）
     let (inner_body, resource_limits) =
-        crate::infra::gateway_auth::verify_gateway_auth(state.gateway_pubkey.as_ref(), &body)
+        crate::infra::gateway_auth::verify_gateway_auth(state.gateway_pubkey.as_deref(), &body)
             .map_err(|(_, msg)| TeeError::Unauthorized(msg))?;
 
     let request: VerifyRequest = serde_json::from_value(inner_body)
@@ -85,39 +85,23 @@ pub async fn handle_verify(
         _ => TeeError::BadGateway(format!("暗号化ペイロードの取得に失敗: {e}")),
     })?;
 
-    // Step 4. バイナリペイロード復号（ECDH + HKDF + AES-GCM）
-    // 仕様書 §5.1 Step 2, §6.4 ハイブリッド暗号化 Step 6-7
-    //
-    // ワイヤーフォーマット: [32B: eph_pk][12B: nonce][remaining: ciphertext]
-    let (eph_pubkey_arr, nonce, ciphertext) =
-        title_types::parse_encrypted_payload(&proxy_response.body)
-            .map_err(|e| TeeError::BadRequest(e))?;
-    let eph_pubkey = X25519PublicKey::from(eph_pubkey_arr);
-
-    let tee_secret_bytes: [u8; 32] = state
-        .runtime
-        .encryption_secret_key()
-        .try_into()
-        .map_err(|_| TeeError::Internal("暗号化用秘密鍵の取得に失敗".into()))?;
-    let tee_secret = StaticSecret::from(tee_secret_bytes);
-
-    // ECDH(tee_sk, eph_pk) → shared_secret
-    let shared_secret = title_crypto::ecdh_derive_shared_secret(&tee_secret, &eph_pubkey);
-    // HKDF → symmetric_key
-    let symmetric_key = title_crypto::hkdf_derive_key(&shared_secret)
-        .map_err(|e| TeeError::Internal(format!("対称鍵の導出に失敗: {e}")))?;
-
-    // AES-GCM復号 — plaintext確保でメモリがcontent_size分増える
+    // Step 4. バイナリペイロード復号
+    // 仕様書 §6.4 open_request(): KEM + KDF + AEAD を内部で合成
     let payload_size = proxy_response.body.len();
     if !download_ticket.extend(payload_size) {
         return Err(TeeError::ServiceUnavailable(
             "メモリ予算超過: 復号バッファを確保できません".into(),
         ));
     }
-    let plaintext = title_crypto::aes_gcm_decrypt(&symmetric_key, &nonce, ciphertext)
-        .map_err(|e| TeeError::BadRequest(format!("ペイロードの復号に失敗: {e}")))?;
+    let opened = title_crypto::open_request(
+        state.runtime.decapsulator(),
+        &proxy_response.body,
+        b"/verify",
+    )
+    .map_err(|e| TeeError::BadRequest(format!("ペイロードの復号に失敗: {e}")))?;
+    let plaintext = opened.plaintext;
     drop(proxy_response);
-    download_ticket.shrink(payload_size); // 暗号文バッファ解放分を返却
+    download_ticket.shrink(payload_size);
 
     // 平文フォーマット: [4B: metadata_len][metadata JSON][raw content bytes]
     let (client_metadata, content_offset) =
@@ -234,24 +218,22 @@ pub async fn handle_verify(
 
     let results = processing_result?;
 
-    // Step 7. レスポンスを共通鍵で暗号化して返却
-    // 仕様書 §5.1 Step 6, §6.4
+    // Step 7. レスポンスをResponseSealerで暗号化して返却
+    // 仕様書 §6.4: response_keyで暗号化（request_keyとは独立）
     let verify_response = VerifyResponse { results };
     let response_json = serde_json::to_vec(&verify_response)
         .map_err(|e| TeeError::Internal(format!("VerifyResponseのシリアライズに失敗: {e}")))?;
 
-    // 新しいnonceを生成
-    let mut response_nonce = [0u8; 12];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut response_nonce);
+    // ResponseSealer.seal(): nonce生成 + AEAD暗号化。戻り値は nonce || ciphertext
+    let sealed = opened.channel
+        .seal(&response_json, b"/verify")
+        .map_err(|e| TeeError::Internal(format!("レスポンスの暗号化に失敗: {e}")))?;
 
-    // 同一symmetric_key、新しいnonceでAES-GCM暗号化
-    let response_ciphertext =
-        title_crypto::aes_gcm_encrypt(&symmetric_key, &response_nonce, &response_json)
-            .map_err(|e| TeeError::Internal(format!("レスポンスの暗号化に失敗: {e}")))?;
-
+    // nonce(12B) || ciphertext に分割してBase64エンコード
+    let nonce_size = 12; // AES-256-GCM
     let encrypted_response = EncryptedResponse {
-        nonce: b64().encode(response_nonce),
-        ciphertext: b64().encode(response_ciphertext),
+        nonce: B64.encode(&sealed[..nonce_size]),
+        ciphertext: B64.encode(&sealed[nonce_size..]),
     };
 
     Ok(Json(encrypted_response))

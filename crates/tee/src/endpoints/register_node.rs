@@ -97,12 +97,13 @@ pub async fn handle_register_node(
     // TEE鍵取得
     let signing_pubkey_bytes: [u8; 32] = state
         .runtime
-        .signing_pubkey()
+        .solana_signer()
+        .public_key_bytes()
         .try_into()
         .map_err(|_| TeeError::Internal("署名用公開鍵の取得に失敗".into()))?;
     let tee_signing_pubkey = Pubkey::new_from_array(signing_pubkey_bytes);
 
-    let encryption_pubkey_bytes: Vec<u8> = state.runtime.encryption_pubkey();
+    let encryption_pubkey_bytes: Vec<u8> = state.runtime.decapsulator().public_key_bytes();
     let encryption_pubkey_arr: [u8; 32] = encryption_pubkey_bytes
         .clone()
         .try_into()
@@ -190,7 +191,8 @@ pub async fn handle_register_node(
 
     // TEE署名（payer署名）
     let message_bytes = tx.message.serialize();
-    let signing_sig = state.runtime.sign(&message_bytes);
+    let signing_sig = state.runtime.solana_signer().sign(&message_bytes)
+        .map_err(|e| TeeError::Internal(format!("TEE署名の生成に失敗: {e}")))?;
     solana_tx::apply_partial_signature(&mut tx, &tee_signing_pubkey, &signing_sig)
         .map_err(|e| TeeError::Internal(format!("TEE署名の適用に失敗: {e}")))?;
 
@@ -223,10 +225,7 @@ mod tests {
 
     fn make_test_state() -> Arc<TeeAppState> {
         let rt = MockRuntime::new();
-        rt.generate_signing_keypair();
-        rt.generate_encryption_keypair();
-        rt.generate_tree_keypair();
-        rt.generate_ext_tree_keypair();
+        rt.generate_keypairs();
 
         Arc::new(TeeAppState {
             runtime: Box::new(rt),

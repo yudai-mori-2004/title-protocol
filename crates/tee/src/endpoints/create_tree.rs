@@ -54,12 +54,12 @@ pub async fn handle_create_tree(
     // TEE署名用公開鍵（payer兼tree_creator）
     // 仕様書 §6.4: payerをTEE内部walletにすることで、
     // Merkle Treeの作成・操作権限が完全にTEE内部に閉じる。
-    let signing_pubkey_bytes: [u8; 32] = state.runtime.signing_pubkey().try_into()
+    let signing_pubkey_bytes: [u8; 32] = state.runtime.solana_signer().public_key_bytes().try_into()
         .map_err(|_| TeeError::Internal("署名用公開鍵の取得に失敗".into()))?;
     let tee_signing_pubkey = Pubkey::new_from_array(signing_pubkey_bytes);
 
     // --- Core Tree トランザクション構築（仕様書 §6.4 Step 2, §6.5）---
-    let core_tree_pubkey_bytes: [u8; 32] = state.runtime.tree_pubkey().try_into()
+    let core_tree_pubkey_bytes: [u8; 32] = state.runtime.tree_signer().public_key_bytes().try_into()
         .map_err(|_| TeeError::Internal("Core Tree公開鍵の取得に失敗".into()))?;
     let core_tree_pubkey = Pubkey::new_from_array(core_tree_pubkey_bytes);
 
@@ -75,11 +75,13 @@ pub async fn handle_create_tree(
     // Core Tree署名（payer=signing_key なので signing_key + tree_key の2署名）
     let core_message_bytes = core_tx.message.serialize();
 
-    let core_tree_sig = state.runtime.tree_sign(&core_message_bytes);
+    let core_tree_sig = state.runtime.tree_signer().sign(&core_message_bytes)
+        .map_err(|e| TeeError::Internal(format!("Core Tree署名に失敗: {e}")))?;
     solana_tx::apply_partial_signature(&mut core_tx, &core_tree_pubkey, &core_tree_sig)
         .map_err(|e| TeeError::Internal(format!("Core Tree署名の適用に失敗: {e}")))?;
 
-    let core_signing_sig = state.runtime.sign(&core_message_bytes);
+    let core_signing_sig = state.runtime.solana_signer().sign(&core_message_bytes)
+        .map_err(|e| TeeError::Internal(format!("Core TEE署名に失敗: {e}")))?;
     solana_tx::apply_partial_signature(&mut core_tx, &tee_signing_pubkey, &core_signing_sig)
         .map_err(|e| TeeError::Internal(format!("Core TEE署名の適用に失敗: {e}")))?;
 
@@ -87,7 +89,7 @@ pub async fn handle_create_tree(
         .map_err(|e| TeeError::Internal(format!("Core Treeトランザクションのシリアライズに失敗: {e}")))?;
 
     // --- Extension Tree トランザクション構築（仕様書 §6.4 Step 2, §6.5）---
-    let ext_tree_pubkey_bytes: [u8; 32] = state.runtime.ext_tree_pubkey().try_into()
+    let ext_tree_pubkey_bytes: [u8; 32] = state.runtime.ext_tree_signer().public_key_bytes().try_into()
         .map_err(|_| TeeError::Internal("Extension Tree公開鍵の取得に失敗".into()))?;
     let ext_tree_pubkey = Pubkey::new_from_array(ext_tree_pubkey_bytes);
 
@@ -103,11 +105,13 @@ pub async fn handle_create_tree(
     // Extension Tree署名
     let ext_message_bytes = ext_tx.message.serialize();
 
-    let ext_tree_sig = state.runtime.ext_tree_sign(&ext_message_bytes);
+    let ext_tree_sig = state.runtime.ext_tree_signer().sign(&ext_message_bytes)
+        .map_err(|e| TeeError::Internal(format!("Extension Tree署名に失敗: {e}")))?;
     solana_tx::apply_partial_signature(&mut ext_tx, &ext_tree_pubkey, &ext_tree_sig)
         .map_err(|e| TeeError::Internal(format!("Extension Tree署名の適用に失敗: {e}")))?;
 
-    let ext_signing_sig = state.runtime.sign(&ext_message_bytes);
+    let ext_signing_sig = state.runtime.solana_signer().sign(&ext_message_bytes)
+        .map_err(|e| TeeError::Internal(format!("Extension TEE署名に失敗: {e}")))?;
     solana_tx::apply_partial_signature(&mut ext_tx, &tee_signing_pubkey, &ext_signing_sig)
         .map_err(|e| TeeError::Internal(format!("Extension TEE署名の適用に失敗: {e}")))?;
 
@@ -142,7 +146,7 @@ pub async fn handle_create_tree(
         ext_signed_tx: b64().encode(&ext_tx_bytes),
         ext_tree_address: ext_tree_pubkey.to_string(),
         signing_pubkey: tee_signing_pubkey.to_string(),
-        encryption_pubkey: b64().encode(state.runtime.encryption_pubkey()),
+        encryption_pubkey: b64().encode(state.runtime.decapsulator().public_key_bytes()),
     };
 
     Ok(Json(response))
@@ -158,10 +162,7 @@ mod tests {
 
     fn make_test_state() -> Arc<TeeAppState> {
         let rt = MockRuntime::new();
-        rt.generate_signing_keypair();
-        rt.generate_encryption_keypair();
-        rt.generate_tree_keypair();
-        rt.generate_ext_tree_keypair();
+        rt.generate_keypairs();
 
         Arc::new(TeeAppState {
             runtime: Box::new(rt),

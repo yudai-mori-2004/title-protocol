@@ -6831,6 +6831,7 @@ dependencies = [
  "hkdf",
  "p384",
  "rand 0.8.5",
+ "serde",
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "x25519-dalek",

@@ -4,11 +4,8 @@
 //!
 //! 仕様書 §6.4
 //!
-//! TEEの鍵生成・Attestation取得を抽象化するトレイト。
-//! 環境変数 `TEE_RUNTIME` で実装を切り替える。
-//!
-//! VM型TEE（Remote Attestation対応のConfidential Computing環境）を対象とし、
-//! ベンダー実装はfeature flagで分離される。
+//! TEEの鍵生成・署名・復号・Attestation取得を抽象化するトレイト。
+//! 暗号処理は `title_crypto` の3ペアtrait（Signer/Verifier, Encapsulator/Decapsulator, Aead）に基づく。
 //!
 //! ランタイム実装:
 //! - `mock` — ローカル開発・テスト用（メモリ内鍵生成）
@@ -18,62 +15,53 @@ pub mod mock;
 #[cfg(feature = "vendor-aws")]
 pub mod nitro;
 
+use title_crypto::signing::Signer;
+use title_crypto::kem::Decapsulator;
+use title_crypto::{SigningAlgorithm, KemAlgorithm};
+
 /// TEEランタイムのトレイト。
 /// 仕様書 §6.4
+///
+/// 暗号鍵は `OnceLock` で保持し、`generate_keypairs()` で一度だけ生成する。
+/// `protocol_signer()` / `solana_signer()` / `decapsulator()` は `&dyn Trait` を返す。
 pub trait TeeRuntime: Send + Sync {
     /// TEE種別を返す（signed_jsonの`tee_type`フィールドに使用）。
     /// 仕様書 §5.1 Step 4
     fn tee_type(&self) -> &str;
 
-    /// Ed25519署名用キーペアを生成し、内部に保持する。
+    /// 全キーペアを生成し、内部に保持する。
     /// 仕様書 §6.4 Step 1
-    fn generate_signing_keypair(&self);
-
-    /// X25519暗号化用キーペアを生成し、内部に保持する。
-    /// 仕様書 §6.4 Step 1
-    fn generate_encryption_keypair(&self);
+    fn generate_keypairs(&self);
 
     /// Attestation Documentを取得する。
     /// 仕様書 §5.2 Step 4.1
     fn get_attestation(&self) -> Vec<u8>;
 
-    /// 署名用秘密鍵でデータに署名する。
+    /// Protocol署名用Signer。signed_jsonの署名に使用。
+    /// PQC対応時にアルゴリズムが変更される。
     /// 仕様書 §5.1 Step 4
-    fn sign(&self, message: &[u8]) -> Vec<u8>;
+    fn protocol_signer(&self) -> &dyn Signer;
 
-    /// 署名用公開鍵を取得する。
+    /// Solana TX署名用Signer。Ed25519固定（Solana制約）。
     /// 仕様書 §6.4
-    fn signing_pubkey(&self) -> Vec<u8>;
+    fn solana_signer(&self) -> &dyn Signer;
 
-    /// 暗号化用秘密鍵を取得する（ECDH用）。
+    /// Core Merkle Tree署名用Signer。Ed25519固定（Solana制約）。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn tree_signer(&self) -> &dyn Signer;
+
+    /// Extension Merkle Tree署名用Signer。Ed25519固定（Solana制約）。
+    /// 仕様書 §6.4 Step 2, §6.5
+    fn ext_tree_signer(&self) -> &dyn Signer;
+
+    /// KEM Decapsulator。E2EEペイロードの復号に使用。
+    /// PQC対応時にアルゴリズムが変更される。
     /// 仕様書 §6.4
-    fn encryption_secret_key(&self) -> Vec<u8>;
+    fn decapsulator(&self) -> &dyn Decapsulator;
 
-    /// 暗号化用公開鍵を取得する。
-    /// 仕様書 §6.4
-    fn encryption_pubkey(&self) -> Vec<u8>;
+    /// Protocol署名アルゴリズム。
+    fn protocol_signing_algorithm(&self) -> SigningAlgorithm;
 
-    /// Core Tree用Ed25519キーペアを生成し、内部に保持する。
-    /// 仕様書 §6.4 Step 2, §6.5
-    fn generate_tree_keypair(&self);
-
-    /// Core Tree用公開鍵を取得する。
-    /// 仕様書 §6.4 Step 2, §6.5
-    fn tree_pubkey(&self) -> Vec<u8>;
-
-    /// Core Tree用秘密鍵でデータに署名する。
-    /// 仕様書 §6.4 Step 2, §6.5
-    fn tree_sign(&self, message: &[u8]) -> Vec<u8>;
-
-    /// Extension Tree用Ed25519キーペアを生成し、内部に保持する。
-    /// 仕様書 §6.4 Step 2, §6.5
-    fn generate_ext_tree_keypair(&self);
-
-    /// Extension Tree用公開鍵を取得する。
-    /// 仕様書 §6.4 Step 2, §6.5
-    fn ext_tree_pubkey(&self) -> Vec<u8>;
-
-    /// Extension Tree用秘密鍵でデータに署名する。
-    /// 仕様書 §6.4 Step 2, §6.5
-    fn ext_tree_sign(&self, message: &[u8]) -> Vec<u8>;
+    /// KEMアルゴリズム。
+    fn kem_algorithm(&self) -> KemAlgorithm;
 }

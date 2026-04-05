@@ -203,7 +203,7 @@ Gateway、Temporary Storage、TEEの三者をまとめて **登録ノード** �
 - **コンテンツ本体**（生データ）
 - **帰属先ウォレットアドレス**
 
-暗号化にはエフェメラルECDH鍵交換を用いる。クライアントは使い捨ての鍵ペアを生成し、TEEの公開鍵（ブロックチェーン上で公開されている）との鍵交換により共通鍵を導出し、対称暗号でペイロード全体を暗号化する。
+暗号化にはKEM（鍵カプセル化メカニズム）+ AEAD（認証付き暗号）を用いる。クライアントはKEMでエフェメラルな共有秘密を生成し、HKDFで方向別の対称鍵を導出して、AEADでペイロード全体を暗号化する。アルゴリズムの詳細は `CryptoSuite` で指定され、合成関数 `seal_for` / `open_request` に隠蔽される。
 
 帰属先ウォレットをペイロード内部に封入する設計により、ノード運営者含む全ての中間者は、宛先を改ざんすることはできない。TEEが復号して初めて、コンテンツと宛先の両方が明らかになる。
 
@@ -244,7 +244,7 @@ Gateway、Temporary Storage、TEEの三者をまとめて **登録ノード** �
   │                            │                   │                  │
 ```
 
-さらに、TEEからクライアントへの返却値（`signed_json`）も同じ共通鍵で暗号化される。ペイロードの復号時にTEEが導出した共通鍵を、異なるnonceで再利用する。クライアントはエフェメラル秘密鍵を保持しているため復号でき、Gatewayは共通鍵を知らないため中身を読めない。
+さらに、TEEからクライアントへの返却値（`signed_json`）もレスポンス方向の対称鍵で暗号化される。リクエスト方向とレスポンス方向では異なる鍵が使用される（HKDF infoによる方向別鍵導出）ため、nonce衝突のリスクは原理的に存在しない。クライアントは同一のKEM共有秘密からレスポンス鍵を導出できるため復号でき、Gatewayは共有秘密を知らないため中身を読めない。
 これにより、クライアントとTEEの間に双方向のEnd-to-End暗号化チャネルが確立される。理想モデルにおける「クライアントと中立な計算機の直接通信」が、改ざん・閲覧不可能な形で実質的に実現される。Gatewayにできることは「素直にTEEへ中継する」か「中継を拒否する」の二択に限定される。
 
 ---
@@ -1106,12 +1106,14 @@ Title Protocolの価値は、C2PAの普及に正比例する。これは意図�
 暗号化後、以下のバイナリ形式でTemporary Storageにアップロードされる。Content-Typeは `application/octet-stream`。
 
 ```
-[32B: ephemeral_pubkey (X25519公開鍵)]
-[12B: nonce (AES-GCM)]
-[remaining: AES-GCM ciphertext + 16B auth tag]
+[1B:  suite_id (CryptoSuiteのID)]
+[2B:  encap_key_len (big-endian u16)]
+[var: encap_key (KEMのencapsulated key)]
+[var: nonce (AEADのnonce。長さはsuite_idで決定)]
+[remaining: AEAD ciphertext + auth tag]
 ```
 
-TEEは先頭32Bの `ephemeral_pubkey` と自身の秘密鍵でECDHを実行し、共通鍵を導出して `ciphertext` を復号する。JSON/Base64を一切使用しないことで、エンコーディングオーバーヘッドが排除される。
+TEEは `open_request()` 合成関数でKEMデカプセル化・方向別鍵導出・AEAD復号を一括実行する。JSON/Base64を一切使用しないことで、エンコーディングオーバーヘッドが排除される。
 
 ---
 
@@ -2024,10 +2026,13 @@ TEEは4組のキーペアをTEE内部（メモリ上）でのみ生成・保持�
 
 | 用途 | アルゴリズム | 秘密鍵の保管場所 | 公開鍵の公開場所 |
 | --- | --- | --- | --- |
-| 署名用 | Ed25519 | TEEメモリ内のみ | Global Config |
-| 暗号化用 | X25519 | TEEメモリ内のみ | Global Config |
-| Core Tree用 | Ed25519 | TEEメモリ内のみ | Core Merkle Treeアドレスとして公開 |
-| Extension Tree用 | Ed25519 | TEEメモリ内のみ | Extension Merkle Treeアドレスとして公開 |
+| Protocol署名用 | Ed25519 (PQC対応時に変更予定) | TEEメモリ内のみ | Global Config (`signing_pubkey`) |
+| Solana TX署名用 | Ed25519 (Solana固定) | TEEメモリ内のみ | Global Config (`signing_pubkey`) |
+| 暗号化用（KEM） | X25519 (PQC対応時に変更予定) | TEEメモリ内のみ | Global Config (`encryption_pubkey`) |
+| Core Tree用 | Ed25519 (Solana固定) | TEEメモリ内のみ | Core Merkle Treeアドレスとして公開 |
+| Extension Tree用 | Ed25519 (Solana固定) | TEEメモリ内のみ | Extension Merkle Treeアドレスとして公開 |
+
+Protocol署名用鍵とSolana TX署名用鍵は現在同一のEd25519鍵を共有する。PQC（Post-Quantum Cryptography）対応時にProtocol署名用をML-DSA等に移行し、Solana TX署名用はEd25519のまま分離する。cross-protocol攻撃を防ぐため、Protocol署名にはドメインタグ（`"title-protocol-v1"` プレフィクス）を付与する。
 
 全秘密鍵はTEE内部でのみ生成・保持され、外部には一切エクスポートされない。これはTEEのセキュリティモデルにより暗号学的に保証される。
 
@@ -2038,6 +2043,25 @@ TEEは4組のキーペアをTEE内部（メモリ上）でのみ生成・保持�
 - 新しい公開鍵はGlobal Configに登録される
 - KMS（AWS Key Management Service等）は使用しない（クラウドベンダーへの信頼を排除）
 
+**暗号アルゴリズム抽象化:**
+
+暗号処理は3ペアのtrait抽象化で実装される。アルゴリズムの詳細は実装内部に隠蔽され、呼び出し側からは不可視である。
+
+| ペア | 秘密鍵側 | 公開鍵側 | 現在の実装 |
+| --- | --- | --- | --- |
+| 署名 | `Signer` | `Verifier` | Ed25519 |
+| 鍵カプセル化（KEM） | `Decapsulator` | `Encapsulator` | X25519 ECDH |
+| 対称暗号（AEAD） | `Aead::decrypt` | `Aead::encrypt` | AES-256-GCM |
+
+アルゴリズム識別子:
+
+| 識別子 | 値 | 備考 |
+| --- | --- | --- |
+| `SigningAlgorithm` | `"ed25519"` | 将来: `"ml-dsa-65"` (FIPS 204) 等 |
+| `KemAlgorithm` | `"x25519-hkdf-sha256"` | 将来: `"ml-kem-768-hkdf-sha256"` (FIPS 203) 等 |
+| `AeadAlgorithm` | `"aes-256-gcm"` | AES-256-GCMは既に量子耐性あり |
+| `CryptoSuite` | `0x01` (X25519 + AES-256-GCM) | ワイヤーフォーマットのsuite_idバイト |
+
 ---
 
 ### TEE起動シーケンス
@@ -2046,14 +2070,14 @@ TEEインスタンスは起動時に以下の初期化処理を実行する。�
 
 **Step 1: 鍵生成**
 
-TEEは4組のキーペアを生成する。
+TEEは4組のキーペアを生成する。`create_signer` / `create_decapsulator` 等のfactory関数を使用し、アルゴリズムはGlobal Configの `signing_algorithm` / `kem_algorithm` で決定される。
 
-| 用途 | アルゴリズム | 説明 |
-| --- | --- | --- |
-| 署名用 | Ed25519 | cNFT発行トランザクションの部分署名、signed_jsonの署名に使用 |
-| 暗号化用 | X25519 | クライアントからのE2EEペイロードの復号に使用 |
-| Core Tree用 | Ed25519 | Core用Merkle Treeアカウントの作成に使用。create_tree命令の署名者となる |
-| Extension Tree用 | Ed25519 | Extension用Merkle Treeアカウントの作成に使用。create_tree命令の署名者となる |
+| 用途 | trait | 現在のアルゴリズム | 説明 |
+| --- | --- | --- | --- |
+| Protocol署名用 / Solana TX署名用 | `Signer` | Ed25519 | signed_jsonの署名（ドメインタグ付き）およびSolana TX署名に使用。PQC対応時に分離予定 |
+| 暗号化用（KEM） | `Decapsulator` | X25519 | クライアントからのE2EEペイロードの復号に使用 |
+| Core Tree用 | `Signer` | Ed25519 | Core用Merkle Treeアカウントの作成に使用。create_tree命令の署名者となる |
+| Extension Tree用 | `Signer` | Ed25519 | Extension用Merkle Treeアカウントの作成に使用。create_tree命令の署名者となる |
 
 各Tree用キーペアの公開鍵がそのままMerkle Treeのアカウントアドレスとなる。Tree Config（tree_authority）はBubblegumプログラムによりMerkle Treeアドレスから決定論的にPDAとして導出されるため、TEEは外部から情報を注入されることなく、自身のTreeに関する全てのアドレスを起動時点で把握できる。
 
@@ -2161,54 +2185,94 @@ Response: "ok"
 
 ### ハイブリッド暗号化
 
-セクション1で説明したE2EEの具体的なアルゴリズムを定義する。
+セクション1で説明したE2EEの具体的なアルゴリズムを定義する。暗号処理は3ペアのprimitiveトレイト（Signer/Verifier、Encapsulator/Decapsulator、Aead）の合成で実現される。合成関数 `open_request` / `seal_for` がKEM+KDF+AEADを内部で合成し、呼び出し側はKEM、KDF、nonce、shared_secret、ワイヤーフォーマットの詳細を一切知らない。
 
-| 用途 | アルゴリズム | 備考 |
-| --- | --- | --- |
-| 鍵交換 | X25519 ECDH | 高速な楕円曲線DH鍵共有 |
-| 鍵導出 | HKDF-SHA256 | 共有秘密から対称鍵を導出 |
-| 対称暗号 | AES-256-GCM | 認証付き暗号（AEAD） |
+**CryptoSuite（KEM + AEADの組）:**
+
+| CryptoSuite | suite_id | KEM | KDF | AEAD |
+| --- | --- | --- | --- | --- |
+| X25519-AES-256-GCM | `0x01` | X25519 ECDH | HKDF-SHA256 | AES-256-GCM |
+
+将来のPQC対応時に `0x02` = ML-KEM-768 + AES-256-GCM 等を追加する。
+
+**ワイヤーフォーマット（暗号化ペイロード）:**
+
+```
+┌──────────┬───────────────┬────────────┬───────────┬────────────┐
+│ suite_id │ encap_key_len │ encap_key  │   nonce   │ ciphertext │
+│  (1 B)   │   (2 B, BE)   │ (variable) │ (variable)│  (残り)    │
+└──────────┴───────────────┴────────────┴───────────┴────────────┘
+```
+
+- `suite_id`: CryptoSuiteのID（1バイト）。アルゴリズム移行時の判別に使用
+- `encap_key_len`: encapsulated_keyの長さ（big-endian u16）
+- `nonce`長はsuite_idから決定（AES-256-GCM: 12バイト）
+- `ciphertext`: 残り全て（AEADタグを含む）
+
+**方向別鍵導出（RFC 5869 §3.2 / TLS 1.3 RFC 8446準拠）:**
+
+リクエスト方向とレスポンス方向で独立した対称鍵を導出する。同一鍵でのnonce衝突リスクを原理的に排除する。
+
+```
+shared_secret = KEM.Decapsulate(tee_sk, encap_key)
+request_key   = HKDF-Expand(shared_secret, info="title-request-key",  salt=encap_key)
+response_key  = HKDF-Expand(shared_secret, info="title-response-key", salt=encap_key)
+```
+
+**AAD（Additional Authenticated Data）:**
+
+AES-GCMのAADパラメータにエンドポイントパス等のコンテキスト情報をバインドする。AADにより暗号文が特定のコンテキストに紐づけられ、replay/swapping攻撃を防止する。
 
 **暗号化フロー:**
 
 ```
 Client                                          TEE
   │                                              │
-  │  1. Global ConfigからTEEのencryption_pubkeyを取得
+  │  1. Global ConfigからTEEのencryption_pubkeyと│
+  │     KemAlgorithmを取得                       │
   │                                              │
-  │  2. エフェメラルX25519キーペアを生成           │
-  │     (eph_sk, eph_pk)                         │
+  │  2. Encapsulator.encapsulate()               │
+  │     → (shared_secret, encap_key)             │
+  │     ※ エフェメラル鍵は内部で生成・消費        │
   │                                              │
-  │  3. shared_secret = ECDH(eph_sk, tee_pk)     │
+  │  3. request_key  = HKDF(shared, "title-request-key")
+  │     response_key = HKDF(shared, "title-response-key")
+  │     shared_secret を即座に破棄               │
   │                                              │
-  │  4. symmetric_key = HKDF(shared_secret)      │
-  │     plaintext = [4B meta_len][meta JSON][raw content]
-  │     ciphertext = AES-GCM-Encrypt(plaintext)  │
+  │  4. plaintext = [4B meta_len][meta JSON][raw content]
+  │     ciphertext = AEAD.Encrypt(               │
+  │       request_key, nonce, aad, plaintext)     │
   │                                              │
   │  5. Upload (application/octet-stream):       │
-  │     [32B eph_pk][12B nonce][ciphertext]       │
+  │     [suite_id][encap_key_len][encap_key]     │
+  │     [nonce][ciphertext]                      │
   │─────────────────────────────────────────────>│
   │                                              │
-  │                    6. バイナリヘッダパース: eph_pk, nonce, ciphertext
-  │                       shared_secret = ECDH(tee_sk, eph_pk)
+  │                    6. open_request():
+  │                       ワイヤーフォーマット解析
+  │                       shared = Decapsulator.decapsulate(encap_key)
+  │                       request_key, response_key = derive_keys(shared)
+  │                       shared_secret を即座に破棄
   │                                              │
-  │                    7. symmetric_key = HKDF(shared_secret)
-  │                       plaintext = AES-GCM-Decrypt(ciphertext)
+  │                    7. plaintext = AEAD.Decrypt(
+  │                         request_key, nonce, aad, ciphertext)
   │                       metadata, content = parse_plaintext(plaintext)
   │                                              │
   │                       ... 検証処理 ...
   │                                              │
-  │                    8. response_ct = AES-GCM-Encrypt(
-  │                         signed_json, symmetric_key, new_nonce)
+  │                    8. ResponseSealer.seal():
+  │                       response_ct = AEAD.Encrypt(
+  │                         response_key, new_nonce, aad, signed_json)
   │                                              │
-  │<────────── {response_ct, new_nonce} ─────────│
+  │<──── {new_nonce ∥ response_ct} ──────────────│
   │                                              │
-  │  9. signed_json = AES-GCM-Decrypt(          │
-  │       response_ct, symmetric_key, new_nonce) │
+  │  9. signed_json = AEAD.Decrypt(              │
+  │       response_key, new_nonce, aad,          │
+  │       response_ct)                           │
   │                                              │
 ```
 
-> アップロードとレスポンスの暗号化は同一の `symmetric_key` を使用し、異なるnonceを用いる。これにより追加の鍵交換なしに双方向の暗号化チャネルが実現される。`/sign` のレスポンスには暗号化を適用しない。`/sign` フェーズにはWASMのような任意処理が介在せず、返却されるのは部分署名済みトランザクション（クライアントが署名前に内容を検証可能）のみであるため、暗号化によって保護すべき情報が存在しない。
+> リクエスト方向とレスポンス方向で異なる対称鍵（`request_key` / `response_key`）を使用するため、nonce衝突のリスクは原理的に存在しない。`/sign` のレスポンスには暗号化を適用しない。`/sign` フェーズにはWASMのような任意処理が介在せず、返却されるのは部分署名済みトランザクション（クライアントが署名前に内容を検証可能）のみであるため、暗号化によって保護すべき情報が存在しない。
 > 
 
 ---
@@ -2220,10 +2284,10 @@ GatewayからのGateway認証済みリクエストを受け取り、以下を実
 1. Gateway署名を検証（Global Configの `gateway_pubkey` を使用）
 2. `resource_limits` が含まれていれば適用、なければデフォルト値を使用
 3. `download_url` からTemporary Storage上の暗号化ペイロードを取得
-4. ペイロードを復号（ハイブリッド暗号化の逆操作）
+4. `open_request(decapsulator, payload, aad)` でペイロードを復号。KEM・KDF・ワイヤーフォーマット解析は内部で完結
 5. `processor_ids` に基づき、Core（C2PA検証＋来歴グラフ構築）およびExtension（WASM実行）を処理
-6. 検証結果をJSON形式でまとめ、TEE秘密鍵で署名（`tee_signature`）
-7. `signed_json` を、ステップ4で導出した共通鍵（`symmetric_key`）と新しいnonceでAES-GCM暗号化する。暗号化されたレスポンスをGateway経由でクライアントに返却する
+6. 検証結果をJSON形式でまとめ、ドメインタグ付きで `protocol_signer` で署名（`tee_signature`）。`tee_signature_algorithm` をsigned_jsonに記録
+7. `ResponseSealer.seal(signed_json, aad)` でレスポンスを暗号化。nonce生成は内部で行われる。暗号化されたレスポンスをGateway経由でクライアントに返却する
 
 ---
 
@@ -2233,7 +2297,7 @@ GatewayからのGateway認証済みリクエストを受け取り、以下を実
 
 **第1層: レスポンス暗号化**
 
-`/verify` のレスポンスはECDH共通鍵で暗号化される。Gatewayはこの共通鍵を知らないため、レスポンスが通過する時点でノード運営者はsigned_jsonの中身（不正WASMがエンコードしたコンテンツデータを含む）を閲覧できない。
+`/verify` のレスポンスはKEM鍵交換から導出されたレスポンス方向の対称鍵で暗号化される。Gatewayはこの対称鍵を知らないため、レスポンスが通過する時点でノード運営者はsigned_jsonの中身（不正WASMがエンコードしたコンテンツデータを含む）を閲覧できない。
 
 **第2層: クライアントによるwasm_hash検証**
 
@@ -2250,9 +2314,9 @@ GatewayからのGateway認証済みリクエストを受け取り、以下を実
 GatewayからのGateway認証済みリクエストを受け取り、各リクエストに対して以下を検証する。
 
 1. `signed_json_uri` からJSONをフェッチ
-2. JSON内の `tee_signature` を自身の公開鍵で検証（自身が生成したsigned_jsonであること）
+2. JSON内の `tee_signature_algorithm` に基づき `Verifier` を生成し、ドメインタグ付きで `tee_signature` を検証（自身が生成したsigned_jsonであること）
 
-全て成功した場合、`payload.creator_wallet` を宛先としてcNFT発行トランザクションを構築し、TEEの秘密鍵で部分署名する。
+全て成功した場合、`payload.creator_wallet` を宛先としてcNFT発行トランザクションを構築し、TEEの `solana_signer` で部分署名する。
 
 ステップ2の署名検証が、実質的な有効期限チェックを兼ねる。TEEが再起動し鍵がローテーションされた場合、旧鍵で署名されたsigned_jsonはステップ2で検証に失敗し、自動的に拒否される。
 

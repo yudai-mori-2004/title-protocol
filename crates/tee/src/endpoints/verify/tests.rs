@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
-use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 use title_types::{
     CorePayload, SignedJson, VerifyRequest, VerifyResponse,
@@ -24,12 +23,13 @@ use tokio::sync::RwLock;
 /// バイナリ暗号化ペイロードを構築するテストヘルパー。
 ///
 /// 平文: [4B: metadata_len][metadata JSON][raw content]
-/// ワイヤー: [32B: eph_pk][12B: nonce][AES-GCM ciphertext]
+/// seal_for() でKEM + KDF + AEADを一括処理し、ワイヤーフォーマットを構築。
+/// ResponseSealerを返すので、テスト側でレスポンス復号に使用する。
 fn build_binary_payload(
     content: &[u8],
     owner_wallet: &str,
-    tee_enc_pubkey: &X25519PublicKey,
-) -> (Vec<u8>, [u8; 32]) {
+    tee_enc_pubkey_bytes: &[u8; 32],
+) -> (Vec<u8>, title_crypto::ResponseSealer) {
     // メタデータJSON
     let metadata = title_types::ClientMetadata {
         owner_wallet: owner_wallet.to_string(),
@@ -43,25 +43,15 @@ fn build_binary_payload(
     plaintext.extend_from_slice(&metadata_json);
     plaintext.extend_from_slice(content);
 
-    // ECDH + HKDF + AES-GCM
-    let eph_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let eph_pubkey = X25519PublicKey::from(&eph_secret);
-    let shared_secret =
-        title_crypto::ecdh_derive_shared_secret(&eph_secret, tee_enc_pubkey);
-    let symmetric_key = title_crypto::hkdf_derive_key(&shared_secret).unwrap();
+    // Encapsulatorを構築してseal_forで暗号化
+    let encapsulator = title_crypto::impls::x25519::X25519Encapsulator::from_public_key(*tee_enc_pubkey_bytes);
+    let (wire, response_sealer) = title_crypto::seal_for(
+        &encapsulator,
+        &plaintext,
+        b"/verify",
+    ).unwrap();
 
-    let mut nonce = [0u8; 12];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-    let ciphertext =
-        title_crypto::aes_gcm_encrypt(&symmetric_key, &nonce, &plaintext).unwrap();
-
-    // ワイヤーフォーマット: [32B eph_pk][12B nonce][ciphertext]
-    let mut wire = Vec::new();
-    wire.extend_from_slice(eph_pubkey.as_bytes());
-    wire.extend_from_slice(&nonce);
-    wire.extend_from_slice(&ciphertext);
-
-    (wire, symmetric_key)
+    (wire, response_sealer)
 }
 
 // テストフィクスチャ（共有テストフィクスチャディレクトリ）
@@ -104,19 +94,17 @@ fn create_signed_content() -> Vec<u8> {
 async fn test_verify_roundtrip() {
     // 1. MockRuntime初期化
     let rt = MockRuntime::new();
-    rt.generate_signing_keypair();
-    rt.generate_encryption_keypair();
+    rt.generate_keypairs();
 
     // TEE暗号化公開鍵を取得
-    let tee_enc_pubkey_bytes: [u8; 32] = rt.encryption_pubkey().try_into().unwrap();
-    let tee_enc_pubkey = X25519PublicKey::from(tee_enc_pubkey_bytes);
+    let tee_enc_pubkey_bytes: [u8; 32] = rt.decapsulator().public_key_bytes().try_into().unwrap();
 
     // 2. クライアント側: C2PA署名済みコンテンツを作成・暗号化
     let signed_content = create_signed_content();
-    let (payload_bytes, symmetric_key) = build_binary_payload(
+    let (payload_bytes, response_sealer) = build_binary_payload(
         &signed_content,
         "MockWa11etAddress123456789012345678901234",
-        &tee_enc_pubkey,
+        &tee_enc_pubkey_bytes,
     );
 
     // 3. モックTemporary StorageとインラインProxyを起動
@@ -152,15 +140,17 @@ async fn test_verify_roundtrip() {
 
     let encrypted_response = result.unwrap().0;
 
-    // 7. レスポンス復号
+    // 7. レスポンス復号（ResponseSealer.open()を使用）
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD;
     let resp_nonce_bytes = b64.decode(&encrypted_response.nonce).unwrap();
-    let resp_nonce: [u8; 12] = resp_nonce_bytes.try_into().unwrap();
     let resp_ct = b64.decode(&encrypted_response.ciphertext).unwrap();
 
-    let resp_plaintext =
-        title_crypto::aes_gcm_decrypt(&symmetric_key, &resp_nonce, &resp_ct).unwrap();
+    // nonce || ciphertext を結合してResponseSealer.open()で復号
+    let mut nonce_and_ct = Vec::with_capacity(resp_nonce_bytes.len() + resp_ct.len());
+    nonce_and_ct.extend_from_slice(&resp_nonce_bytes);
+    nonce_and_ct.extend_from_slice(&resp_ct);
+    let resp_plaintext = response_sealer.open(&nonce_and_ct, b"/verify").unwrap();
     let verify_response: VerifyResponse = serde_json::from_slice(&resp_plaintext).unwrap();
 
     // 8. signed_json検証
@@ -173,18 +163,15 @@ async fn test_verify_roundtrip() {
     assert_eq!(signed_json.core.protocol, "Title-v1");
     assert_eq!(signed_json.core.tee_type, "mock");
 
-    // tee_signatureをtee_pubkeyで検証
+    // tee_signatureをtee_pubkeyで検証（ドメインタグ付き）
     use base58::FromBase58;
     let tee_pubkey_bytes = signed_json.core.tee_pubkey.from_base58().unwrap();
-    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(
-        &tee_pubkey_bytes.try_into().expect("公開鍵は32バイト"),
-    )
-    .expect("有効なEd25519公開鍵");
+    let verifier = title_crypto::create_verifier(
+        title_crypto::SigningAlgorithm::Ed25519,
+        &tee_pubkey_bytes,
+    ).unwrap();
 
     let sig_bytes = b64.decode(&signed_json.core.tee_signature).unwrap();
-    let signature = ed25519_dalek::Signature::from_bytes(
-        &sig_bytes.try_into().expect("署名は64バイト"),
-    );
 
     // 署名対象を再構築して検証
     let sign_target = serde_json::json!({
@@ -192,8 +179,9 @@ async fn test_verify_roundtrip() {
         "attributes": signed_json.attributes,
     });
     let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target).unwrap();
+    let tagged = title_crypto::domain_tagged("title-protocol-v1", &sign_bytes);
     assert!(
-        verifying_key.verify_strict(&sign_bytes, &signature).is_ok(),
+        verifier.verify(&tagged, &sig_bytes).is_ok(),
         "tee_signatureの検証に失敗"
     );
 
@@ -257,18 +245,16 @@ async fn test_verify_with_extension() {
 
     // 1. MockRuntime初期化
     let rt = MockRuntime::new();
-    rt.generate_signing_keypair();
-    rt.generate_encryption_keypair();
+    rt.generate_keypairs();
 
-    let tee_enc_pubkey_bytes: [u8; 32] = rt.encryption_pubkey().try_into().unwrap();
-    let tee_enc_pubkey = X25519PublicKey::from(tee_enc_pubkey_bytes);
+    let tee_enc_pubkey_bytes: [u8; 32] = rt.decapsulator().public_key_bytes().try_into().unwrap();
 
     // 2. C2PA署名済みコンテンツ作成・暗号化
     let signed_content = create_signed_content();
-    let (payload_bytes, symmetric_key) = build_binary_payload(
+    let (payload_bytes, response_sealer) = build_binary_payload(
         &signed_content,
         "MockWa11etAddress123456789012345678901234",
-        &tee_enc_pubkey,
+        &tee_enc_pubkey_bytes,
     );
 
     let mock_port = start_mock_storage("/payload", payload_bytes).await;
@@ -309,14 +295,15 @@ async fn test_verify_with_extension() {
 
     let encrypted_response = result.unwrap().0;
 
-    // 5. レスポンス復号
+    // 5. レスポンス復号（ResponseSealer.open()を使用）
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
     let resp_nonce_bytes = b64.decode(&encrypted_response.nonce).unwrap();
-    let resp_nonce: [u8; 12] = resp_nonce_bytes.try_into().unwrap();
     let resp_ct = b64.decode(&encrypted_response.ciphertext).unwrap();
-    let resp_plaintext =
-        title_crypto::aes_gcm_decrypt(&symmetric_key, &resp_nonce, &resp_ct).unwrap();
+    let mut nonce_and_ct = Vec::with_capacity(resp_nonce_bytes.len() + resp_ct.len());
+    nonce_and_ct.extend_from_slice(&resp_nonce_bytes);
+    nonce_and_ct.extend_from_slice(&resp_ct);
+    let resp_plaintext = response_sealer.open(&nonce_and_ct, b"/verify").unwrap();
     let verify_response: VerifyResponse =
         serde_json::from_slice(&resp_plaintext).unwrap();
 
@@ -362,8 +349,7 @@ async fn test_verify_with_extension() {
 #[tokio::test]
 async fn test_verify_inactive_returns_503() {
     let rt = MockRuntime::new();
-    rt.generate_signing_keypair();
-    rt.generate_encryption_keypair();
+    rt.generate_keypairs();
 
     let state = Arc::new(TeeAppState {
         runtime: Box::new(rt),
@@ -418,17 +404,15 @@ async fn test_verify_rejects_untrusted_extension() {
     std::fs::write(wasm_dir.join("evil-ext.wasm"), &test_wasm).unwrap();
 
     let rt = MockRuntime::new();
-    rt.generate_signing_keypair();
-    rt.generate_encryption_keypair();
+    rt.generate_keypairs();
 
-    let tee_enc_pubkey_bytes: [u8; 32] = rt.encryption_pubkey().try_into().unwrap();
-    let tee_enc_pubkey = X25519PublicKey::from(tee_enc_pubkey_bytes);
+    let tee_enc_pubkey_bytes: [u8; 32] = rt.decapsulator().public_key_bytes().try_into().unwrap();
 
     let signed_content = create_signed_content();
-    let (payload_bytes, _symmetric_key) = build_binary_payload(
+    let (payload_bytes, _response_sealer) = build_binary_payload(
         &signed_content,
         "MockWa11etAddress123456789012345678901234",
-        &tee_enc_pubkey,
+        &tee_enc_pubkey_bytes,
     );
 
     let mock_port = start_mock_storage("/payload", payload_bytes).await;

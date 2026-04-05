@@ -121,8 +121,11 @@ pub(crate) async fn process_extension(
     let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target)
         .map_err(|e| format!("署名対象のJCS正規化エラー: {e}"))?;
 
-    let signature = state.runtime.sign(&sign_bytes);
-    let tee_pubkey_b58 = state.runtime.signing_pubkey().to_base58();
+    let signer = state.runtime.protocol_signer();
+    let tagged = title_crypto::domain_tagged("title-protocol-v1", &sign_bytes);
+    let signature = signer.sign(&tagged)
+        .map_err(|e| format!("署名に失敗: {e}"))?;
+    let tee_pubkey_b58 = signer.public_key_bytes().to_base58();
     let attestation_b64 = b64().encode(state.runtime.get_attestation());
 
     // Extension signed_json構築（Core同様にSignedJson構造体を使用）
@@ -133,6 +136,7 @@ pub(crate) async fn process_extension(
             tee_type: state.runtime.tee_type().to_string(),
             tee_pubkey: tee_pubkey_b58,
             tee_signature: b64().encode(&signature),
+            tee_signature_algorithm: signer.algorithm().as_str().to_string(),
             tee_attestation: attestation_b64,
         },
         payload: payload_value,

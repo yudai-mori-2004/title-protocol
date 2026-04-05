@@ -46,9 +46,10 @@ fn build_test_signed_json(rt: &MockRuntime) -> SignedJson {
         "attributes": attributes_value,
     });
     let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target).unwrap();
+    let tagged = title_crypto::domain_tagged("title-protocol-v1", &sign_bytes);
 
-    let signature = rt.sign(&sign_bytes);
-    let tee_pubkey_b58 = base58::ToBase58::to_base58(rt.signing_pubkey().as_slice());
+    let signature = rt.protocol_signer().sign(&tagged).unwrap();
+    let tee_pubkey_b58 = base58::ToBase58::to_base58(rt.protocol_signer().public_key_bytes().as_slice());
     let attestation = rt.get_attestation();
 
     SignedJson {
@@ -57,6 +58,7 @@ fn build_test_signed_json(rt: &MockRuntime) -> SignedJson {
             tee_type: "mock".to_string(),
             tee_pubkey: tee_pubkey_b58,
             tee_signature: b64().encode(&signature),
+            tee_signature_algorithm: "ed25519".to_string(),
             tee_attestation: b64().encode(&attestation),
         },
         payload,
@@ -68,9 +70,7 @@ fn build_test_signed_json(rt: &MockRuntime) -> SignedJson {
 #[tokio::test]
 async fn test_sign_roundtrip() {
     let rt = MockRuntime::new();
-    rt.generate_signing_keypair();
-    rt.generate_encryption_keypair();
-    rt.generate_tree_keypair();
+    rt.generate_keypairs();
 
     // signed_jsonを構築
     let signed_json = build_test_signed_json(&rt);
@@ -81,7 +81,7 @@ async fn test_sign_roundtrip() {
     let proxy_port = start_inline_proxy().await;
 
     // tree_addressを設定（create_tree済みの状態をシミュレート）
-    let tree_pubkey_bytes: [u8; 32] = rt.tree_pubkey().try_into().unwrap();
+    let tree_pubkey_bytes: [u8; 32] = rt.tree_signer().public_key_bytes().try_into().unwrap();
     let tree_pubkey = solana_sdk::pubkey::Pubkey::new_from_array(tree_pubkey_bytes);
 
     // ALT設定（MintV2で使われるアカウントをALTに登録）
@@ -136,23 +136,19 @@ async fn test_sign_roundtrip() {
 async fn test_sign_rejects_wrong_key() {
     // 旧TEEでsigned_jsonを生成
     let old_rt = MockRuntime::new();
-    old_rt.generate_signing_keypair();
-    old_rt.generate_encryption_keypair();
-    old_rt.generate_tree_keypair();
+    old_rt.generate_keypairs();
 
     let signed_json = build_test_signed_json(&old_rt);
     let signed_json_bytes = serde_json::to_vec(&signed_json).unwrap();
 
     // 新TEE（鍵がローテーション済み）
     let new_rt = MockRuntime::new();
-    new_rt.generate_signing_keypair();
-    new_rt.generate_encryption_keypair();
-    new_rt.generate_tree_keypair();
+    new_rt.generate_keypairs();
 
     let storage_port = start_mock_storage("/signed_json", signed_json_bytes).await;
     let proxy_port = start_inline_proxy().await;
 
-    let tree_pubkey_bytes: [u8; 32] = new_rt.tree_pubkey().try_into().unwrap();
+    let tree_pubkey_bytes: [u8; 32] = new_rt.tree_signer().public_key_bytes().try_into().unwrap();
 
     let state = Arc::new(TeeAppState {
         runtime: Box::new(new_rt),
@@ -188,9 +184,7 @@ async fn test_sign_rejects_wrong_key() {
 #[tokio::test]
 async fn test_sign_rejects_oversized() {
     let rt = MockRuntime::new();
-    rt.generate_signing_keypair();
-    rt.generate_encryption_keypair();
-    rt.generate_tree_keypair();
+    rt.generate_keypairs();
 
     // 1MBを超えるデータを返すモックストレージ
     let oversized_data = vec![0u8; crate::infra::security::MAX_SIGNED_JSON_SIZE as usize + 1];
@@ -198,7 +192,7 @@ async fn test_sign_rejects_oversized() {
     let storage_port = start_mock_storage("/signed_json", oversized_data).await;
     let proxy_port = start_inline_proxy().await;
 
-    let tree_pubkey_bytes: [u8; 32] = rt.tree_pubkey().try_into().unwrap();
+    let tree_pubkey_bytes: [u8; 32] = rt.tree_signer().public_key_bytes().try_into().unwrap();
 
     let state = Arc::new(TeeAppState {
         runtime: Box::new(rt),
@@ -232,9 +226,7 @@ async fn test_sign_rejects_oversized() {
 #[tokio::test]
 async fn test_sign_inactive_returns_503() {
     let rt = MockRuntime::new();
-    rt.generate_signing_keypair();
-    rt.generate_encryption_keypair();
-    rt.generate_tree_keypair();
+    rt.generate_keypairs();
 
     let state = Arc::new(TeeAppState {
         runtime: Box::new(rt),

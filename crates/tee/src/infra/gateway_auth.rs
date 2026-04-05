@@ -10,7 +10,6 @@
 use axum::http::StatusCode;
 use base64::Engine;
 
-use title_crypto::Ed25519VerifyingKey;
 use title_types::{GatewayAuthSignTarget, GatewayAuthWrapper, ResourceLimits};
 
 /// Base64エンジン（Standard）
@@ -28,7 +27,7 @@ fn b64() -> base64::engine::GeneralPurpose {
 /// `body` フィールドと `resource_limits` を返す。
 /// 直接リクエスト形式の場合は `gateway_pubkey` が `None` のときのみ許可する。
 pub fn verify_gateway_auth(
-    gateway_pubkey: Option<&Ed25519VerifyingKey>,
+    gateway_pubkey: Option<&dyn title_crypto::signing::Verifier>,
     body: &serde_json::Value,
 ) -> Result<(serde_json::Value, Option<ResourceLimits>), (StatusCode, String)> {
     if body.get("gateway_signature").is_some() {
@@ -62,16 +61,9 @@ pub fn verify_gateway_auth(
                     format!("gateway_signatureのBase64デコードに失敗: {e}"),
                 )
             })?;
-            let sig_arr: [u8; 64] = sig_bytes.try_into().map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "gateway_signatureは64バイトである必要があります".to_string(),
-                )
-            })?;
-            let signature = ed25519_dalek::Signature::from_bytes(&sig_arr);
 
-            // Ed25519署名を検証
-            title_crypto::ed25519_verify(pubkey, &sign_bytes, &signature).map_err(|_| {
+            // 署名を検証
+            pubkey.verify(&sign_bytes, &sig_bytes).map_err(|_| {
                 (
                     StatusCode::FORBIDDEN,
                     "Gateway署名の検証に失敗しました".to_string(),
@@ -102,7 +94,11 @@ mod tests {
     #[test]
     fn test_verify_valid_signature() {
         let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
-        let verifying_key = Ed25519VerifyingKey::from(&signing_key);
+        let verifying_key = title_crypto::create_verifier(
+            title_crypto::SigningAlgorithm::Ed25519,
+            &ed25519_dalek::VerifyingKey::from(&signing_key).to_bytes(),
+        )
+        .unwrap();
 
         let body = serde_json::json!({"download_url": "http://example.com", "processor_ids": ["core-c2pa"]});
         let resource_limits = Some(ResourceLimits {
@@ -134,7 +130,7 @@ mod tests {
             "gateway_signature": sig_b64,
         });
 
-        let result = verify_gateway_auth(Some(&verifying_key), &wrapper);
+        let result = verify_gateway_auth(Some(verifying_key.as_ref()), &wrapper);
         assert!(result.is_ok());
 
         let (inner_body, limits) = result.unwrap();
@@ -147,7 +143,11 @@ mod tests {
     fn test_verify_invalid_signature() {
         let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
         let other_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
-        let other_verifying = Ed25519VerifyingKey::from(&other_key);
+        let other_verifying = title_crypto::create_verifier(
+            title_crypto::SigningAlgorithm::Ed25519,
+            &ed25519_dalek::VerifyingKey::from(&other_key).to_bytes(),
+        )
+        .unwrap();
 
         let body = serde_json::json!({"test": "data"});
 
@@ -169,7 +169,7 @@ mod tests {
         });
 
         // 別の公開鍵で検証 → 403
-        let result = verify_gateway_auth(Some(&other_verifying), &wrapper);
+        let result = verify_gateway_auth(Some(other_verifying.as_ref()), &wrapper);
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -179,12 +179,16 @@ mod tests {
     #[test]
     fn test_verify_missing_signature_when_required() {
         let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
-        let verifying_key = Ed25519VerifyingKey::from(&signing_key);
+        let verifying_key = title_crypto::create_verifier(
+            title_crypto::SigningAlgorithm::Ed25519,
+            &ed25519_dalek::VerifyingKey::from(&signing_key).to_bytes(),
+        )
+        .unwrap();
 
         let body = serde_json::json!({"download_url": "http://example.com", "processor_ids": ["core-c2pa"]});
 
         // 直接リクエスト形式（gateway_signatureなし）
-        let result = verify_gateway_auth(Some(&verifying_key), &body);
+        let result = verify_gateway_auth(Some(verifying_key.as_ref()), &body);
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::UNAUTHORIZED);

@@ -8,7 +8,6 @@ use std::time::Duration;
 use axum::extract::State;
 use axum::Json;
 use base64::Engine;
-use ed25519_dalek::VerifyingKey;
 use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
@@ -37,7 +36,7 @@ pub async fn handle_sign(
 
     // Step 1. Gateway署名の検証（§6.2）
     let (inner_body, resource_limits) =
-        crate::infra::gateway_auth::verify_gateway_auth(state.gateway_pubkey.as_ref(), &body)
+        crate::infra::gateway_auth::verify_gateway_auth(state.gateway_pubkey.as_deref(), &body)
             .map_err(|(_, msg)| TeeError::Unauthorized(msg))?;
 
     let request: SignRequest = serde_json::from_value(inner_body)
@@ -58,14 +57,17 @@ pub async fn handle_sign(
     let blockhash = solana_sdk::hash::Hash::from_str(&request.recent_blockhash)
         .map_err(|e| TeeError::BadRequest(format!("recent_blockhashのBase58デコードに失敗: {e}")))?;
 
-    // TEE署名用公開鍵
-    let tee_pubkey_bytes: [u8; 32] = state.runtime.signing_pubkey().try_into()
+    // Solana TX署名用公開鍵
+    let tee_pubkey_bytes: [u8; 32] = state.runtime.solana_signer().public_key_bytes().try_into()
         .map_err(|_| TeeError::Internal("署名用公開鍵の取得に失敗".into()))?;
     let tee_signing_pubkey = Pubkey::new_from_array(tee_pubkey_bytes);
 
-    // Ed25519検証用キー
-    let verifying_key = VerifyingKey::from_bytes(&tee_pubkey_bytes)
-        .map_err(|e| TeeError::Internal(format!("検証用公開鍵の構築に失敗: {e}")))?;
+    // Protocol署名検証用Verifier（アルゴリズムはsigned_jsonのtee_signature_algorithmから決定）
+    let protocol_pubkey = state.runtime.protocol_signer().public_key_bytes();
+    let protocol_verifier = title_crypto::create_verifier(
+        state.runtime.protocol_signing_algorithm(),
+        &protocol_pubkey,
+    ).map_err(|e| TeeError::Internal(format!("検証用公開鍵の構築に失敗: {e}")))?;
 
     // 動的グローバルタイムアウト適用（仕様書 §6.4）
     // ContentSize = items数 × MAX_SIGNED_JSON_SIZE（最悪ケース見積もり）
@@ -77,7 +79,7 @@ pub async fn handle_sign(
     // 全 item を並列にダウンロード + 検証 + instruction 構築
     let futures: Vec<_> = request.requests.iter().map(|item| {
         let state = &state;
-        let verifying_key = &verifying_key;
+        let protocol_verifier = &protocol_verifier;
         let tee_signing_pubkey = &tee_signing_pubkey;
         let fee_payer_pubkey = &fee_payer_pubkey;
         let limits = &limits;
@@ -135,9 +137,6 @@ pub async fn handle_sign(
             // 仕様書 §6.4: 自身が生成したsigned_jsonであることの確認
             let sig_bytes = b64().decode(&signed_json.core.tee_signature)
                 .map_err(|e| TeeError::BadRequest(format!("tee_signatureのBase64デコードに失敗: {e}")))?;
-            let sig_arr: [u8; 64] = sig_bytes.try_into()
-                .map_err(|_| TeeError::BadRequest("tee_signatureは64バイトである必要があります".into()))?;
-            let ed_signature = ed25519_dalek::Signature::from_bytes(&sig_arr);
 
             let sign_target = serde_json::json!({
                 "payload": signed_json.payload,
@@ -146,8 +145,10 @@ pub async fn handle_sign(
             let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target)
                 .map_err(|e| TeeError::Internal(format!("署名対象のJCS正規化に失敗: {e}")))?;
 
-            verifying_key
-                .verify_strict(&sign_bytes, &ed_signature)
+            // ドメインタグ付きで検証（core.rsでの署名時と同一のタグ）
+            let tagged = title_crypto::domain_tagged("title-protocol-v1", &sign_bytes);
+            protocol_verifier
+                .verify(&tagged, &sig_bytes)
                 .map_err(|_| TeeError::Forbidden(
                     "tee_signatureの検証に失敗しました。TEEが再起動した可能性があります".into(),
                 ))?;
@@ -213,7 +214,8 @@ pub async fn handle_sign(
     let mut partial_txs = Vec::new();
     for mut tx in packed_txs {
         let message_bytes = tx.message.serialize();
-        let tee_sig = state.runtime.sign(&message_bytes);
+        let tee_sig = state.runtime.solana_signer().sign(&message_bytes)
+            .map_err(|e| TeeError::Internal(format!("Solana TX署名に失敗: {e}")))?;
 
         solana_tx::apply_partial_signature(&mut tx, &tee_signing_pubkey, &tee_sig)
             .map_err(|e| TeeError::Internal(format!("TEE署名の適用に失敗: {e}")))?;

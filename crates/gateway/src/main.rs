@@ -295,7 +295,11 @@ mod tests {
     #[test]
     fn test_gateway_auth_roundtrip() {
         let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
-        let verifying_key = Ed25519VerifyingKey::from(&signing_key);
+        let verifying_key = title_crypto::create_verifier(
+            title_crypto::SigningAlgorithm::Ed25519,
+            &Ed25519VerifyingKey::from(&signing_key).to_bytes(),
+        )
+        .unwrap();
 
         let body = serde_json::json!({
             "download_url": "http://example.com/payload",
@@ -335,11 +339,9 @@ mod tests {
         let sign_bytes = serde_json::to_vec(&sign_target).unwrap();
 
         let sig_bytes = b64().decode(&wrapper.gateway_signature).unwrap();
-        let sig_arr: [u8; 64] = sig_bytes.try_into().unwrap();
-        let signature = ed25519_dalek::Signature::from_bytes(&sig_arr);
 
         assert!(
-            title_crypto::ed25519_verify(&verifying_key, &sign_bytes, &signature).is_ok(),
+            verifying_key.verify(&sign_bytes, &sig_bytes).is_ok(),
             "Gateway署名の検証に失敗"
         );
     }
@@ -349,7 +351,11 @@ mod tests {
     fn test_gateway_auth_invalid_signature() {
         let signing_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
         let other_key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
-        let other_verifying_key = Ed25519VerifyingKey::from(&other_key);
+        let other_verifying_key = title_crypto::create_verifier(
+            title_crypto::SigningAlgorithm::Ed25519,
+            &Ed25519VerifyingKey::from(&other_key).to_bytes(),
+        )
+        .unwrap();
 
         let body = serde_json::json!({"test": "data"});
 
@@ -366,11 +372,9 @@ mod tests {
         let sign_bytes = serde_json::to_vec(&sign_target).unwrap();
 
         let sig_bytes = b64().decode(&wrapper.gateway_signature).unwrap();
-        let sig_arr: [u8; 64] = sig_bytes.try_into().unwrap();
-        let signature = ed25519_dalek::Signature::from_bytes(&sig_arr);
 
         assert!(
-            title_crypto::ed25519_verify(&other_verifying_key, &sign_bytes, &signature).is_err(),
+            other_verifying_key.verify(&sign_bytes, &sig_bytes).is_err(),
             "異なる公開鍵での検証が成功してしまった"
         );
     }

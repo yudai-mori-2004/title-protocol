@@ -77,13 +77,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Gateway認証用公開鍵（仕様書 §6.2）
-    let gateway_pubkey = std::env::var("GATEWAY_PUBKEY").ok().filter(|s| !s.is_empty()).map(|s| {
+    let gateway_pubkey: Option<Box<dyn title_crypto::signing::Verifier>> = std::env::var("GATEWAY_PUBKEY").ok().filter(|s| !s.is_empty()).map(|s| {
         use base58::FromBase58;
         let bytes = s.from_base58().expect("GATEWAY_PUBKEYが不正なBase58です");
-        let arr: [u8; 32] = bytes
-            .try_into()
-            .expect("GATEWAY_PUBKEYは32バイトである必要があります");
-        title_crypto::Ed25519VerifyingKey::from_bytes(&arr)
+        title_crypto::create_verifier(title_crypto::SigningAlgorithm::Ed25519, &bytes)
             .expect("GATEWAY_PUBKEYが不正なEd25519公開鍵です")
     });
     if gateway_pubkey.is_some() {
@@ -162,10 +159,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("鍵を生成中...");
     {
         let rt = &shared_state.runtime;
-        rt.generate_signing_keypair();
-        rt.generate_encryption_keypair();
-        rt.generate_tree_keypair();
-        rt.generate_ext_tree_keypair();
+        rt.generate_keypairs();
     }
     tracing::info!("鍵生成完了");
 

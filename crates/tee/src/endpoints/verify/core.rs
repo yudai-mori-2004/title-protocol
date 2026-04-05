@@ -83,11 +83,14 @@ pub(crate) fn process_core(
     let sign_bytes = serde_json_canonicalizer::to_vec(&sign_target)
         .map_err(|e| format!("署名対象のJCS正規化エラー: {e}"))?;
 
-    // TEE秘密鍵で署名
-    let signature = state.runtime.sign(&sign_bytes);
+    // TEE Protocol署名鍵で署名（ドメインタグ付き）
+    let signer = state.runtime.protocol_signer();
+    let tagged = title_crypto::domain_tagged("title-protocol-v1", &sign_bytes);
+    let signature = signer.sign(&tagged)
+        .map_err(|e| format!("署名に失敗: {e}"))?;
 
     // TEE公開鍵（Base58エンコード）
-    let tee_pubkey_b58 = state.runtime.signing_pubkey().to_base58();
+    let tee_pubkey_b58 = signer.public_key_bytes().to_base58();
 
     // Attestation Document（Base64エンコード）
     let attestation = state.runtime.get_attestation();
@@ -100,6 +103,7 @@ pub(crate) fn process_core(
             tee_type: state.runtime.tee_type().to_string(),
             tee_pubkey: tee_pubkey_b58,
             tee_signature: b64().encode(&signature),
+            tee_signature_algorithm: signer.algorithm().as_str().to_string(),
             tee_attestation: attestation_b64,
         },
         payload: payload_value,

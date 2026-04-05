@@ -36,10 +36,12 @@ pub struct SignedJsonCore {
     pub protocol: String,
     /// TEE種別 ("aws_nitro", "amd_sev_snp", "intel_tdx")
     pub tee_type: String,
-    /// Base58エンコードされたEd25519公開鍵
+    /// Base58エンコードされた署名用公開鍵
     pub tee_pubkey: String,
     /// Base64エンコードされた署名（payload + attributesが対象）
     pub tee_signature: String,
+    /// 署名アルゴリズム識別子 ("ed25519" 等)
+    pub tee_signature_algorithm: String,
     /// Base64エンコードされたAttestation Document
     pub tee_attestation: String,
 }
@@ -152,9 +154,11 @@ pub struct GlobalConfig {
 pub struct TrustedTeeNode {
     /// Base58エンコードされたEd25519署名用公開鍵
     pub signing_pubkey: String,
-    /// Base64エンコードされたX25519暗号化用公開鍵（32バイト）
+    /// 署名アルゴリズム識別子 ("ed25519" 等)
+    pub signing_algorithm: String,
+    /// Base64エンコードされた暗号化用公開鍵
     pub encryption_pubkey: String,
-    /// 暗号化アルゴリズム識別子
+    /// 暗号化アルゴリズム識別子（KEMアルゴリズム）
     pub encryption_algorithm: String,
     /// Base58エンコードされたGateway署名用Ed25519公開鍵
     pub gateway_pubkey: String,
@@ -195,15 +199,9 @@ pub struct TrustedWasmModule {
 // 暗号化ペイロード (仕様書 §5.1 Step 2)
 // ---------------------------------------------------------------------------
 //
-// 暗号化ペイロードはバイナリ形式でTemporary Storageに保存される。
-// Content-Type: application/octet-stream
-//
-// ## ワイヤーフォーマット
-// ```text
-// [32B: ephemeral_pubkey (X25519)]
-// [12B: nonce (AES-GCM)]
-// [remaining: AES-GCM ciphertext + 16B auth tag]
-// ```
+// 暗号化ペイロードのワイヤーフォーマットとパースは `title_crypto::wire` モジュールに移動。
+// suite_id付き新フォーマット: [suite_id(1B)][encap_key_len(2B)][encap_key][nonce][ciphertext]
+// 復号は `title_crypto::open_request()` で行う。
 //
 // ## 平文フォーマット（復号後）
 // ```text
@@ -211,34 +209,6 @@ pub struct TrustedWasmModule {
 // [metadata_len bytes: JSON ClientMetadata]
 // [remaining: raw content bytes]
 // ```
-//
-// JSON/Base64を一切使わないことで、5MBファイルが17MB→5MBに削減される。
-
-/// 暗号化ペイロードのヘッダサイズ（ephemeral_pubkey 32B + nonce 12B）。
-/// 仕様書 §5.1 Step 2
-pub const ENCRYPTED_HEADER_SIZE: usize = 32 + 12;
-
-/// 暗号化ペイロードのバイナリヘッダをパースする。
-/// 仕様書 §5.1 Step 2
-///
-/// 戻り値: `(ephemeral_pubkey, nonce, ciphertext)`
-pub fn parse_encrypted_payload(data: &[u8]) -> Result<([u8; 32], [u8; 12], &[u8]), String> {
-    if data.len() < ENCRYPTED_HEADER_SIZE {
-        return Err(format!(
-            "暗号化ペイロードが短すぎます: {}B (最低{}B必要)",
-            data.len(),
-            ENCRYPTED_HEADER_SIZE,
-        ));
-    }
-    let eph_pubkey: [u8; 32] = data[..32]
-        .try_into()
-        .map_err(|_| "ephemeral_pubkeyの読み取りに失敗".to_string())?;
-    let nonce: [u8; 12] = data[32..44]
-        .try_into()
-        .map_err(|_| "nonceの読み取りに失敗".to_string())?;
-    let ciphertext = &data[44..];
-    Ok((eph_pubkey, nonce, ciphertext))
-}
 
 /// 復号後の平文をメタデータとコンテンツに分離する。
 /// 仕様書 §5.1 Step 2
@@ -584,6 +554,7 @@ mod tests {
                 tee_type: "mock".into(),
                 tee_pubkey: "pk".into(),
                 tee_signature: "sig".into(),
+                tee_signature_algorithm: "ed25519".into(),
                 tee_attestation: "att".into(),
             },
             payload: serde_json::json!({"key": "val"}),
@@ -609,6 +580,7 @@ mod tests {
                 tee_type: "mock".into(),
                 tee_pubkey: "pk".into(),
                 tee_signature: "sig".into(),
+                tee_signature_algorithm: "ed25519".into(),
                 tee_attestation: "att".into(),
             },
             payload: serde_json::json!({"n": 42}),
@@ -765,28 +737,6 @@ mod tests {
         let json_str = serde_json::to_string(&req).unwrap();
         let restored: VerifyRequest = serde_json::from_str(&json_str).unwrap();
         assert_eq!(req, restored);
-    }
-
-    #[test]
-    fn test_parse_encrypted_payload() {
-        let mut data = Vec::new();
-        let eph_pk = [0xAA_u8; 32];
-        let nonce = [0xBB_u8; 12];
-        let ct = b"ciphertext_data";
-        data.extend_from_slice(&eph_pk);
-        data.extend_from_slice(&nonce);
-        data.extend_from_slice(ct);
-
-        let (pk, n, c) = parse_encrypted_payload(&data).unwrap();
-        assert_eq!(pk, eph_pk);
-        assert_eq!(n, nonce);
-        assert_eq!(c, ct);
-    }
-
-    #[test]
-    fn test_parse_encrypted_payload_too_short() {
-        let data = [0u8; 30]; // < 44
-        assert!(parse_encrypted_payload(&data).is_err());
     }
 
     #[test]

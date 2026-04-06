@@ -79,6 +79,16 @@ const TEE_TYPE_MAP: Record<number, string> = {
   2: "intel_tdx",
 };
 
+/** On-chain signing algorithm u8 → string. */
+const SIGNING_ALGORITHM_MAP: Record<number, string> = {
+  0: "ed25519",
+};
+
+/** On-chain encryption algorithm u8 → string. Matches Rust KemAlgorithm::as_str(). */
+const ENCRYPTION_ALGORITHM_MAP: Record<number, string> = {
+  0: "x25519-hkdf-sha256",
+};
+
 // ---------------------------------------------------------------------------
 // PDA derivation
 // ---------------------------------------------------------------------------
@@ -206,6 +216,12 @@ class BorshReader {
     const bytes = this.readBytes(len);
     return bytes.toString("utf-8");
   }
+
+  /** Read a Borsh Vec<u8>: 4-byte LE length + raw bytes. */
+  readVec(): Buffer {
+    const len = this.readU32LE();
+    return this.readBytes(len);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +239,12 @@ interface RawGlobalConfig {
 }
 
 interface RawTeeNodeAccount {
-  signingPubkey: Buffer;
+  solanaPubkey: Buffer;
+  protocolSigningAlgorithm: number;
+  protocolSigningPubkey: Buffer;
+  encryptionAlgorithm: number;
   encryptionPubkey: Buffer;
+  gatewaySigningAlgorithm: number;
   gatewayPubkey: Buffer;
   gatewayEndpoint: string;
   status: number;
@@ -307,9 +327,13 @@ function deserializeTeeNodeAccount(data: Buffer): RawTeeNodeAccount {
     );
   }
 
-  const signingPubkey = r.readPubkey();
-  const encryptionPubkey = r.readFixedBytes(32);
-  const gatewayPubkey = r.readPubkey();
+  const solanaPubkey = r.readPubkey();
+  const protocolSigningAlgorithm = r.readU8();
+  const protocolSigningPubkey = r.readVec();
+  const encryptionAlgorithm = r.readU8();
+  const encryptionPubkey = r.readVec();
+  const gatewaySigningAlgorithm = r.readU8();
+  const gatewayPubkey = r.readVec();
   const gatewayEndpoint = r.readString();
   const status = r.readU8();
   const teeType = r.readU8();
@@ -326,8 +350,12 @@ function deserializeTeeNodeAccount(data: Buffer): RawTeeNodeAccount {
   const bump = r.readU8();
 
   return {
-    signingPubkey,
+    solanaPubkey,
+    protocolSigningAlgorithm,
+    protocolSigningPubkey,
+    encryptionAlgorithm,
     encryptionPubkey,
+    gatewaySigningAlgorithm,
     gatewayPubkey,
     gatewayEndpoint,
     status,
@@ -367,10 +395,13 @@ function rawToTrustedTeeNode(raw: RawTeeNodeAccount): TrustedTeeNode {
   }
 
   return {
-    signing_pubkey: pubkeyToBase58(raw.signingPubkey),
+    solana_pubkey: pubkeyToBase58(raw.solanaPubkey),
+    signing_algorithm: SIGNING_ALGORITHM_MAP[raw.protocolSigningAlgorithm] ?? `unknown(${raw.protocolSigningAlgorithm})`,
+    signing_pubkey: bytesToBase64(raw.protocolSigningPubkey),
+    encryption_algorithm: ENCRYPTION_ALGORITHM_MAP[raw.encryptionAlgorithm] ?? `unknown(${raw.encryptionAlgorithm})`,
     encryption_pubkey: bytesToBase64(raw.encryptionPubkey),
-    encryption_algorithm: "x25519-hkdf-sha256-aes256gcm",
-    gateway_pubkey: pubkeyToBase58(raw.gatewayPubkey),
+    gateway_signing_algorithm: SIGNING_ALGORITHM_MAP[raw.gatewaySigningAlgorithm] ?? `unknown(${raw.gatewaySigningAlgorithm})`,
+    gateway_pubkey: bytesToBase64(raw.gatewayPubkey),
     gateway_endpoint: raw.gatewayEndpoint,
     status: STATUS_MAP[raw.status] ?? `unknown(${raw.status})`,
     tee_type: TEE_TYPE_MAP[raw.teeType] ?? `unknown(${raw.teeType})`,

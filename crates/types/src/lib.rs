@@ -36,7 +36,7 @@ pub struct SignedJsonCore {
     pub protocol: String,
     /// TEE種別 ("aws_nitro", "amd_sev_snp", "intel_tdx")
     pub tee_type: String,
-    /// Base58エンコードされた署名用公開鍵
+    /// Base64エンコードされたプロトコル署名用公開鍵
     pub tee_pubkey: String,
     /// Base64エンコードされた署名（payload + attributesが対象）
     pub tee_signature: String,
@@ -152,7 +152,7 @@ pub struct GlobalConfig {
 /// 仕様書 §5.2 Step 1
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedTeeNode {
-    /// Base58エンコードされたEd25519署名用公開鍵
+    /// Base64エンコードされたプロトコル署名用公開鍵
     pub signing_pubkey: String,
     /// 署名アルゴリズム識別子 ("ed25519" 等)
     pub signing_algorithm: String,
@@ -160,7 +160,7 @@ pub struct TrustedTeeNode {
     pub encryption_pubkey: String,
     /// 暗号化アルゴリズム識別子（KEMアルゴリズム）
     pub encryption_algorithm: String,
-    /// Base58エンコードされたGateway署名用Ed25519公開鍵
+    /// Base64エンコードされたGateway署名用公開鍵
     pub gateway_pubkey: String,
     /// GatewayのHTTPエンドポイント
     pub gateway_endpoint: String,
@@ -505,8 +505,10 @@ pub struct CreateTreeResponse {
 pub struct RegisterNodeRequest {
     /// GatewayエンドポイントURL（オンチェーンに記録される外部公開URL）
     pub gateway_endpoint: String,
-    /// Base58エンコードされたGateway署名用Ed25519公開鍵
+    /// Gateway署名用公開鍵（Base58エンコード）
     pub gateway_pubkey: String,
+    /// Gateway署名アルゴリズム（"ed25519" 等）
+    pub gateway_signing_algorithm: String,
     /// Base58エンコードされたBlockhash
     pub recent_blockhash: String,
     /// Base58エンコードされたDAO authority公開鍵
@@ -530,9 +532,11 @@ pub struct RegisterNodeRequest {
 pub struct RegisterNodeResponse {
     /// Base64エンコードされた部分署名済みトランザクション（TEE署名済み、authority署名が必要）
     pub partial_tx: String,
-    /// Base58エンコードされたTEE Ed25519署名用公開鍵
-    pub signing_pubkey: String,
-    /// Base64エンコードされたTEE X25519暗号化用公開鍵
+    /// Base58エンコードされたSolana Ed25519公開鍵（PDA seed + Solana TX署名用）
+    pub solana_pubkey: String,
+    /// Base64エンコードされたプロトコル署名用公開鍵
+    pub protocol_signing_pubkey: String,
+    /// Base64エンコードされた暗号化用公開鍵
     pub encryption_pubkey: String,
     /// Base58エンコードされたTeeNodeAccount PDAアドレス
     pub tee_node_pda: String,

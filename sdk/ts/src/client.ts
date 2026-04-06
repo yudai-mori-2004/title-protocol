@@ -248,9 +248,11 @@ export class TitleClient {
     const plaintext = buildPlaintext(metadata, content);
 
     const teeEncPubkey = this.crypto.fromBase64(node.encryptionPubkey);
-    const { symmetricKey, payload: encryptedPayload } = await encryptPayload(
+    const verifyAad = new TextEncoder().encode("/verify");
+    const { responseKey, payload: encryptedPayload } = await encryptPayload(
       teeEncPubkey,
       plaintext,
+      verifyAad,
       this.crypto,
     );
 
@@ -266,9 +268,10 @@ export class TitleClient {
     });
 
     const responsePlaintext = await decryptResponse(
-      symmetricKey,
+      responseKey,
       encryptedResponse.nonce,
       encryptedResponse.ciphertext,
+      verifyAad,
       this.crypto,
     );
     const verifyResponse: VerifyResponse = JSON.parse(

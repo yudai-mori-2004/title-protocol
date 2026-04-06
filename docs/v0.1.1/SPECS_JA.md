@@ -1062,8 +1062,8 @@ Title Protocolの価値は、C2PAの普及に正比例する。これは意図�
 
 | 形式 | 用途 |
 | --- | --- |
-| Base58 | Solanaアドレス、公開鍵等。人間が読みやすく、紛らわしい文字（0, O, l, I）を除外 |
-| Base64 | 署名、Attestation Document等のJSON内バイナリフィールド |
+| Base58 | Solana identity（solana_pubkey、ウォレットアドレス）。紛らわしい文字（0, O, l, I）を除外 |
+| Base64 | 暗号プリミティブのバイナリ（署名、公開鍵、Attestation Document等） |
 | バイナリ | 暗号化ペイロード（Step 1-2）。JSON/Base64を使用せず、rawバイナリとしてS3に保存 |
 
 ## 5.1 登録フローのデータ構造
@@ -1138,7 +1138,7 @@ TEEは復号・検証を完了し、検証結果をJSONにまとめてTEE署名�
 {
   "protocol": "Title-v1",
   "tee_type": "aws_nitro",
-  "tee_pubkey": "Base58エンコードされたEd25519公開鍵",
+  "tee_pubkey": "Base64エンコードされたプロトコル署名用公開鍵",
   "tee_signature": "Base64エンコードされた署名（payload + attributesが対象）",
   "tee_attestation": "Base64エンコードされたAttestation Document",
   "payload": {
@@ -1178,7 +1178,7 @@ TEEは復号・検証を完了し、検証結果をJSONにまとめてTEE署名�
 {
   "protocol": "Title-Extension-v1",
   "tee_type": "aws_nitro",
-  "tee_pubkey": "Base58エンコードされたEd25519公開鍵",
+  "tee_pubkey": "Base64エンコードされたプロトコル署名用公開鍵",
   "tee_signature": "Base64エンコードされた署名（payload + attributesが対象）",
   "tee_attestation": "Base64エンコードされたAttestation Document",
   "payload": {
@@ -1404,10 +1404,13 @@ WasmModuleAccount (PDA: seeds=[b"wasm-module", &extension_id])
   "ext_collection_mint": "Base58エンコードされたMintアドレス",
   "trusted_tee_nodes": [
     {
-      "signing_pubkey": "Base58エンコードされたEd25519公開鍵",
-      "encryption_pubkey": "Base64エンコードされたX25519公開鍵（32バイト）",
-      "encryption_algorithm": "x25519-hkdf-sha256-aes256gcm",
-      "gateway_pubkey": "Base58エンコードされたEd25519公開鍵",
+      "solana_pubkey": "Base58エンコードされたSolana Ed25519公開鍵",
+      "signing_algorithm": "ed25519",
+      "signing_pubkey": "Base64エンコードされたプロトコル署名用公開鍵",
+      "encryption_algorithm": "x25519",
+      "encryption_pubkey": "Base64エンコードされた暗号化用公開鍵",
+      "gateway_signing_algorithm": "ed25519",
+      "gateway_pubkey": "Base64エンコードされたGateway署名用公開鍵",
       "gateway_endpoint": "https://gateway.example.com",
       "status": "Active",
       "tee_type": "aws_nitro",
@@ -1546,7 +1549,7 @@ cNFTの `content.json_uri` からオフチェーンデータを取得する。
 {
   "protocol": "Title-v1",
   "tee_type": "aws_nitro",
-  "tee_pubkey": "Base58エンコードされたEd25519公開鍵",
+  "tee_pubkey": "Base64エンコードされたプロトコル署名用公開鍵",
   "tee_signature": "Base64エンコードされた署名",
   "tee_attestation": "Base64エンコードされたAttestation Document",
   "payload": {
@@ -1568,7 +1571,7 @@ cNFTの `content.json_uri` からオフチェーンデータを取得する。
 {
   "protocol": "Title-Extension-v1",
   "tee_type": "aws_nitro",
-  "tee_pubkey": "Base58エンコードされたEd25519公開鍵",
+  "tee_pubkey": "Base64エンコードされたプロトコル署名用公開鍵",
   "tee_signature": "Base64エンコードされた署名",
   "tee_attestation": "Base64エンコードされたAttestation Document",
   "payload": {
@@ -2145,7 +2148,8 @@ POST /register-node
 Request:
 {
   "gateway_endpoint": "GatewayエンドポイントURL",
-  "gateway_pubkey": "Base58エンコードされたGateway署名用Ed25519公開鍵",
+  "gateway_pubkey": "Base58エンコードされたGateway署名用公開鍵",
+  "gateway_signing_algorithm": "ed25519",
   "recent_blockhash": "Base58エンコードされたBlockhash",
   "authority": "Base58エンコードされたDAO authority公開鍵",
   "program_id": "Base58エンコードされたtitle-configプログラムID",
@@ -2161,8 +2165,9 @@ Request:
 Response:
 {
   "partial_tx": "Base64エンコードされた部分署名済みトランザクション（TEE署名済み、authority署名が必要）",
-  "signing_pubkey": "Base58エンコードされたTEE Ed25519署名用公開鍵",
-  "encryption_pubkey": "Base64エンコードされたTEE X25519暗号化用公開鍵",
+  "solana_pubkey": "Base58エンコードされたTEE Solana Ed25519公開鍵",
+  "protocol_signing_pubkey": "Base64エンコードされたプロトコル署名用公開鍵",
+  "encryption_pubkey": "Base64エンコードされた暗号化用公開鍵",
   "tee_node_pda": "Base58エンコードされたTeeNodeAccount PDAアドレス"
 }
 ```

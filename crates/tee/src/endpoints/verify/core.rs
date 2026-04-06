@@ -4,7 +4,6 @@
 //!
 //! 仕様書 §2.1, §2.2, §5.1 Step 4
 
-use base58::ToBase58;
 use base64::Engine;
 
 use title_types::{Attribute, CorePayload, SignedJson, SignedJsonCore};
@@ -89,8 +88,8 @@ pub(crate) fn process_core(
     let signature = signer.sign(&tagged)
         .map_err(|e| format!("署名に失敗: {e}"))?;
 
-    // TEE公開鍵（Base58エンコード）
-    let tee_pubkey_b58 = signer.public_key_bytes().to_base58();
+    // TEEプロトコル署名公開鍵（Base64エンコード）
+    let tee_pubkey_b64 = b64().encode(signer.public_key_bytes());
 
     // Attestation Document（Base64エンコード）
     let attestation = state.runtime.get_attestation();
@@ -101,7 +100,7 @@ pub(crate) fn process_core(
         core: SignedJsonCore {
             protocol: "Title-v1".to_string(),
             tee_type: state.runtime.tee_type().to_string(),
-            tee_pubkey: tee_pubkey_b58,
+            tee_pubkey: tee_pubkey_b64,
             tee_signature: b64().encode(&signature),
             tee_signature_algorithm: signer.algorithm().as_str().to_string(),
             tee_attestation: attestation_b64,

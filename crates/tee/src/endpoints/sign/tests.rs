@@ -49,14 +49,14 @@ fn build_test_signed_json(rt: &MockRuntime) -> SignedJson {
     let tagged = title_crypto::domain_tagged("title-protocol-v1", &sign_bytes);
 
     let signature = rt.protocol_signer().sign(&tagged).unwrap();
-    let tee_pubkey_b58 = base58::ToBase58::to_base58(rt.protocol_signer().public_key_bytes().as_slice());
+    let tee_pubkey_b64 = b64().encode(rt.protocol_signer().public_key_bytes());
     let attestation = rt.get_attestation();
 
     SignedJson {
         core: SignedJsonCore {
             protocol: "Title-v1".to_string(),
             tee_type: "mock".to_string(),
-            tee_pubkey: tee_pubkey_b58,
+            tee_pubkey: tee_pubkey_b64,
             tee_signature: b64().encode(&signature),
             tee_signature_algorithm: "ed25519".to_string(),
             tee_attestation: b64().encode(&attestation),

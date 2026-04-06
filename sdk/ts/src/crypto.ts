@@ -3,16 +3,18 @@
 /**
  * E2EE client-side cryptographic operations.
  *
- * Spec §6.4 — Hybrid encryption
+ * Spec §6.4 — Hybrid encryption (KEM + KDF + AEAD)
  *
  * Interoperable with the Rust crates/crypto implementation:
- * - X25519 ECDH key exchange
- * - HKDF-SHA256 key derivation (info: "title-protocol-e2ee", salt: none)
- * - AES-256-GCM encryption/decryption
+ * - X25519 ECDH key exchange (KEM abstraction)
+ * - HKDF-SHA256 direction-separated key derivation
+ *   - salt: encap_key, info: "title-request-key" / "title-response-key"
+ * - AES-256-GCM encryption/decryption with AAD
+ *
+ * Wire format: [suite_id(1B)][encap_key_len(2B BE)][encap_key][nonce][ciphertext]
  *
  * AES-GCM and Base64 operations are abstracted via CryptoProvider so that
- * platform-specific native implementations (e.g. expo-crypto, react-native-
- * quick-crypto) can be injected for better performance on mobile.
+ * platform-specific native implementations can be injected for mobile.
  */
 
 import { x25519 } from "@noble/curves/ed25519";
@@ -20,10 +22,21 @@ import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 import { randomBytes } from "@noble/hashes/utils";
 
-import { ENCRYPTED_HEADER_SIZE } from "./types";
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-/** HKDF info bytes (Rust: b"title-protocol-e2ee"). */
-const HKDF_INFO = new TextEncoder().encode("title-protocol-e2ee");
+/** Suite ID: X25519-HKDF-SHA256 + AES-256-GCM. Matches Rust CryptoSuite::X25519Aes256Gcm. */
+const SUITE_X25519_AES256GCM = 0x01;
+
+/** AES-256-GCM nonce size in bytes. */
+const NONCE_SIZE = 12;
+
+/** HKDF info for request direction key. */
+const HKDF_INFO_REQUEST = new TextEncoder().encode("title-request-key");
+
+/** HKDF info for response direction key. */
+const HKDF_INFO_RESPONSE = new TextEncoder().encode("title-response-key");
 
 // ---------------------------------------------------------------------------
 // CryptoProvider — pluggable AES-GCM + Base64
@@ -32,17 +45,13 @@ const HKDF_INFO = new TextEncoder().encode("title-protocol-e2ee");
 /**
  * Pluggable cryptographic operations for AES-256-GCM and Base64 encoding.
  *
- * The default implementation uses Web Crypto API (`crypto.subtle`) and `Buffer`,
- * which is fast on Node.js and browsers but slow on React Native's Hermes engine.
- *
- * To optimize for your platform, provide a custom implementation:
+ * The default implementation uses Web Crypto API (`crypto.subtle`) and `Buffer`.
  *
  * @example
  * ```typescript
- * // React Native with expo-crypto
  * const provider: CryptoProvider = {
- *   encrypt: async (key, plaintext) => { ... },
- *   decrypt: async (key, nonce, ciphertext) => { ... },
+ *   encrypt: async (key, plaintext, aad) => { ... },
+ *   decrypt: async (key, nonce, ciphertext, aad) => { ... },
  *   toBase64: (bytes) => { ... },
  *   fromBase64: (str) => { ... },
  * };
@@ -57,6 +66,7 @@ export interface CryptoProvider {
   encrypt(
     key: Uint8Array,
     plaintext: Uint8Array,
+    aad: Uint8Array,
   ): Promise<{ nonce: Uint8Array; ciphertext: Uint8Array }>;
 
   /**
@@ -66,6 +76,7 @@ export interface CryptoProvider {
     key: Uint8Array,
     nonce: Uint8Array,
     ciphertext: Uint8Array,
+    aad: Uint8Array,
   ): Promise<Uint8Array>;
 
   /**
@@ -89,8 +100,9 @@ export const defaultCryptoProvider: CryptoProvider = {
   async encrypt(
     key: Uint8Array,
     plaintext: Uint8Array,
+    aad: Uint8Array,
   ): Promise<{ nonce: Uint8Array; ciphertext: Uint8Array }> {
-    const nonce = randomBytes(12);
+    const nonce = randomBytes(NONCE_SIZE);
     const cryptoKey = await crypto.subtle.importKey(
       "raw",
       key,
@@ -99,7 +111,7 @@ export const defaultCryptoProvider: CryptoProvider = {
       ["encrypt"],
     );
     const buf = await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: nonce },
+      { name: "AES-GCM", iv: nonce, additionalData: aad },
       cryptoKey,
       plaintext,
     );
@@ -110,6 +122,7 @@ export const defaultCryptoProvider: CryptoProvider = {
     key: Uint8Array,
     nonce: Uint8Array,
     ciphertext: Uint8Array,
+    aad: Uint8Array,
   ): Promise<Uint8Array> {
     const cryptoKey = await crypto.subtle.importKey(
       "raw",
@@ -119,7 +132,7 @@ export const defaultCryptoProvider: CryptoProvider = {
       ["decrypt"],
     );
     const buf = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: nonce },
+      { name: "AES-GCM", iv: nonce, additionalData: aad },
       cryptoKey,
       ciphertext,
     );
@@ -136,119 +149,110 @@ export const defaultCryptoProvider: CryptoProvider = {
 };
 
 // ---------------------------------------------------------------------------
-// Ephemeral key pair & key derivation (always pure JS — fast for 32 bytes)
-// ---------------------------------------------------------------------------
-
-/** Ephemeral X25519 key pair. */
-export interface EphemeralKeyPair {
-  publicKey: Uint8Array;
-  secretKey: Uint8Array;
-}
-
-/**
- * Generate an ephemeral X25519 key pair.
- * Spec §6.4 Step 2
- */
-export function generateEphemeralKeyPair(): EphemeralKeyPair {
-  const secretKey = x25519.utils.randomPrivateKey();
-  const publicKey = x25519.getPublicKey(secretKey);
-  return { publicKey, secretKey };
-}
-
-/**
- * Derive a shared secret via ECDH key exchange.
- * Spec §6.4 Step 3
- *
- * Client side: ECDH(ephemeral_sk, tee_pk)
- * TEE side:    ECDH(tee_sk, ephemeral_pk)
- */
-export function deriveSharedSecret(
-  ephemeralSecretKey: Uint8Array,
-  teePublicKey: Uint8Array
-): Uint8Array {
-  return x25519.getSharedSecret(ephemeralSecretKey, teePublicKey);
-}
-
-/**
- * Derive a symmetric key from a shared secret via HKDF-SHA256.
- * Spec §6.4 Step 4
- *
- * Parameters (matching Rust):
- * - hash: SHA-256
- * - salt: none
- * - info: "title-protocol-e2ee"
- * - output: 32 bytes (AES-256 key)
- */
-export function deriveSymmetricKey(sharedSecret: Uint8Array): Uint8Array {
-  return hkdf(sha256, sharedSecret, undefined, HKDF_INFO, 32);
-}
-
-// ---------------------------------------------------------------------------
-// High-level encrypt / decrypt (provider-aware)
+// Internal: Key derivation
 // ---------------------------------------------------------------------------
 
 /**
- * Encrypt a payload with AES-256-GCM.
- * Spec §6.4 Step 4
+ * Derive direction-separated keys from shared secret + encap key.
+ * RFC 5869: HKDF with salt=encapKey, IKM=sharedSecret.
+ * Matches Rust sealed_channel::derive_keys().
  */
-export async function encrypt(
-  symmetricKey: Uint8Array,
-  plaintext: Uint8Array,
-  provider: CryptoProvider = defaultCryptoProvider,
-): Promise<{ nonce: Uint8Array; ciphertext: Uint8Array }> {
-  return provider.encrypt(symmetricKey, plaintext);
+function deriveDirectionalKeys(
+  sharedSecret: Uint8Array,
+  encapKey: Uint8Array,
+): { requestKey: Uint8Array; responseKey: Uint8Array } {
+  const requestKey = hkdf(sha256, sharedSecret, encapKey, HKDF_INFO_REQUEST, 32);
+  const responseKey = hkdf(sha256, sharedSecret, encapKey, HKDF_INFO_RESPONSE, 32);
+  return { requestKey, responseKey };
 }
 
+// ---------------------------------------------------------------------------
+// Internal: Wire format
+// ---------------------------------------------------------------------------
+
 /**
- * Decrypt ciphertext with AES-256-GCM.
- * Spec §6.4 Step 9
+ * Build wire format: [suite_id(1B)][encap_key_len(2B BE)][encap_key][nonce][ciphertext]
+ * Matches Rust wire::build_wire().
  */
-export async function decrypt(
-  symmetricKey: Uint8Array,
+function buildWireFormat(
+  suiteId: number,
+  encapKey: Uint8Array,
   nonce: Uint8Array,
   ciphertext: Uint8Array,
-  provider: CryptoProvider = defaultCryptoProvider,
-): Promise<Uint8Array> {
-  return provider.decrypt(symmetricKey, nonce, ciphertext);
+): Uint8Array {
+  const total = 3 + encapKey.length + nonce.length + ciphertext.length;
+  const out = new Uint8Array(total);
+  out[0] = suiteId;
+  out[1] = (encapKey.length >> 8) & 0xff;
+  out[2] = encapKey.length & 0xff;
+  out.set(encapKey, 3);
+  out.set(nonce, 3 + encapKey.length);
+  out.set(ciphertext, 3 + encapKey.length + nonce.length);
+  return out;
 }
 
+// ---------------------------------------------------------------------------
+// High-level: encrypt / decrypt (provider-aware)
+// ---------------------------------------------------------------------------
+
 /**
- * Encrypt a client payload into a binary blob.
- * Spec §6.4
+ * Encrypt a client payload into a wire-format binary blob.
+ * Spec §6.4.3
  *
- * Wire format: `[32B: ephemeral_pubkey][12B: nonce][remaining: ciphertext]`
+ * Performs X25519 KEM + HKDF direction-separated key derivation + AES-256-GCM encryption.
  *
  * @param teeEncryptionPubkey - TEE X25519 public key (32 bytes)
  * @param plaintext - Bytes to encrypt (typically metadata + content binary)
+ * @param aad - Additional Authenticated Data (e.g., endpoint path like "/verify")
  * @param provider - CryptoProvider (default: Web Crypto API)
- * @returns The ephemeral key pair, derived symmetric key, and binary payload
+ * @returns Wire-format payload and response key for decrypting TEE's response
  */
 export async function encryptPayload(
   teeEncryptionPubkey: Uint8Array,
   plaintext: Uint8Array,
+  aad: Uint8Array,
   provider: CryptoProvider = defaultCryptoProvider,
 ): Promise<{
-  ephemeralKeyPair: EphemeralKeyPair;
-  symmetricKey: Uint8Array;
   payload: Uint8Array;
+  responseKey: Uint8Array;
 }> {
-  const ephemeralKeyPair = generateEphemeralKeyPair();
-  const sharedSecret = deriveSharedSecret(
-    ephemeralKeyPair.secretKey,
-    teeEncryptionPubkey
-  );
-  const symmetricKey = deriveSymmetricKey(sharedSecret);
-  const { nonce, ciphertext } = await provider.encrypt(symmetricKey, plaintext);
+  // 1. KEM: generate ephemeral X25519 key pair + ECDH
+  const ephSecretKey = x25519.utils.randomPrivateKey();
+  const ephPublicKey = x25519.getPublicKey(ephSecretKey);
+  const sharedSecret = x25519.getSharedSecret(ephSecretKey, teeEncryptionPubkey);
 
-  // Wire format: [32B eph_pk][12B nonce][ciphertext]
-  const payload = new Uint8Array(
-    ENCRYPTED_HEADER_SIZE + ciphertext.length
-  );
-  payload.set(ephemeralKeyPair.publicKey, 0);
-  payload.set(nonce, 32);
-  payload.set(ciphertext, ENCRYPTED_HEADER_SIZE);
+  // 2. KDF: direction-separated key derivation
+  const { requestKey, responseKey } = deriveDirectionalKeys(sharedSecret, ephPublicKey);
 
-  return { ephemeralKeyPair, symmetricKey, payload };
+  // 3. AEAD: encrypt with request_key
+  const { nonce, ciphertext } = await provider.encrypt(requestKey, plaintext, aad);
+
+  // 4. Build wire format
+  const payload = buildWireFormat(SUITE_X25519_AES256GCM, ephPublicKey, nonce, ciphertext);
+
+  return { payload, responseKey };
+}
+
+/**
+ * Decrypt an encrypted response from the TEE.
+ * Spec §6.4
+ *
+ * @param responseKey - Response key returned by `encryptPayload()`
+ * @param nonceB64 - Base64-encoded nonce from TEE response
+ * @param ciphertextB64 - Base64-encoded ciphertext from TEE response
+ * @param aad - Additional Authenticated Data (same endpoint path used in encrypt)
+ * @param provider - CryptoProvider (default: Web Crypto API)
+ */
+export async function decryptResponse(
+  responseKey: Uint8Array,
+  nonceB64: string,
+  ciphertextB64: string,
+  aad: Uint8Array,
+  provider: CryptoProvider = defaultCryptoProvider,
+): Promise<Uint8Array> {
+  const nonce = provider.fromBase64(nonceB64);
+  const ciphertext = provider.fromBase64(ciphertextB64);
+  return provider.decrypt(responseKey, nonce, ciphertext, aad);
 }
 
 /**
@@ -272,24 +276,4 @@ export function buildPlaintext(
   plaintext.set(metadataJson, 4);
   plaintext.set(content, 4 + metadataLen);
   return plaintext;
-}
-
-/**
- * Decrypt an encrypted response from the TEE.
- * Spec §6.4 Step 9
- *
- * @param symmetricKey - Symmetric key derived during `encryptPayload()`
- * @param nonceB64 - Base64-encoded nonce
- * @param ciphertextB64 - Base64-encoded ciphertext
- * @param provider - CryptoProvider (default: Web Crypto API)
- */
-export async function decryptResponse(
-  symmetricKey: Uint8Array,
-  nonceB64: string,
-  ciphertextB64: string,
-  provider: CryptoProvider = defaultCryptoProvider,
-): Promise<Uint8Array> {
-  const nonce = provider.fromBase64(nonceB64);
-  const ciphertext = provider.fromBase64(ciphertextB64);
-  return provider.decrypt(symmetricKey, nonce, ciphertext);
 }

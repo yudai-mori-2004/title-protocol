@@ -3,132 +3,137 @@
 /**
  * crypto.ts のテスト
  *
- * - 暗号化→復号のラウンドトリップ
- * - ECDH共有秘密の対称性（クライアント側/TEE側で同一鍵が導出される）
- * - HKDF鍵導出の決定性
+ * - ワイヤーフォーマット構築・解析
+ * - 方向別鍵導出（request_key ≠ response_key）
+ * - E2EEフルフロー（暗号化→復号ラウ��ドトリップ）
+ * - AADの不一致検出
  */
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 
 import {
-  generateEphemeralKeyPair,
-  deriveSharedSecret,
-  deriveSymmetricKey,
-  encrypt,
-  decrypt,
   encryptPayload,
   buildPlaintext,
   decryptResponse,
+  defaultCryptoProvider,
 } from "../crypto";
-import { ENCRYPTED_HEADER_SIZE } from "../types";
 import { x25519 } from "@noble/curves/ed25519";
+import { hkdf } from "@noble/hashes/hkdf";
+import { sha256 } from "@noble/hashes/sha256";
 
 describe("crypto", () => {
-  describe("generateEphemeralKeyPair", () => {
-    it("32バイトの公開鍵と秘密鍵を生成する", () => {
-      const kp = generateEphemeralKeyPair();
-      assert.equal(kp.publicKey.length, 32);
-      assert.equal(kp.secretKey.length, 32);
-    });
-
-    it("毎回異なるキーペアを生成する", () => {
-      const kp1 = generateEphemeralKeyPair();
-      const kp2 = generateEphemeralKeyPair();
-      assert.notDeepEqual(kp1.publicKey, kp2.publicKey);
-      assert.notDeepEqual(kp1.secretKey, kp2.secretKey);
-    });
-  });
-
-  describe("ECDH + HKDF", () => {
-    it("クライアント側とTEE側で同一の共有秘密が導出される", () => {
-      // クライアント側: エフェメラルキーペア
-      const clientKp = generateEphemeralKeyPair();
-      // TEE側: 固定キーペア（テスト用）
+  describe("encryptPayload wire format", () => {
+    it("生��されるペイロードがsuite_idワイヤーフォーマットに準拠する", async () => {
       const teeSecret = x25519.utils.randomPrivateKey();
       const teePubkey = x25519.getPublicKey(teeSecret);
 
-      // クライアント側: ECDH(eph_sk, tee_pk)
-      const clientShared = deriveSharedSecret(clientKp.secretKey, teePubkey);
-      // TEE側: ECDH(tee_sk, eph_pk)
-      const teeShared = deriveSharedSecret(teeSecret, clientKp.publicKey);
+      const plaintext = new TextEncoder().encode("test");
+      const aad = new TextEncoder().encode("/verify");
+
+      const { payload } = await encryptPayload(teePubkey, plaintext, aad);
+
+      // suite_id = 0x01
+      assert.equal(payload[0], 0x01);
+      // encap_key_len = 32 (0x0020 BE)
+      assert.equal(payload[1], 0x00);
+      assert.equal(payload[2], 0x20);
+      // encap_key = 32 bytes
+      const encapKey = payload.slice(3, 35);
+      assert.equal(encapKey.length, 32);
+      // nonce = 12 bytes
+      const nonce = payload.slice(35, 47);
+      assert.equal(nonce.length, 12);
+      // ciphertext = remaining
+      assert.ok(payload.length > 47);
+    });
+
+    it("毎回異なるエフェメラル鍵を生成する", async () => {
+      const teeSecret = x25519.utils.randomPrivateKey();
+      const teePubkey = x25519.getPublicKey(teeSecret);
+      const aad = new Uint8Array(0);
+
+      const { payload: p1 } = await encryptPayload(teePubkey, new Uint8Array(1), aad);
+      const { payload: p2 } = await encryptPayload(teePubkey, new Uint8Array(1), aad);
+
+      // encap keys differ
+      assert.notDeepEqual(p1.slice(3, 35), p2.slice(3, 35));
+    });
+  });
+
+  describe("direction-separated key derivation", () => {
+    it("request_keyとresponse_keyは異なる", () => {
+      const sharedSecret = new Uint8Array(32).fill(0x42);
+      const encapKey = new Uint8Array(32).fill(0xAA);
+
+      const requestKey = hkdf(
+        sha256, sharedSecret, encapKey,
+        new TextEncoder().encode("title-request-key"), 32,
+      );
+      const responseKey = hkdf(
+        sha256, sharedSecret, encapKey,
+        new TextEncoder().encode("title-response-key"), 32,
+      );
+
+      assert.notDeepEqual(requestKey, responseKey);
+      assert.equal(requestKey.length, 32);
+      assert.equal(responseKey.length, 32);
+    });
+
+    it("クライアント側とTEE側で同一の鍵が導出される", () => {
+      const secretKey = x25519.utils.randomPrivateKey();
+      const publicKey = x25519.getPublicKey(secretKey);
+
+      const teeSecret = x25519.utils.randomPrivateKey();
+      const teePubkey = x25519.getPublicKey(teeSecret);
+
+      // Client: ECDH(eph_sk, tee_pk)
+      const clientShared = x25519.getSharedSecret(secretKey, teePubkey);
+      // TEE: ECDH(tee_sk, eph_pk)
+      const teeShared = x25519.getSharedSecret(teeSecret, publicKey);
 
       assert.deepEqual(clientShared, teeShared);
-    });
 
-    it("同一の共有秘密から同一の対称鍵が導出される", () => {
-      const clientKp = generateEphemeralKeyPair();
-      const teeSecret = x25519.utils.randomPrivateKey();
-      const teePubkey = x25519.getPublicKey(teeSecret);
-
-      const clientShared = deriveSharedSecret(clientKp.secretKey, teePubkey);
-      const teeShared = deriveSharedSecret(teeSecret, clientKp.publicKey);
-
-      const clientKey = deriveSymmetricKey(clientShared);
-      const teeKey = deriveSymmetricKey(teeShared);
-
-      assert.deepEqual(clientKey, teeKey);
-      assert.equal(clientKey.length, 32); // AES-256
-    });
-
-    it("HKDF鍵導出は決定的である", () => {
-      const secret = new Uint8Array(32).fill(0x42);
-      const key1 = deriveSymmetricKey(secret);
-      const key2 = deriveSymmetricKey(secret);
-      assert.deepEqual(key1, key2);
+      // Both derive same directional keys
+      const encapKey = publicKey;
+      const clientRequest = hkdf(sha256, clientShared, encapKey,
+        new TextEncoder().encode("title-request-key"), 32);
+      const teeRequest = hkdf(sha256, teeShared, encapKey,
+        new TextEncoder().encode("title-request-key"), 32);
+      assert.deepEqual(clientRequest, teeRequest);
     });
   });
 
-  describe("AES-256-GCM encrypt/decrypt", () => {
+  describe("AES-256-GCM with AAD", () => {
     it("暗号化→復号のラウンドトリップが成功する", async () => {
-      const key = deriveSymmetricKey(new Uint8Array(32).fill(0xaa));
+      const key = new Uint8Array(32).fill(0xaa);
       const plaintext = new TextEncoder().encode("Hello, Title Protocol!");
+      const aad = new TextEncoder().encode("/verify");
 
-      const { nonce, ciphertext } = await encrypt(key, plaintext);
+      const { nonce, ciphertext } = await defaultCryptoProvider.encrypt(key, plaintext, aad);
       assert.equal(nonce.length, 12);
       assert.notDeepEqual(ciphertext, plaintext);
 
-      const decrypted = await decrypt(key, nonce, ciphertext);
+      const decrypted = await defaultCryptoProvider.decrypt(key, nonce, ciphertext, aad);
       assert.deepEqual(decrypted, plaintext);
     });
 
-    it("異なる鍵での復号は失敗する", async () => {
-      const key1 = deriveSymmetricKey(new Uint8Array(32).fill(0xaa));
-      const key2 = deriveSymmetricKey(new Uint8Array(32).fill(0xbb));
-      const plaintext = new TextEncoder().encode("secret data");
+    it("AAD不一致で復号が失敗する", async () => {
+      const key = new Uint8Array(32).fill(0xbb);
+      const plaintext = new TextEncoder().encode("secret");
+      const aad1 = new TextEncoder().encode("/verify");
+      const aad2 = new TextEncoder().encode("/sign");
 
-      const { nonce, ciphertext } = await encrypt(key1, plaintext);
+      const { nonce, ciphertext } = await defaultCryptoProvider.encrypt(key, plaintext, aad1);
 
       await assert.rejects(
-        () => decrypt(key2, nonce, ciphertext),
-        /OperationError/
+        () => defaultCryptoProvider.decrypt(key, nonce, ciphertext, aad2),
       );
-    });
-
-    it("空のペイロードも暗号化・復号できる", async () => {
-      const key = deriveSymmetricKey(new Uint8Array(32).fill(0xcc));
-      const plaintext = new Uint8Array(0);
-
-      const { nonce, ciphertext } = await encrypt(key, plaintext);
-      const decrypted = await decrypt(key, nonce, ciphertext);
-      assert.deepEqual(decrypted, plaintext);
-    });
-
-    it("大きなペイロードも暗号化・復号できる", async () => {
-      const key = deriveSymmetricKey(new Uint8Array(32).fill(0xdd));
-      const plaintext = new Uint8Array(1024 * 1024); // 1MB
-      for (let i = 0; i < plaintext.length; i++) {
-        plaintext[i] = i % 256;
-      }
-
-      const { nonce, ciphertext } = await encrypt(key, plaintext);
-      const decrypted = await decrypt(key, nonce, ciphertext);
-      assert.deepEqual(decrypted, plaintext);
     });
   });
 
-  describe("encryptPayload / decryptResponse", () => {
-    it("E2EEフルフロー: binary encrypt → parse → decrypt", async () => {
+  describe("encryptPayload / decryptResponse E2EE", () => {
+    it("フルフロー: encrypt → TEE decrypt → TEE encrypt response → client decrypt", async () => {
       // TEEのキーペア生成
       const teeSecret = x25519.utils.randomPrivateKey();
       const teePubkey = x25519.getPublicKey(teeSecret);
@@ -140,53 +145,58 @@ describe("crypto", () => {
         content,
       );
 
+      const aad = new TextEncoder().encode("/verify");
+
       // クライアント側: 暗号化
-      const { symmetricKey, payload } = await encryptPayload(
+      const { payload, responseKey } = await encryptPayload(
         teePubkey,
-        plaintext
+        plaintext,
+        aad,
       );
 
-      // バイナリフォーマットの検証
-      assert.ok(payload.length >= ENCRYPTED_HEADER_SIZE);
+      // TEE側: ワイヤーフォーマット解析
+      assert.equal(payload[0], 0x01); // suite_id
+      const encapKeyLen = (payload[1] << 8) | payload[2];
+      assert.equal(encapKeyLen, 32);
+      const encapKey = payload.slice(3, 3 + encapKeyLen);
+      const nonce = payload.slice(3 + encapKeyLen, 3 + encapKeyLen + 12);
+      const ciphertext = payload.slice(3 + encapKeyLen + 12);
 
-      // TEE側: バイナリヘッダをパース
-      const ephPubkeyBytes = payload.slice(0, 32);
-      const nonce = payload.slice(32, 44);
-      const ciphertext = payload.slice(44);
+      // TEE側: KEM decapsulate + KDF
+      const teeShared = x25519.getSharedSecret(teeSecret, encapKey);
+      const teeRequestKey = hkdf(sha256, teeShared, encapKey,
+        new TextEncoder().encode("title-request-key"), 32);
+      const teeResponseKey = hkdf(sha256, teeShared, encapKey,
+        new TextEncoder().encode("title-response-key"), 32);
 
-      // TEE側: 同一の対称鍵を導出
-      const teeShared = deriveSharedSecret(teeSecret, ephPubkeyBytes);
-      const teeSymmetricKey = deriveSymmetricKey(teeShared);
-      assert.deepEqual(teeSymmetricKey, symmetricKey);
-
-      // TEE側: 復号
-      const decrypted = await decrypt(teeSymmetricKey, nonce, ciphertext);
+      // TEE側: AEAD復号
+      const decrypted = await defaultCryptoProvider.decrypt(
+        teeRequestKey, nonce, ciphertext, aad,
+      );
       assert.deepEqual(decrypted, plaintext);
 
-      // TEE側: 平文をパース — [4B metadata_len][metadata JSON][raw content]
+      // 平文パース
       const metaLen = new DataView(decrypted.buffer, decrypted.byteOffset).getUint32(0);
       const metaJson = JSON.parse(
-        new TextDecoder().decode(decrypted.slice(4, 4 + metaLen))
+        new TextDecoder().decode(decrypted.slice(4, 4 + metaLen)),
       );
       assert.equal(metaJson.owner_wallet, "SomeBase58Address");
-      const extractedContent = decrypted.slice(4 + metaLen);
-      assert.deepEqual(extractedContent, content);
 
-      // TEE側: レスポンスを同一鍵で暗号化して返す
+      // TEE側: レスポンスをresponse_keyで暗号化
       const responsePayload = JSON.stringify({
         results: [{ processor_id: "core-c2pa", signed_json: {} }],
       });
       const responseBytes = new TextEncoder().encode(responsePayload);
-      const { nonce: respNonce, ciphertext: respCt } = await encrypt(
-        teeSymmetricKey,
-        responseBytes
-      );
+      const { nonce: respNonce, ciphertext: respCt } =
+        await defaultCryptoProvider.encrypt(teeResponseKey, responseBytes, aad);
 
-      // クライアント側: レスポンス復号
+      // クライアント側: レスポンス復号（responseKeyを使用）
+      assert.deepEqual(responseKey, teeResponseKey);
       const clientDecrypted = await decryptResponse(
-        symmetricKey,
+        responseKey,
         Buffer.from(respNonce).toString("base64"),
-        Buffer.from(respCt).toString("base64")
+        Buffer.from(respCt).toString("base64"),
+        aad,
       );
       assert.deepEqual(clientDecrypted, responseBytes);
     });
@@ -200,15 +210,12 @@ describe("crypto", () => {
         content,
       );
 
-      // metadata_len をパース
       const metaLen = new DataView(result.buffer, result.byteOffset).getUint32(0);
       const metaJson = JSON.parse(
-        new TextDecoder().decode(result.slice(4, 4 + metaLen))
+        new TextDecoder().decode(result.slice(4, 4 + metaLen)),
       );
       assert.equal(metaJson.owner_wallet, "W");
       assert.deepEqual(metaJson.extension_inputs, { ext: { key: "val" } });
-
-      // content が正しく結合されている
       assert.deepEqual(result.slice(4 + metaLen), content);
     });
   });

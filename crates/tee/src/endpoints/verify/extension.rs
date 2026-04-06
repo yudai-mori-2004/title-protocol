@@ -4,7 +4,6 @@
 //!
 //! 仕様書 §3.1, §5.1 Step 5, §7.1
 
-use base58::ToBase58;
 use base64::Engine;
 
 use title_types::{Attribute, ExtensionPayload, SignedJson, SignedJsonCore};
@@ -125,7 +124,7 @@ pub(crate) async fn process_extension(
     let tagged = title_crypto::domain_tagged("title-protocol-v1", &sign_bytes);
     let signature = signer.sign(&tagged)
         .map_err(|e| format!("署名に失敗: {e}"))?;
-    let tee_pubkey_b58 = signer.public_key_bytes().to_base58();
+    let tee_pubkey_b64 = b64().encode(signer.public_key_bytes());
     let attestation_b64 = b64().encode(state.runtime.get_attestation());
 
     // Extension signed_json構築（Core同様にSignedJson構造体を使用）
@@ -134,7 +133,7 @@ pub(crate) async fn process_extension(
         core: SignedJsonCore {
             protocol: "Title-Extension-v1".to_string(),
             tee_type: state.runtime.tee_type().to_string(),
-            tee_pubkey: tee_pubkey_b58,
+            tee_pubkey: tee_pubkey_b64,
             tee_signature: b64().encode(&signature),
             tee_signature_algorithm: signer.algorithm().as_str().to_string(),
             tee_attestation: attestation_b64,

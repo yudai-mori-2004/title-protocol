@@ -79,9 +79,12 @@ async fn main() -> anyhow::Result<()> {
     // Gateway認証用公開鍵（仕様書 §6.2）
     let gateway_pubkey: Option<Box<dyn title_crypto::signing::Verifier>> = std::env::var("GATEWAY_PUBKEY").ok().filter(|s| !s.is_empty()).map(|s| {
         use base58::FromBase58;
+        let algo_str = std::env::var("GATEWAY_SIGNING_ALGORITHM").unwrap_or_else(|_| "ed25519".to_string());
+        let algo = title_crypto::SigningAlgorithm::from_str(&algo_str)
+            .unwrap_or_else(|| panic!("GATEWAY_SIGNING_ALGORITHMが不正です: {algo_str}"));
         let bytes = s.from_base58().expect("GATEWAY_PUBKEYが不正なBase58です");
-        title_crypto::create_verifier(title_crypto::SigningAlgorithm::Ed25519, &bytes)
-            .expect("GATEWAY_PUBKEYが不正なEd25519公開鍵です")
+        title_crypto::create_verifier(algo, &bytes)
+            .unwrap_or_else(|e| panic!("GATEWAY_PUBKEYが不正な公開鍵です: {e}"))
     });
     if gateway_pubkey.is_some() {
         tracing::info!("Gateway認証が有効です");

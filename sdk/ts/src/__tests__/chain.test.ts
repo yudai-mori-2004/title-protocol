@@ -107,10 +107,19 @@ function buildGlobalConfigBuffer(opts: {
   return Buffer.concat(parts);
 }
 
-/** Build a minimal TeeNodeAccount buffer. */
+/** Borsh Vec<u8> encode: 4-byte LE length + raw bytes. */
+function borshVec(data: Buffer): Buffer {
+  return Buffer.concat([u32le(data.length), data]);
+}
+
+/** Build a minimal TeeNodeAccount buffer (PQC-ready schema). */
 function buildTeeNodeBuffer(opts: {
-  signingPubkey: Buffer;
+  solanaPubkey: Buffer;
+  protocolSigningAlgorithm: number;
+  protocolSigningPubkey: Buffer;
+  encryptionAlgorithm: number;
   encryptionPubkey: Buffer;
+  gatewaySigningAlgorithm: number;
   gatewayPubkey: Buffer;
   gatewayEndpoint: string;
   status: number;
@@ -121,9 +130,13 @@ function buildTeeNodeBuffer(opts: {
   const parts: Buffer[] = [];
 
   parts.push(anchorDiscriminator("TeeNodeAccount"));
-  parts.push(opts.signingPubkey);
-  parts.push(opts.encryptionPubkey);
-  parts.push(opts.gatewayPubkey);
+  parts.push(opts.solanaPubkey);
+  parts.push(Buffer.from([opts.protocolSigningAlgorithm]));
+  parts.push(borshVec(opts.protocolSigningPubkey));
+  parts.push(Buffer.from([opts.encryptionAlgorithm]));
+  parts.push(borshVec(opts.encryptionPubkey));
+  parts.push(Buffer.from([opts.gatewaySigningAlgorithm]));
+  parts.push(borshVec(opts.gatewayPubkey));
   parts.push(borshString(opts.gatewayEndpoint));
   parts.push(Buffer.from([opts.status]));
   parts.push(Buffer.from([opts.teeType]));
@@ -385,13 +398,18 @@ describe("chain", () => {
 
   describe("TeeNodeAccount deserialization", () => {
     it("deserializes node with no measurements", () => {
-      const signingPubkey = randomBytes32();
+      const solanaPubkey = randomBytes32();
+      const protocolSigningPubkey = randomBytes32();
       const encryptionPubkey = randomBytes32();
       const gatewayPubkey = randomBytes32();
 
       const buf = buildTeeNodeBuffer({
-        signingPubkey,
+        solanaPubkey,
+        protocolSigningAlgorithm: 0, // ed25519
+        protocolSigningPubkey,
+        encryptionAlgorithm: 0, // x25519
         encryptionPubkey,
+        gatewaySigningAlgorithm: 0, // ed25519
         gatewayPubkey,
         gatewayEndpoint: "http://localhost:3000",
         status: 1,
@@ -402,13 +420,20 @@ describe("chain", () => {
 
       const result = _deserializeTeeNodeAccount(buf);
       assert.equal(
-        result.signingPubkey.toString("hex"),
-        signingPubkey.toString("hex")
+        result.solanaPubkey.toString("hex"),
+        solanaPubkey.toString("hex")
       );
+      assert.equal(result.protocolSigningAlgorithm, 0);
+      assert.equal(
+        result.protocolSigningPubkey.toString("hex"),
+        protocolSigningPubkey.toString("hex")
+      );
+      assert.equal(result.encryptionAlgorithm, 0);
       assert.equal(
         result.encryptionPubkey.toString("hex"),
         encryptionPubkey.toString("hex")
       );
+      assert.equal(result.gatewaySigningAlgorithm, 0);
       assert.equal(result.gatewayEndpoint, "http://localhost:3000");
       assert.equal(result.status, 1);
       assert.equal(result.teeType, 0);
@@ -421,8 +446,12 @@ describe("chain", () => {
       const mValue = measurementValue48();
 
       const buf = buildTeeNodeBuffer({
-        signingPubkey: randomBytes32(),
+        solanaPubkey: randomBytes32(),
+        protocolSigningAlgorithm: 0,
+        protocolSigningPubkey: randomBytes32(),
+        encryptionAlgorithm: 0,
         encryptionPubkey: randomBytes32(),
+        gatewaySigningAlgorithm: 0,
         gatewayPubkey: randomBytes32(),
         gatewayEndpoint: "https://gateway.example.com",
         status: 0,
@@ -548,7 +577,7 @@ describe("chain", () => {
   });
 
   describe("encoding conventions", () => {
-    it("signing_pubkey and gateway_pubkey are Base58", () => {
+    it("solana_pubkey is Base58", () => {
       const testBytes = Buffer.alloc(32, 0x01);
       const b58 = bs58.encode(testBytes);
       assert.ok(b58.length > 0);
@@ -557,7 +586,7 @@ describe("chain", () => {
       assert.deepEqual(Buffer.from(decoded), testBytes);
     });
 
-    it("encryption_pubkey is Base64", () => {
+    it("signing_pubkey, encryption_pubkey, gateway_pubkey are Base64", () => {
       const testBytes = Buffer.alloc(32, 0x42);
       const b64 = testBytes.toString("base64");
       assert.ok(b64.endsWith("=") || b64.length > 0);

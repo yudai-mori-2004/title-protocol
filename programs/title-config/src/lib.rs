@@ -195,9 +195,13 @@ pub mod title_config {
     /// 登録と権限委譲は1トランザクションで不可分に実行される。
     pub fn register_tee_node(
         ctx: Context<RegisterTeeNode>,
-        signing_pubkey: [u8; 32],
-        encryption_pubkey: [u8; 32],
-        gateway_pubkey: [u8; 32],
+        solana_pubkey: [u8; 32],
+        protocol_signing_algorithm: u8,
+        protocol_signing_pubkey: Vec<u8>,
+        encryption_algorithm: u8,
+        encryption_pubkey: Vec<u8>,
+        gateway_signing_algorithm: u8,
+        gateway_pubkey: Vec<u8>,
         gateway_endpoint: String,
         tee_type: u8,
         measurements: Vec<MeasurementEntry>,
@@ -210,8 +214,12 @@ pub mod title_config {
 
         // TeeNodeAccount 初期化
         let node = &mut ctx.accounts.tee_node;
-        node.signing_pubkey = signing_pubkey;
+        node.solana_pubkey = solana_pubkey;
+        node.protocol_signing_algorithm = protocol_signing_algorithm;
+        node.protocol_signing_pubkey = protocol_signing_pubkey;
+        node.encryption_algorithm = encryption_algorithm;
         node.encryption_pubkey = encryption_pubkey;
+        node.gateway_signing_algorithm = gateway_signing_algorithm;
         node.gateway_pubkey = gateway_pubkey;
         node.gateway_endpoint = gateway_endpoint;
         node.status = 1; // Active
@@ -219,9 +227,9 @@ pub mod title_config {
         node.measurements = measurements;
         node.bump = ctx.bumps.tee_node;
 
-        // GlobalConfig にノード追加
+        // GlobalConfig にノード追加（Solana identityで管理）
         let config = &mut ctx.accounts.global_config;
-        config.trusted_node_keys.push(signing_pubkey);
+        config.trusted_node_keys.push(solana_pubkey);
         let is_first_node = config.trusted_node_keys.len() == 1;
         let all_keys = config.trusted_node_keys.clone();
         // NLL: config の mutable borrow はここで終了
@@ -255,7 +263,7 @@ pub mod title_config {
         }
 
         emit!(TeeNodeRegistered {
-            signing_pubkey: Pubkey::new_from_array(signing_pubkey),
+            signing_pubkey: Pubkey::new_from_array(solana_pubkey),
         });
 
         Ok(())
@@ -267,8 +275,12 @@ pub mod title_config {
     /// 更新対象フィールドのみSomeで渡す。Noneのフィールドは変更しない。
     pub fn update_tee_node(
         ctx: Context<UpdateTeeNode>,
-        encryption_pubkey: Option<[u8; 32]>,
-        gateway_pubkey: Option<[u8; 32]>,
+        protocol_signing_algorithm: Option<u8>,
+        protocol_signing_pubkey: Option<Vec<u8>>,
+        encryption_algorithm: Option<u8>,
+        encryption_pubkey: Option<Vec<u8>>,
+        gateway_signing_algorithm: Option<u8>,
+        gateway_pubkey: Option<Vec<u8>>,
         gateway_endpoint: Option<String>,
         status: Option<u8>,
         measurements: Option<Vec<MeasurementEntry>>,
@@ -281,8 +293,20 @@ pub mod title_config {
         }
 
         let node = &mut ctx.accounts.tee_node;
+        if let Some(v) = protocol_signing_algorithm {
+            node.protocol_signing_algorithm = v;
+        }
+        if let Some(v) = protocol_signing_pubkey {
+            node.protocol_signing_pubkey = v;
+        }
+        if let Some(v) = encryption_algorithm {
+            node.encryption_algorithm = v;
+        }
         if let Some(v) = encryption_pubkey {
             node.encryption_pubkey = v;
+        }
+        if let Some(v) = gateway_signing_algorithm {
+            node.gateway_signing_algorithm = v;
         }
         if let Some(v) = gateway_pubkey {
             node.gateway_pubkey = v;
@@ -308,11 +332,11 @@ pub mod title_config {
     ///
     /// **不変条件**: GlobalConfigのtrusted_node_keys == コレクションのadditional_delegates。
     pub fn remove_tee_node(ctx: Context<RemoveTeeNode>) -> Result<()> {
-        let signing_pubkey = ctx.accounts.tee_node.signing_pubkey;
+        let solana_pubkey = ctx.accounts.tee_node.solana_pubkey;
 
         // GlobalConfig からノード削除
         let config = &mut ctx.accounts.global_config;
-        config.trusted_node_keys.retain(|k| k != &signing_pubkey);
+        config.trusted_node_keys.retain(|k| k != &solana_pubkey);
         let remaining_keys = config.trusted_node_keys.clone();
         // NLL: config の mutable borrow はここで終了
 
@@ -344,7 +368,7 @@ pub mod title_config {
         }
 
         emit!(TeeNodeDeactivated {
-            signing_pubkey: Pubkey::new_from_array(signing_pubkey),
+            signing_pubkey: Pubkey::new_from_array(solana_pubkey),
         });
 
         Ok(())
@@ -359,7 +383,7 @@ pub mod title_config {
         node.status = 0;
 
         emit!(TeeNodeDeactivated {
-            signing_pubkey: Pubkey::new_from_array(node.signing_pubkey),
+            signing_pubkey: Pubkey::new_from_array(node.solana_pubkey),
         });
 
         Ok(())
@@ -650,16 +674,27 @@ impl WasmVersionEntry {
 /// TEEノード情報。per-node PDA。
 /// 仕様書 §5.2 Step 1
 ///
-/// GlobalConfigのtrusted_node_keysにsigning_pubkeyが登録され、
-/// 詳細情報は本PDA（seeds=[b"tee-node", &signing_pubkey]）に格納される。
+/// GlobalConfigのtrusted_node_keysにsolana_pubkeyが登録され、
+/// 詳細情報は本PDA（seeds=[b"tee-node", &solana_pubkey]）に格納される。
+///
+/// PQC-ready設計: protocol/encryption/gateway鍵はアルゴリズム識別子+可変長公開鍵。
+/// Solana identity (solana_pubkey) はEd25519固定（Solana TX署名制約）。
 #[account]
 pub struct TeeNodeAccount {
-    /// Ed25519署名用公開鍵（32バイト）
-    pub signing_pubkey: [u8; 32],
-    /// X25519暗号化用公開鍵（32バイト）
-    pub encryption_pubkey: [u8; 32],
-    /// Gateway署名用Ed25519公開鍵
-    pub gateway_pubkey: [u8; 32],
+    /// Solana Ed25519公開鍵（32バイト固定、PDA seed + Solana TX署名用）
+    pub solana_pubkey: [u8; 32],
+    /// プロトコル署名アルゴリズム (0=ed25519, 1=ml-dsa-65, ...)
+    pub protocol_signing_algorithm: u8,
+    /// プロトコル署名用公開鍵（Ed25519=32B, ML-DSA-65=1952B）
+    pub protocol_signing_pubkey: Vec<u8>,
+    /// 暗号化アルゴリズム (0=x25519, 1=ml-kem-768, ...)
+    pub encryption_algorithm: u8,
+    /// 暗号化用公開鍵（X25519=32B, ML-KEM-768=1184B）
+    pub encryption_pubkey: Vec<u8>,
+    /// Gateway署名アルゴリズム (0=ed25519, ...)
+    pub gateway_signing_algorithm: u8,
+    /// Gateway署名用公開鍵
+    pub gateway_pubkey: Vec<u8>,
     /// GatewayエンドポイントURL
     pub gateway_endpoint: String,
     /// ノードステータス (0=Inactive, 1=Active)
@@ -676,17 +711,22 @@ pub struct TeeNodeAccount {
 impl TeeNodeAccount {
     /// 固定フィールドサイズ
     const BASE_SIZE: usize = 8 // discriminator
-        + 32  // signing_pubkey
-        + 32  // encryption_pubkey
-        + 32  // gateway_pubkey
+        + 32  // solana_pubkey
+        + 1   // protocol_signing_algorithm
+        + 4   // protocol_signing_pubkey Vec prefix
+        + 1   // encryption_algorithm
+        + 4   // encryption_pubkey Vec prefix
+        + 1   // gateway_signing_algorithm
+        + 4   // gateway_pubkey Vec prefix
         + 4   // gateway_endpoint String prefix
         + 1   // status
         + 1   // tee_type
         + 4   // measurements Vec prefix
         + 1;  // bump
 
-    /// 最大スペース（gateway_endpoint 256文字 + measurements 8エントリ）
-    pub const MAX_SPACE: usize = Self::BASE_SIZE + 256 + 8 * MeasurementEntry::SIZE;
+    /// 最大スペース（Phase 1: Ed25519/X25519 32B鍵 + gateway_endpoint 256文字 + measurements 8エントリ）
+    /// PQC移行時はreallocで拡張する。
+    pub const MAX_SPACE: usize = Self::BASE_SIZE + 32 + 32 + 32 + 256 + 8 * MeasurementEntry::SIZE;
 }
 
 /// TEE測定値エントリ。
@@ -739,7 +779,7 @@ pub struct Initialize<'info> {
 /// TEEにcNFTミント権限を付与する。authorityはコレクションのupdate_authorityとして
 /// MPL Core CPIのpayerも兼ねる（プラグイン追加/更新のrent費用）。
 #[derive(Accounts)]
-#[instruction(signing_pubkey: [u8; 32])]
+#[instruction(solana_pubkey: [u8; 32])]
 pub struct RegisterTeeNode<'info> {
     #[account(
         mut,
@@ -752,17 +792,17 @@ pub struct RegisterTeeNode<'info> {
         init,
         payer = payer,
         space = TeeNodeAccount::MAX_SPACE,
-        seeds = [b"tee-node", signing_pubkey.as_ref()],
+        seeds = [b"tee-node", solana_pubkey.as_ref()],
         bump
     )]
     pub tee_node: Account<'info, TeeNodeAccount>,
     /// DAO承認（署名 + MPL Core CPI authority/payer）
     #[account(mut)]
     pub authority: Signer<'info>,
-    /// TEEノードの署名鍵所有者（rent支払い + 鍵所有証明）
+    /// TEEノードのSolana鍵所有者（rent支払い + 鍵所有証明）
     #[account(
         mut,
-        constraint = payer.key() == Pubkey::new_from_array(signing_pubkey) @ ErrorCode::PayerSigningKeyMismatch
+        constraint = payer.key() == Pubkey::new_from_array(solana_pubkey) @ ErrorCode::PayerSigningKeyMismatch
     )]
     pub payer: Signer<'info>,
     /// CHECK: Core cNFTコレクション。GlobalConfigの値と一致を検証する。
@@ -800,7 +840,7 @@ pub struct RemoveTeeNode<'info> {
     #[account(
         mut,
         close = rent_recipient,
-        seeds = [b"tee-node", tee_node.signing_pubkey.as_ref()],
+        seeds = [b"tee-node", tee_node.solana_pubkey.as_ref()],
         bump = tee_node.bump
     )]
     pub tee_node: Account<'info, TeeNodeAccount>,
@@ -841,7 +881,7 @@ pub struct UpdateTeeNode<'info> {
     pub global_config: Account<'info, GlobalConfigAccount>,
     #[account(
         mut,
-        seeds = [b"tee-node", tee_node.signing_pubkey.as_ref()],
+        seeds = [b"tee-node", tee_node.solana_pubkey.as_ref()],
         bump = tee_node.bump
     )]
     pub tee_node: Account<'info, TeeNodeAccount>,

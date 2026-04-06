@@ -51,9 +51,9 @@ fn find_global_config_pda(program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"global-config"], program_id)
 }
 
-/// TeeNodeAccount PDA導出。seeds = [b"tee-node", &signing_pubkey]
-fn find_tee_node_pda(signing_pubkey: &[u8; 32], program_id: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"tee-node", signing_pubkey.as_ref()], program_id)
+/// TeeNodeAccount PDA導出。seeds = [b"tee-node", &solana_pubkey]
+fn find_tee_node_pda(solana_pubkey: &[u8; 32], program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"tee-node", solana_pubkey.as_ref()], program_id)
 }
 
 /// Borsh String encode: 4-byte LE length + UTF-8 bytes
@@ -63,6 +63,30 @@ fn borsh_string(s: &str) -> Vec<u8> {
     buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
     buf.extend_from_slice(bytes);
     buf
+}
+
+/// Borsh Vec<u8> encode: 4-byte LE length + raw bytes
+fn borsh_vec(v: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4 + v.len());
+    buf.extend_from_slice(&(v.len() as u32).to_le_bytes());
+    buf.extend_from_slice(v);
+    buf
+}
+
+/// 署名アルゴリズム文字列からオンチェーンu8に変換。
+fn signing_algorithm_to_u8(algo: &str) -> Result<u8, TeeError> {
+    match algo {
+        "ed25519" => Ok(0),
+        _ => Err(TeeError::Internal(format!("未対応の署名アルゴリズム: {algo}"))),
+    }
+}
+
+/// KEMアルゴリズムからオンチェーンu8に変換。
+fn kem_algorithm_to_u8(algo: &str) -> Result<u8, TeeError> {
+    match algo {
+        "x25519-hkdf-sha256" => Ok(0),
+        _ => Err(TeeError::Internal(format!("未対応のKEMアルゴリズム: {algo}"))),
+    }
 }
 
 /// /register-node エンドポイントハンドラ。
@@ -83,31 +107,36 @@ pub async fn handle_register_node(
     let authority = Pubkey::from_str(&request.authority)
         .map_err(|e| TeeError::BadRequest(format!("authorityのパースに失敗: {e}")))?;
 
-    // Gateway pubkey
-    let gateway_pubkey_bytes: [u8; 32] = {
+    // Gateway pubkey (Base58 → bytes)
+    let gateway_pubkey_bytes: Vec<u8> = {
         let pk = Pubkey::from_str(&request.gateway_pubkey)
             .map_err(|e| TeeError::BadRequest(format!("gateway_pubkeyのパースに失敗: {e}")))?;
-        pk.to_bytes()
+        pk.to_bytes().to_vec()
     };
+    let gateway_signing_algorithm_u8 = signing_algorithm_to_u8(&request.gateway_signing_algorithm)?;
 
     // Blockhash
     let blockhash = solana_sdk::hash::Hash::from_str(&request.recent_blockhash)
         .map_err(|e| TeeError::BadRequest(format!("recent_blockhashのパースに失敗: {e}")))?;
 
     // TEE鍵取得
-    let signing_pubkey_bytes: [u8; 32] = state
+    let solana_pubkey_bytes: [u8; 32] = state
         .runtime
         .solana_signer()
         .public_key_bytes()
         .try_into()
-        .map_err(|_| TeeError::Internal("署名用公開鍵の取得に失敗".into()))?;
-    let tee_signing_pubkey = Pubkey::new_from_array(signing_pubkey_bytes);
+        .map_err(|_| TeeError::Internal("Solana公開鍵の取得に失敗".into()))?;
+    let tee_signing_pubkey = Pubkey::new_from_array(solana_pubkey_bytes);
 
+    // プロトコル署名鍵
+    let protocol_signing_algorithm_u8 =
+        signing_algorithm_to_u8(state.runtime.protocol_signing_algorithm().as_str())?;
+    let protocol_signing_pubkey_bytes: Vec<u8> = state.runtime.protocol_signer().public_key_bytes();
+
+    // 暗号化鍵
+    let encryption_algorithm_u8 =
+        kem_algorithm_to_u8(state.runtime.kem_algorithm().as_str())?;
     let encryption_pubkey_bytes: Vec<u8> = state.runtime.decapsulator().public_key_bytes();
-    let encryption_pubkey_arr: [u8; 32] = encryption_pubkey_bytes
-        .clone()
-        .try_into()
-        .map_err(|_| TeeError::Internal("暗号化用公開鍵の取得に失敗".into()))?;
 
     // tee_type: runtime名からu8に変換
     let tee_type: u8 = match state.runtime.tee_type() {
@@ -128,7 +157,7 @@ pub async fn handle_register_node(
 
     // PDA導出
     let (global_config_pda, _) = find_global_config_pda(&program_id);
-    let (tee_node_pda, _) = find_tee_node_pda(&signing_pubkey_bytes, &program_id);
+    let (tee_node_pda, _) = find_tee_node_pda(&solana_pubkey_bytes, &program_id);
 
     // MeasurementEntry構築: key=[u8;16] (null-padded), value=[u8;48]
     // 仕様書 §5.2 Step 4 — キー名と値の解釈は tee_type に依存する
@@ -152,16 +181,22 @@ pub async fn handle_register_node(
         entries
     };
 
-    // Anchor命令データ構築
-    // register_tee_node(signing_pubkey, encryption_pubkey, gateway_pubkey,
+    // Anchor命令データ構築（新スキーマ: PQC-ready可変長フィールド）
+    // register_tee_node(solana_pubkey, protocol_signing_algorithm, protocol_signing_pubkey,
+    //                   encryption_algorithm, encryption_pubkey,
+    //                   gateway_signing_algorithm, gateway_pubkey,
     //                   gateway_endpoint, tee_type, measurements)
     let mut ix_data = Vec::new();
     ix_data.extend_from_slice(&anchor_disc_register_tee_node());
-    ix_data.extend_from_slice(&signing_pubkey_bytes); // signing_pubkey: [u8; 32]
-    ix_data.extend_from_slice(&encryption_pubkey_arr); // encryption_pubkey: [u8; 32]
-    ix_data.extend_from_slice(&gateway_pubkey_bytes); // gateway_pubkey: [u8; 32]
+    ix_data.extend_from_slice(&solana_pubkey_bytes);           // solana_pubkey: [u8; 32]
+    ix_data.push(protocol_signing_algorithm_u8);               // protocol_signing_algorithm: u8
+    ix_data.extend_from_slice(&borsh_vec(&protocol_signing_pubkey_bytes)); // protocol_signing_pubkey: Vec<u8>
+    ix_data.push(encryption_algorithm_u8);                     // encryption_algorithm: u8
+    ix_data.extend_from_slice(&borsh_vec(&encryption_pubkey_bytes)); // encryption_pubkey: Vec<u8>
+    ix_data.push(gateway_signing_algorithm_u8);                // gateway_signing_algorithm: u8
+    ix_data.extend_from_slice(&borsh_vec(&gateway_pubkey_bytes)); // gateway_pubkey: Vec<u8>
     ix_data.extend_from_slice(&borsh_string(&request.gateway_endpoint)); // gateway_endpoint: String
-    ix_data.push(tee_type); // tee_type: u8
+    ix_data.push(tee_type);                                    // tee_type: u8
     // measurements: Vec<MeasurementEntry>
     ix_data.extend_from_slice(&(measurement_entries.len() as u32).to_le_bytes());
     for (key, value) in &measurement_entries {
@@ -208,7 +243,8 @@ pub async fn handle_register_node(
 
     Ok(Json(RegisterNodeResponse {
         partial_tx: b64().encode(&tx_bytes),
-        signing_pubkey: tee_signing_pubkey.to_string(),
+        solana_pubkey: tee_signing_pubkey.to_string(),
+        protocol_signing_pubkey: b64().encode(&protocol_signing_pubkey_bytes),
         encryption_pubkey: b64().encode(&encryption_pubkey_bytes),
         tee_node_pda: tee_node_pda.to_string(),
     }))
@@ -252,6 +288,7 @@ mod tests {
         let request = RegisterNodeRequest {
             gateway_endpoint: "http://localhost:3000".to_string(),
             gateway_pubkey: Pubkey::new_unique().to_string(),
+            gateway_signing_algorithm: "ed25519".to_string(),
             recent_blockhash: "11111111111111111111111111111111".to_string(),
             authority: Pubkey::new_unique().to_string(),
             program_id: "HLdrA1s96z9rTsWMP9H8HrZXcV4guFkCyFrdKGBdAMyC".to_string(),
@@ -274,9 +311,9 @@ mod tests {
         // 2署名者: TEE(payer) + authority
         assert_eq!(tx.message.header().num_required_signatures, 2);
 
-        // signing_pubkeyがBase58
-        assert!(!response.signing_pubkey.is_empty());
-        Pubkey::from_str(&response.signing_pubkey).unwrap();
+        // solana_pubkeyがBase58
+        assert!(!response.solana_pubkey.is_empty());
+        Pubkey::from_str(&response.solana_pubkey).unwrap();
 
         // encryption_pubkeyがBase64で32バイト
         let enc_pk = b64().decode(&response.encryption_pubkey).unwrap();
@@ -294,6 +331,7 @@ mod tests {
         let request = RegisterNodeRequest {
             gateway_endpoint: "http://example.com:3000".to_string(),
             gateway_pubkey: Pubkey::new_unique().to_string(),
+            gateway_signing_algorithm: "ed25519".to_string(),
             recent_blockhash: "11111111111111111111111111111111".to_string(),
             authority: Pubkey::new_unique().to_string(),
             program_id: "HLdrA1s96z9rTsWMP9H8HrZXcV4guFkCyFrdKGBdAMyC".to_string(),
@@ -306,8 +344,8 @@ mod tests {
         let tx_bytes = b64().decode(&result.0.partial_tx).unwrap();
         let tx: VersionedTransaction = bincode::deserialize(&tx_bytes).unwrap();
 
-        // fee payer (static_account_keys[0]) == TEE signing_pubkey
-        let tee_pubkey = Pubkey::from_str(&result.0.signing_pubkey).unwrap();
+        // fee payer (static_account_keys[0]) == TEE solana_pubkey
+        let tee_pubkey = Pubkey::from_str(&result.0.solana_pubkey).unwrap();
         assert_eq!(tx.message.static_account_keys()[0], tee_pubkey);
 
         // TEEの署名スロットが埋まっている（default署名ではない）

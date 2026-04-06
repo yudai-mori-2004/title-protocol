@@ -96,9 +96,9 @@ protocol_signing_algorithm(), kem_algorithm()
 - §6.4.5 /sign: `tee_signature_algorithm` + `domain_tagged` + `solana_signer`
 - §6.4 防御モデル: "ECDH共通鍵" → "KEM導出対称鍵"
 
-## Remaining Work (next session — deploy as a unit)
+## Completed (Session 2)
 
-### Solana Program (`programs/title-config/`) — 設計確定、実装待ち
+### Solana Program (`programs/title-config/`)
 
 `TeeNodeAccount` を PQC-ready 可変長フィールドに変更:
 
@@ -122,23 +122,57 @@ pub struct TeeNodeAccount {
 変更対象: `RegisterTeeNode`, `RemoveTeeNode`, `UpdateTeeNode` の各Context + handler。
 PDA seed: `[b"tee-node", solana_pubkey.as_ref()]`。
 `GlobalConfigAccount.trusted_node_keys: Vec<[u8; 32]>` はSolana identity lookupのため変更なし。
-`solana_pubkey` はSolana PQC対応が明確になった時点で拡張フィールドを追加。
 
-### TypeScript SDK — Solanaプログラム変更と同時に
+### TypeScript SDK
 
-- Wire format: `[suite_id][encap_key_len][encap_key][nonce][ct]`
-- HKDF: 方向別鍵導出 (`title-request-key` / `title-response-key`)
-- Types: `tee_signature_algorithm`, `signing_algorithm`
-- Chain: `rawToTrustedTeeNode` の新フィールド対応
+- Wire format: `[suite_id(1B)][encap_key_len(2B BE)][encap_key][nonce][ct]`
+- HKDF: 方向別鍵導出 (`salt=encap_key`, `info="title-request-key"` / `"title-response-key"`)
+- CryptoProvider: AADパラメータ追加（必須）
+- `encryptPayload()`: returns `{ payload, responseKey }` (request/response鍵分離)
+- `decryptResponse()`: `responseKey` + `aad` パラメータ
+- Types: `SignedJson.tee_signature_algorithm`, `TrustedTeeNode` に `solana_pubkey`, `signing_algorithm`, `gateway_signing_algorithm` 追加
+- Chain: `deserializeTeeNodeAccount` が可変長フィールド対応、アルゴリズムマッピ��グ
+- `ENCRYPTED_HEADER_SIZE` ��除（可変長ワイヤーフ��ーマットで不要）
+
+### TEE register_node.rs
+
+- 命令データ構築: 新スキーマ（algorithm u8 + Vec<u8> pubkey）に対応
+- `RegisterNodeRequest` ��� `gateway_signing_algorithm` フィールド追加
+- `RegisterNodeResponse` に `solana_pubkey`, `protocol_signing_pubkey` フィールド追加
+
+### CLI
+
+- `register_node` コマンド: 新 `RegisterNodeRequest` / `RegisterNodeResponse` に対応
+
+### 監査による追加修正
+
+演繹的アーキテクチャ監査（オンチェーン鍵フィールドから全レイヤー追跡）で発見した指摘を修正:
+
+- `tee_pubkey` エンコーディング統一: signed_json内の `tee_pubkey` を Base58 → Base64 に変更。Solana identity以外の暗号プリミティブは全てBase64に統一
+- `TrustedTeeNode` docコメント修正: `signing_pubkey`, `gateway_pubkey` のBase58記述をBase64に
+- chain.test.ts テスト名修正: エンコーディング規則の変更を反映
+- `signing_algorithm_to_u8` / `kem_algorithm_to_u8`: サイレント `_ => 0` フォールバックを `Result` エラーに変更
+- `ENCRYPTION_ALGORITHM_MAP`: SDK文字列を `"x25519"` → `"x25519-hkdf-sha256"` に統一（Rust `KemAlgorithm::as_str()` と一致）
+- `GATEWAY_SIGNING_ALGORITHM` 環境変数: main.rs のGateway verifierがEd25519をハードコードしていたのを環境変数で制御可能に
+- SPECS_JA更新: エンコーディング規則テーブル、signed_json定義、GlobalConfig構造、register_node API
+
+## Remaining Work
+
+### EC2デプロイ
+
+暗号抽象化 + Solanaプログラム変更をEC2に反映。
+Solanaプログラムの再デプロイ + ノード再登録が必要。
 
 ### PQC Phase 2 (将来)
 
 - `protocol_signer` / `solana_signer` 鍵分離
 - ML-DSA / ML-KEM 実装追加
+- `TeeNodeAccount` realloc（PQC鍵サイズ対応）
 
 ## Verification
 
 ```
 cargo check --workspace  # 0 errors
 cargo test --workspace   # 251 tests passed, 0 failed
+npm test (sdk/ts)        # 30 tests passed, 0 failed
 ```

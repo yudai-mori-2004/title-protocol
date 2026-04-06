@@ -60,6 +60,7 @@ pub async fn run(
     let register_request = RegisterNodeRequest {
         gateway_endpoint: gateway_endpoint.to_string(),
         gateway_pubkey: gateway_pubkey.clone(),
+        gateway_signing_algorithm: "ed25519".to_string(),
         recent_blockhash: blockhash.to_string(),
         authority: network.authority.clone(),
         program_id: network.program_id.clone(),
@@ -87,14 +88,14 @@ pub async fn run(
             }
         };
 
-    println!("  TEE Signing Pubkey: {}", result.signing_pubkey);
+    println!("  TEE Solana Pubkey: {}", result.solana_pubkey);
     println!("  TEE Node PDA: {}", result.tee_node_pda);
 
     // TEE walletにSOL送金（TX手数料用）
     let tee_pk: Pubkey = result
-        .signing_pubkey
+        .solana_pubkey
         .parse()
-        .map_err(|e| CliError::Config(format!("signing_pubkeyのパースに失敗: {e}")))?;
+        .map_err(|e| CliError::Config(format!("solana_pubkeyのパースに失敗: {e}")))?;
 
     helpers::fund_tee_wallet(&rpc, keys_dir, &tee_pk, 100_000_000).await?;
 
@@ -145,7 +146,7 @@ pub async fn run(
         println!("  Authority keypair が見つかりません。");
         println!("  以下の部分署名済みTXをDAOに提出してください:");
         println!();
-        println!("  TEE Signing Pubkey: {}", result.signing_pubkey);
+        println!("  TEE Solana Pubkey: {}", result.solana_pubkey);
         println!("  TEE Node PDA:       {}", result.tee_node_pda);
         println!("  Partial TX (base64):");
         println!("  {tx_base64}");
@@ -160,7 +161,7 @@ pub async fn run(
         .join("cli")
         .join("tee-info.json");
     let mut info = config::load_tee_info(&tee_info_path)?;
-    info.signing_pubkey = Some(result.signing_pubkey);
+    info.signing_pubkey = Some(result.solana_pubkey);
     info.encryption_pubkey = Some(result.encryption_pubkey);
     info.tee_node_pda = Some(result.tee_node_pda);
     config::save_tee_info(&tee_info_path, &info)?;

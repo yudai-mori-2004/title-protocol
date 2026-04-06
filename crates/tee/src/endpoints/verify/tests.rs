@@ -164,8 +164,7 @@ async fn test_verify_roundtrip() {
     assert_eq!(signed_json.core.tee_type, "mock");
 
     // tee_signatureをtee_pubkeyで検証（ドメインタグ付き）
-    use base58::FromBase58;
-    let tee_pubkey_bytes = signed_json.core.tee_pubkey.from_base58().unwrap();
+    let tee_pubkey_bytes = b64.decode(&signed_json.core.tee_pubkey).unwrap();
     let verifier = title_crypto::create_verifier(
         title_crypto::SigningAlgorithm::Ed25519,
         &tee_pubkey_bytes,

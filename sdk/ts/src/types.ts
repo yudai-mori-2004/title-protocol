@@ -15,7 +15,9 @@
 export interface SignedJson {
   protocol: string;
   tee_type: string;
-  /** Ed25519 public key (Base58). */
+  /** Signing algorithm used (e.g., "ed25519"). */
+  tee_signature_algorithm: string;
+  /** Protocol signing public key (Base64). */
   tee_pubkey: string;
   /** Signature (Base64). */
   tee_signature: string;
@@ -118,12 +120,19 @@ export interface GlobalConfig {
 
 /** Trusted TEE node. Spec §5.2 Step 1 */
 export interface TrustedTeeNode {
-  /** Ed25519 signing public key (Base58). */
+  /** Solana Ed25519 identity pubkey (Base58). PDA seed + Solana TX signing. */
+  solana_pubkey: string;
+  /** Protocol signing algorithm (e.g., "ed25519"). */
+  signing_algorithm: string;
+  /** Protocol signing public key (Base64). */
   signing_pubkey: string;
-  /** X25519 encryption public key (Base64). */
-  encryption_pubkey: string;
+  /** Encryption algorithm (e.g., "x25519-hkdf-sha256"). */
   encryption_algorithm: string;
-  /** Gateway signing public key (Base58). */
+  /** Encryption public key (Base64). */
+  encryption_pubkey: string;
+  /** Gateway signing algorithm (e.g., "ed25519"). */
+  gateway_signing_algorithm: string;
+  /** Gateway signing public key (Base64). */
   gateway_pubkey: string;
   gateway_endpoint: string;
   status: string;
@@ -151,18 +160,19 @@ export type ExpectedMeasurements = Record<string, string>;
 // Encrypted payload is a binary format stored in Temporary Storage.
 // Content-Type: application/octet-stream
 //
-// Wire format:
-//   [32B: ephemeral_pubkey (X25519)]
-//   [12B: nonce (AES-GCM)]
-//   [remaining: AES-GCM ciphertext + 16B auth tag]
+// Wire format (v1, suite_id based):
+//   [1B: suite_id]
+//   [2B: encap_key_len (big-endian u16)]
+//   [encap_key_len bytes: encapsulated key]
+//   [nonce_size bytes: nonce (suite-dependent, 12B for AES-256-GCM)]
+//   [remaining: AEAD ciphertext + auth tag]
 //
 // Plaintext format (after decryption):
 //   [4B: metadata_len (big-endian u32)]
 //   [metadata_len bytes: JSON ClientMetadata]
 //   [remaining: raw content bytes]
-
-/** Size of the encrypted binary header (ephemeral_pubkey + nonce). */
-export const ENCRYPTED_HEADER_SIZE = 32 + 12;
+//
+// See: crates/crypto/src/wire.rs
 
 /** Client-constructed metadata (plaintext header before raw content). Spec §5.1 Step 1 */
 export interface ClientMetadata {

@@ -96,11 +96,45 @@ protocol_signing_algorithm(), kem_algorithm()
 - §6.4.5 /sign: `tee_signature_algorithm` + `domain_tagged` + `solana_signer`
 - §6.4 防御モデル: "ECDH共通鍵" → "KEM導出対称鍵"
 
-## Remaining Work (separate sessions)
+## Remaining Work (next session — deploy as a unit)
 
-- **TypeScript SDK**: Wire format + HKDF parameter update, `tee_signature_algorithm` / `signing_algorithm` fields
-- **Solana program**: No change needed (PQC public keys will need off-chain/extended-PDA storage)
-- **PQC Phase 2**: Separate `protocol_signer` / `solana_signer` keys, add ML-DSA/ML-KEM implementations
+### Solana Program (`programs/title-config/`) — 設計確定、実装待ち
+
+`TeeNodeAccount` を PQC-ready 可変長フィールドに変更:
+
+```rust
+pub struct TeeNodeAccount {
+    pub solana_pubkey: [u8; 32],              // Solana identity (Ed25519固定)
+    pub protocol_signing_algorithm: u8,        // 0=ed25519, 1=ml-dsa-65, ...
+    pub protocol_signing_pubkey: Vec<u8>,      // 32B(Ed25519) or 1952B(ML-DSA-65)
+    pub encryption_algorithm: u8,              // 0=x25519, 1=ml-kem-768, ...
+    pub encryption_pubkey: Vec<u8>,            // 32B(X25519) or 1184B(ML-KEM-768)
+    pub gateway_signing_algorithm: u8,         // 同じ構成
+    pub gateway_pubkey: Vec<u8>,
+    pub gateway_endpoint: String,
+    pub status: u8,
+    pub tee_type: u8,
+    pub measurements: Vec<MeasurementEntry>,
+    pub bump: u8,
+}
+```
+
+変更対象: `RegisterTeeNode`, `RemoveTeeNode`, `UpdateTeeNode` の各Context + handler。
+PDA seed: `[b"tee-node", solana_pubkey.as_ref()]`。
+`GlobalConfigAccount.trusted_node_keys: Vec<[u8; 32]>` はSolana identity lookupのため変更なし。
+`solana_pubkey` はSolana PQC対応が明確になった時点で拡張フィールドを追加。
+
+### TypeScript SDK — Solanaプログラム変更と同時に
+
+- Wire format: `[suite_id][encap_key_len][encap_key][nonce][ct]`
+- HKDF: 方向別鍵導出 (`title-request-key` / `title-response-key`)
+- Types: `tee_signature_algorithm`, `signing_algorithm`
+- Chain: `rawToTrustedTeeNode` の新フィールド対応
+
+### PQC Phase 2 (将来)
+
+- `protocol_signer` / `solana_signer` 鍵分離
+- ML-DSA / ML-KEM 実装追加
 
 ## Verification
 

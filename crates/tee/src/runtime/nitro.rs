@@ -84,9 +84,9 @@ mod real_nsm {
             let response = driver::nsm_process_request(
                 self.fd,
                 Request::Attestation {
-                    public_key: public_key.map(|k| k.into()),
-                    user_data: user_data.map(|d| d.into()),
-                    nonce: nonce.map(|n| n.into()),
+                    public_key: public_key.map(|k| k.to_vec().into()),
+                    user_data: user_data.map(|d| d.to_vec().into()),
+                    nonce: nonce.map(|n| n.to_vec().into()),
                 },
             );
             match response {

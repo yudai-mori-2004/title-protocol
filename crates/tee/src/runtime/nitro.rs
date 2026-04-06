@@ -46,6 +46,8 @@ trait NsmOps: Send + Sync {
 #[cfg(target_os = "linux")]
 mod real_nsm {
     use super::NsmOps;
+    use aws_nitro_enclaves_nsm_api::api::{Request, Response};
+    use aws_nitro_enclaves_nsm_api::driver;
 
     pub struct RealNsm {
         fd: i32,
@@ -53,9 +55,9 @@ mod real_nsm {
 
     impl RealNsm {
         pub fn new() -> Self {
-            let fd = unsafe { libc::open(b"/dev/nsm\0".as_ptr() as *const _, libc::O_RDWR) };
+            let fd = driver::nsm_init();
             if fd < 0 {
-                panic!("NSMデバイス /dev/nsm を開けません");
+                panic!("NSMデバイス初期化に失敗しました (fd={fd})");
             }
             Self { fd }
         }
@@ -63,25 +65,14 @@ mod real_nsm {
 
     impl NsmOps for RealNsm {
         fn get_random(&self, len: usize) -> Vec<u8> {
-            let request = serde_json::json!({"GetRandom": {}});
-            let request_bytes = serde_json::to_vec(&request).unwrap();
-
-            let mut response_buf = vec![0u8; 8192];
-            let response_len = unsafe {
-                let mut request_ptr = request_bytes.as_ptr();
-                let request_len = request_bytes.len();
-                nsm_ioctl(self.fd, request_ptr, request_len, response_buf.as_mut_ptr(), response_buf.len())
-            };
-
-            if response_len < 0 {
-                panic!("NSM GetRandom failed");
+            let response = driver::nsm_process_request(self.fd, Request::GetRandom);
+            match response {
+                Response::GetRandom { random } => {
+                    assert!(random.len() >= len, "NSM GetRandom: 要求{len}B、取得{}B", random.len());
+                    random[..len].to_vec()
+                }
+                resp => panic!("NSM GetRandom: 予期しないレスポンス: {resp:?}"),
             }
-
-            let response: serde_json::Value =
-                serde_json::from_slice(&response_buf[..response_len as usize]).unwrap();
-            let random_bytes: Vec<u8> =
-                serde_json::from_value(response["GetRandom"]["random"].clone()).unwrap();
-            random_bytes[..len].to_vec()
         }
 
         fn get_attestation_doc(
@@ -90,41 +81,19 @@ mod real_nsm {
             user_data: Option<&[u8]>,
             nonce: Option<&[u8]>,
         ) -> Vec<u8> {
-            let request = serde_json::json!({
-                "Attestation": {
-                    "public_key": public_key.map(|k| k.to_vec()),
-                    "user_data": user_data.map(|d| d.to_vec()),
-                    "nonce": nonce.map(|n| n.to_vec()),
-                }
-            });
-            let request_bytes = serde_json::to_vec(&request).unwrap();
-
-            let mut response_buf = vec![0u8; 16384];
-            let response_len = unsafe {
-                nsm_ioctl(self.fd, request_bytes.as_ptr(), request_bytes.len(),
-                          response_buf.as_mut_ptr(), response_buf.len())
-            };
-
-            if response_len < 0 {
-                panic!("NSM Attestation failed");
+            let response = driver::nsm_process_request(
+                self.fd,
+                Request::Attestation {
+                    public_key: public_key.map(|k| k.into()),
+                    user_data: user_data.map(|d| d.into()),
+                    nonce: nonce.map(|n| n.into()),
+                },
+            );
+            match response {
+                Response::Attestation { document } => document,
+                resp => panic!("NSM Attestation: 予期しないレスポンス: {resp:?}"),
             }
-
-            let response: serde_json::Value =
-                serde_json::from_slice(&response_buf[..response_len as usize]).unwrap();
-            let doc: Vec<u8> =
-                serde_json::from_value(response["Attestation"]["document"].clone()).unwrap();
-            doc
         }
-    }
-
-    extern "C" {
-        fn nsm_ioctl(
-            fd: i32,
-            request: *const u8,
-            request_len: usize,
-            response: *mut u8,
-            response_len: usize,
-        ) -> i32;
     }
 }
 

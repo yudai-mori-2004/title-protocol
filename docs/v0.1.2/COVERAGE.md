@@ -79,8 +79,8 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 |---|---|---|---|---|
 | §5.2 | TEE startup sequence (key generation → notify Gateway) | [ ] | | |
 | §5.2 | TEE request processing flow | [ ] | | |
-| §5.2 | Content fetch: single (HTTP Range Request + ETag) | [~] | sandbox/01-c2pa-range-request/ (技術検証完了: 署名検証・改ざん検知・Range Request一致 全PASS) | 01 |
-| §5.2 | Content fetch: fragmented | [~] | sandbox/02-c2pa-fragment/ (技術検証完了: 署名・検証ラウンドトリップ・改ざん検知・部分検証 全PASS) | 01 |
+| §5.2 | Content fetch: single (HTTP Range Request + ETag) | [~] | sandbox/01-c2pa-range-request/ (sandbox verified: sig verify, tamper detect, Range Request parity — all PASS) | 01 |
+| §5.2 | Content fetch: fragmented | [~] | sandbox/02-c2pa-fragment/ (sandbox verified: sign/verify roundtrip, tamper detect, partial verify — all PASS) | 01 |
 | §5.2 | Content fetch: sidecar | [ ] | | |
 | §5.3 | Gateway: client auth + rate limiting | [ ] | | |
 | §5.3 | Gateway: TEE info relay | [ ] | | |
@@ -95,7 +95,7 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | §6.1 | Extension framework (core result → extension request) | [ ] | | |
 | §6.2 | Solana Extension: Ed25519 signing key generation | [ ] | | |
 | §6.2 | Solana Extension: Attestation Document for signing key | [ ] | | |
-| §6.2 | Solana Extension: ZK proof generation (SP1 zkVM) | [ ] | | |
+| §6.2 | Solana Extension: ZK proof generation (SP1 zkVM) | [~] | sandbox/03-sp1-attestation/ (sandbox verified: cert chain verify, core proof gen/verify, tamper detect 3/3 — all PASS. 96M cycles, 169B public values, Groth16 ~479B fits Solana 1,232B. Attestation verify internalized, zero git deps) | 01 |
 | §6.2 | Solana Extension: Whitelist PDA + ZK proof verification | [ ] | | |
 | §6.2 | Solana Extension: Developer collection setup + delegate | [ ] | | |
 | §6.2 | Solana Extension: cNFT mint (partial signing) | [ ] | | |

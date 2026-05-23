@@ -405,12 +405,9 @@ name = "c2pa_fragment"
 version = "0.1.0"
 dependencies = [
  "c2pa",
- "glob",
  "hex",
- "serde",
  "serde_json",
  "sha2",
- "tempfile",
 ]
 
 [[package]]

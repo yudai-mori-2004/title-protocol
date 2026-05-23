@@ -12,15 +12,20 @@
 //! - `response` — `ProcessResponse`, `ProcessorOutput`, `VerifiableResponse` (§2.3)
 //! - `processor` — `Processor` trait, `ProcessorError`, `ProcessorRegistry` (§3.1)
 //! - `processor_outputs` — 各processor固有の出力型 (§3.2)
+//! - `c2pa_verify` — c2pa-verify processor + signature_hash utility (§3.2, §1.3)
+//! - `jumbf` — JUMBF parser for COSE signature extraction
 //! - `error` — `CoreError`
 
+pub mod c2pa_verify;
 pub mod error;
+mod jumbf;
 pub mod processor;
 pub mod processor_outputs;
 pub mod request;
 pub mod response;
 
 // Re-exports for convenience
+pub use c2pa_verify::{compute_signature_hash, C2paVerifyProcessor, C2PA_VERIFY_PROCESSOR_ID};
 pub use error::CoreError;
 pub use processor::{Processor, ProcessorError, ProcessorRegistry};
 pub use request::{EncryptionSuite, EncryptedPayloadMetadata, InputData, ProcessRequest};

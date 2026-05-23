@@ -18,7 +18,7 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 |---|---|---|---|---|
 | §1.2 | Attestation Document integration (user_data embedding) | [ ] | | |
 | §1.3 | Processor execution framework | [~] | crates/core/src/processor.rs (Processor trait + ProcessorRegistry) | 02 |
-| §1.3 | c2pa-verify (mandatory, signature_hash) | [ ] | | |
+| §1.3 | c2pa-verify (mandatory, signature_hash) | [x] | crates/core/src/c2pa_verify.rs (C2paVerifyProcessor, compute_signature_hash utility) | 03 |
 | §1.3 | Input type: single file | [~] | crates/core/src/request.rs (InputData::Single type defined) | 02 |
 | §1.3 | Input type: fragmented (CMAF) | [~] | crates/core/src/request.rs (InputData::Fragmented type defined) | 02 |
 | §1.3 | Input type: sidecar | [~] | crates/core/src/request.rs (InputData::Sidecar type defined) | 02 |
@@ -51,7 +51,7 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
 | §3.1 | Processor trait/interface definition | [x] | crates/core/src/processor.rs (Processor trait + ProcessorRegistry + ProcessorError, 7 tests) | 02 |
-| §3.2 | c2pa-verify processor | [ ] | | |
+| §3.2 | c2pa-verify processor | [x] | crates/core/src/c2pa_verify.rs (C2paVerifyProcessor + compute_signature_hash, JUMBF parser in jumbf.rs, 14 tests) | 03 |
 | §3.2 | provenance-graph processor | [ ] | | |
 | §3.2 | image-pdq processor | [ ] | | |
 | §3.2 | video-vpdq processor | [ ] | | |

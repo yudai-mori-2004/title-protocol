@@ -11,6 +11,10 @@ authors.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+c2pa = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+image = { workspace = true }

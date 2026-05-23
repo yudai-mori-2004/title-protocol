@@ -22,9 +22,9 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | §1.3 | Input type: single file | [~] | crates/core/src/request.rs (InputData::Single type defined) | 02 |
 | §1.3 | Input type: fragmented (CMAF) | [~] | crates/core/src/request.rs (InputData::Fragmented type defined) | 02 |
 | §1.3 | Input type: sidecar | [~] | crates/core/src/request.rs (InputData::Sidecar type defined) | 02 |
-| §1.4 | Encryption (optional, x25519/p256/ml-kem-768) | [~] | crates/core/src/request.rs (EncryptionSuite enum defined, logic not implemented) | 02 |
+| §1.4 | Encryption (optional, x25519/p256/ml-kem-768) | [x] | crates/core/src/request.rs (EncryptionSuite enum) + crates/crypto/ (KEM×3, HKDF, AES-256-GCM, wire format, sealed channel, 27 tests) | 02, 11 |
 | §1.5 | Verification model (JCS + hash comparison) | [x] | crates/tee/src/orchestrator.rs (compute_jcs_hash, serde_json_canonicalizer, 3 tests) | 04 |
-| §1.7 | Gateway role definition | [ ] | | |
+| §1.7 | Gateway role definition | [x] | crates/gateway/src/ (Axum HTTP server: 6 endpoints, API key auth, rate limiting, TEE info caching, restart detection, 38 tests) | 10 |
 
 ### 2. Communication Model (§2)
 
@@ -33,18 +33,18 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | §2.1 | Request flow (Client → Gateway → TEE → External Storage) | [~] | crates/tee/src/orchestrator.rs (TEE → External Storage fetch + processor pipeline implemented; Gateway relay not yet) | 04 |
 | §2.2 | Request format (single/fragmented/sidecar JSON) | [x] | crates/core/src/request.rs (ProcessRequest + InputData, serde tests match spec JSON) | 02 |
 | §2.3 | Response format (signature_hash + results + attestation) | [x] | crates/core/src/response.rs (ProcessResponse + VerifiableResponse, serde tests match spec JSON) | 02 |
-| §2.4 | Key bundle (per-suite key pair generation at startup) | [ ] | | |
-| §2.4 | Encryption flow (12-step client-TEE exchange) | [ ] | | |
-| §2.4 | Direction-separated key derivation (HKDF) | [ ] | | |
-| §2.4 | Wire format (request: suite_id + encap_key + nonce + ciphertext) | [ ] | | |
-| §2.4 | Wire format (response: nonce + ciphertext) | [ ] | | |
-| §2.4 | Encrypted payload internal structure (metadata_len + JSON + raw binary) | [ ] | | |
-| §2.5 | Gateway API: GET /keys | [~] | crates/gateway/src/lib.rs (KeysResponse type defined, HTTP handler not implemented) | 02 |
-| §2.5 | Gateway API: GET /processors | [~] | crates/gateway/src/lib.rs (ProcessorsResponse type defined, HTTP handler not implemented) | 02 |
-| §2.5 | Gateway API: POST /process | [~] | crates/gateway/src/lib.rs (types defined via title-core re-export, HTTP handler not implemented) | 02 |
-| §2.5 | Gateway API: GET /health | [~] | crates/gateway/src/lib.rs (HealthResponse type defined, HTTP handler not implemented) | 02 |
-| §2.5 | Gateway API: GET /solana-keys | [~] | crates/gateway/src/lib.rs (SolanaKeysResponse type defined, HTTP handler not implemented) | 02 |
-| §2.5 | Gateway API: POST /extension/solana | [~] | crates/gateway/src/lib.rs (SolanaExtensionRequest/Response types defined, HTTP handler not implemented) | 02 |
+| §2.4 | Key bundle (per-suite key pair generation at startup) | [x] | crates/crypto/src/key_bundle.rs (KeyBundle::generate: x25519 + p256 + ml-kem-768, public_keys Base64 export, 1 test) | 11 |
+| §2.4 | Encryption flow (12-step client-TEE exchange) | [x] | crates/crypto/src/sealed_channel.rs (seal_for: KEM+HKDF+AES-256-GCM encrypt, open_request: TEE decrypt, ResponseChannel bidirectional, 6 tests) | 11 |
+| §2.4 | Direction-separated key derivation (HKDF) | [x] | crates/crypto/src/hkdf.rs (HKDF-SHA256, salt=encap_key, info="title-request-key"/"title-response-key", 3 tests) | 11 |
+| §2.4 | Wire format (request: suite_id + encap_key + nonce + ciphertext) | [x] | crates/crypto/src/wire.rs (build_request/parse_request, 6 tests) | 11 |
+| §2.4 | Wire format (response: nonce + ciphertext) | [x] | crates/crypto/src/wire.rs (build_response/parse_response, 6 tests) | 11 |
+| §2.4 | Encrypted payload internal structure (metadata_len + JSON + raw binary) | [x] | crates/crypto/src/payload.rs (build_payload/parse_payload, 3 tests) | 11 |
+| §2.5 | Gateway API: GET /keys | [x] | crates/gateway/src/lib.rs (KeysResponse) + crates/gateway/src/endpoints.rs (handle_keys: cached TEE keys, 2 tests) | 02, 10 |
+| §2.5 | Gateway API: GET /processors | [x] | crates/gateway/src/lib.rs (ProcessorsResponse) + crates/gateway/src/endpoints.rs (handle_processors, 1 test) | 02, 10 |
+| §2.5 | Gateway API: POST /process | [x] | crates/gateway/src/lib.rs (types via title-core) + crates/gateway/src/endpoints.rs (handle_process: relay to TEE, 5 tests) | 02, 10 |
+| §2.5 | Gateway API: GET /health | [x] | crates/gateway/src/lib.rs (HealthResponse) + crates/gateway/src/endpoints.rs (handle_health: cached TEE status, 2 tests) | 02, 10 |
+| §2.5 | Gateway API: GET /solana-keys | [x] | crates/gateway/src/lib.rs (SolanaKeysResponse) + crates/gateway/src/endpoints.rs (handle_solana_keys: 404 when disabled, 2 tests) | 02, 10 |
+| §2.5 | Gateway API: POST /extension/solana | [x] | crates/gateway/src/lib.rs (types) + crates/gateway/src/endpoints.rs (handle_solana_extension: relay to TEE, 2 tests) | 02, 10 |
 
 ### 3. Processors (§3)
 
@@ -82,10 +82,10 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | §5.2 | Content fetch: single (HTTP GET + ETag) | [x] | crates/tee/src/content_fetch.rs (HttpContentFetcher + ContentFetcher trait, 3 tests) + sandbox/01-c2pa-range-request/ (Range Request sandbox) | 01, 04 |
 | §5.2 | Content fetch: fragmented | [x] | crates/tee/src/content_fetch.rs (init + segments concatenation, 3 tests) + sandbox/02-c2pa-fragment/ (fragment sandbox) | 01, 04 |
 | §5.2 | Content fetch: sidecar | [x] | crates/tee/src/content_fetch.rs (manifest + content separate fetch, 3 tests) + crates/core/src/c2pa_verify.rs (compute_signature_hash_from_manifest_data) | 04 |
-| §5.3 | Gateway: client auth + rate limiting | [ ] | | |
-| §5.3 | Gateway: TEE info relay | [ ] | | |
-| §5.3 | Gateway: request proxy | [ ] | | |
-| §5.3 | Gateway: TEE restart detection + key refresh | [ ] | | |
+| §5.3 | Gateway: client auth + rate limiting | [x] | crates/gateway/src/auth.rs (ApiKeySet + Bearer token middleware) + crates/gateway/src/rate_limit.rs (token bucket per API key, 4 tests) + crates/gateway/src/server.rs (middleware layer, 5 auth tests + 1 rate limit test) | 10 |
+| §5.3 | Gateway: TEE info relay | [x] | crates/gateway/src/state.rs (TeeInfoCache with RwLock, refresh_tee_info) + crates/gateway/src/endpoints.rs (cached responses for /keys, /processors, /health, /solana-keys) | 10 |
+| §5.3 | Gateway: request proxy | [x] | crates/gateway/src/tee_client.rs (TeeClient trait + HttpTeeClient) + crates/gateway/src/endpoints.rs (handle_process, handle_solana_extension: relay to TEE) | 10 |
+| §5.3 | Gateway: TEE restart detection + key refresh | [x] | crates/gateway/src/state.rs (check_and_refresh: polls TEE health, detects tee_type change or recovery, refreshes cache; spawn_health_check background task, 2 tests) | 10 |
 | §5.4 | Reproducible build (Dockerfile, Cargo.lock, toolchain pinning) | [ ] | | |
 
 ### 6. Extension (§6)

@@ -2,26 +2,33 @@
 
 //! # Title Protocol Gateway
 //!
-//! Gateway APIの型定義とサーバースケルトン。
+//! Gateway API types and HTTP server.
 //!
-//! 仕様書 §1.7, §2.5, §5.3
+//! Spec §1.7, §2.5, §5.3
 //!
-//! ## 役割
+//! ## Role
 //!
-//! Gatewayはクライアントとの間の薄い管理層:
-//! - クライアント認証（APIキー等）
-//! - TEE暗号化用公開鍵の提供（GET /keys）
-//! - 対応processor一覧の提供（GET /processors）
-//! - リクエストのTEEへの中継（POST /process）
-//! - TEE稼働状態の提供（GET /health）
+//! The Gateway is a thin management layer between the client and TEE:
+//! - Client authentication (API key, §5.3)
+//! - Rate limiting (§5.3)
+//! - TEE encryption public key caching and delivery (GET /keys, §2.5)
+//! - Processor list caching and delivery (GET /processors, §2.5)
+//! - Request relay to TEE (POST /process, §2.5)
+//! - TEE health monitoring (GET /health, §2.5)
+//! - TEE restart detection and key refresh (§5.3)
+//! - Solana Extension endpoints (GET /solana-keys, POST /extension/solana, §6.2)
 //!
-//! ## ステータス
+//! ## Legacy
 //!
-//! 現在は型定義のみ。HTTPサーバー実装は後続タスク。
-//!
-//! ## Legacy参照
-//!
-//! `legacy/v0.1.0/crates/gateway/` — 前バージョンのGateway実装（Axum）。
+//! `legacy/v0.1.0/crates/gateway/` -- Previous Gateway implementation (Axum).
+
+pub mod auth;
+pub mod endpoints;
+pub mod error;
+pub mod rate_limit;
+pub mod server;
+pub mod state;
+pub mod tee_client;
 
 use std::collections::HashMap;
 

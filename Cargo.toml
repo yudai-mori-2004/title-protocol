@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/crypto",
     "crates/tee",
     "crates/gateway",
 ]
@@ -32,6 +33,7 @@ base64 = "0.22"
 # Workspace-internal crate references
 title-core = { path = "crates/core" }
 title-tee = { path = "crates/tee" }
+title-crypto = { path = "crates/crypto" }
 title-gateway = { path = "crates/gateway" }
 
 [profile.release]

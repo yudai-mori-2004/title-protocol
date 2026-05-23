@@ -24,6 +24,8 @@ pub mod content_fetch;
 pub mod limits;
 pub mod orchestrator;
 pub mod resource_pool;
+pub mod runtime;
+pub mod server;
 pub mod vendor;
 
 /// TEEランタイムのエラー型。

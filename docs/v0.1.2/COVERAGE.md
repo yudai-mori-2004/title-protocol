@@ -77,7 +77,9 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
-| §5.2 | TEE startup sequence (key generation → notify Gateway) | [~] | crates/tee/src/lib.rs (TeeRuntime trait defined, startup logic not implemented) | 02 |
+| §5.2 | TEE startup sequence (key generation → server start) | [x] | crates/tee/src/main.rs (runtime selection → KeyBundle generate → SolanaSigningKey generate → ProcessorRegistry → ResourcePool → Axum :4000) + crates/tee/src/server.rs (TeeAppState, router: 6 endpoints, 9 tests) | 02, 13 |
+| §5.2 | Mock TeeRuntime | [x] | crates/tee/src/runtime/mock.rs (MockRuntime: OsRng random_bytes, "mock-attestation:" attestation, 7 tests) | 13 |
+| §5.2 | TEE HTTP endpoints | [x] | crates/tee/src/server.rs (GET /health, /keys, /processors, /solana-keys; POST /process, /extension/solana; spawn_blocking for sync orchestrator, 9 tests) | 13 |
 | §5.2 | TEE request processing flow | [x] | crates/tee/src/orchestrator.rs (process_request: fetch → signature_hash → processors → JCS → attestation → ProcessResponse, 9 tests) | 04 |
 | §5.2 | Content fetch: single (HTTP GET + ETag) | [x] | crates/tee/src/content_fetch.rs (HttpContentFetcher + ContentFetcher trait, 3 tests) + sandbox/01-c2pa-range-request/ (Range Request sandbox) | 01, 04 |
 | §5.2 | Content fetch: fragmented | [x] | crates/tee/src/content_fetch.rs (init + segments concatenation, 3 tests) + sandbox/02-c2pa-fragment/ (fragment sandbox) | 01, 04 |

@@ -20,6 +20,8 @@
 //! v0.1.0ではcrypto固有メソッド（signer, decapsulator等）がTeeRuntimeに含まれていたが、
 //! v0.1.2ではTEEハードウェア抽象化に専念し、暗号操作は別層で扱う。
 
+pub mod content_fetch;
+pub mod orchestrator;
 pub mod vendor;
 
 /// TEEランタイムのエラー型。

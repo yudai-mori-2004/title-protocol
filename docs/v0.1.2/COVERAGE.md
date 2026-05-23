@@ -16,21 +16,21 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
-| §1.2 | Attestation Document integration (user_data embedding) | [ ] | | |
-| §1.3 | Processor execution framework | [~] | crates/core/src/processor.rs (Processor trait + ProcessorRegistry) | 02 |
+| §1.2 | Attestation Document integration (user_data embedding) | [x] | crates/tee/src/orchestrator.rs (JCS hash → user_data binding, 2 tests) | 04 |
+| §1.3 | Processor execution framework | [x] | crates/core/src/processor.rs (Processor trait + ProcessorRegistry) + crates/tee/src/orchestrator.rs (process_request pipeline, 9 tests) | 02, 04 |
 | §1.3 | c2pa-verify (mandatory, signature_hash) | [x] | crates/core/src/c2pa_verify.rs (C2paVerifyProcessor, compute_signature_hash utility) | 03 |
 | §1.3 | Input type: single file | [~] | crates/core/src/request.rs (InputData::Single type defined) | 02 |
 | §1.3 | Input type: fragmented (CMAF) | [~] | crates/core/src/request.rs (InputData::Fragmented type defined) | 02 |
 | §1.3 | Input type: sidecar | [~] | crates/core/src/request.rs (InputData::Sidecar type defined) | 02 |
 | §1.4 | Encryption (optional, x25519/p256/ml-kem-768) | [~] | crates/core/src/request.rs (EncryptionSuite enum defined, logic not implemented) | 02 |
-| §1.5 | Verification model (JCS + hash comparison) | [ ] | | |
+| §1.5 | Verification model (JCS + hash comparison) | [x] | crates/tee/src/orchestrator.rs (compute_jcs_hash, serde_json_canonicalizer, 3 tests) | 04 |
 | §1.7 | Gateway role definition | [ ] | | |
 
 ### 2. Communication Model (§2)
 
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
-| §2.1 | Request flow (Client → Gateway → TEE → External Storage) | [ ] | | |
+| §2.1 | Request flow (Client → Gateway → TEE → External Storage) | [~] | crates/tee/src/orchestrator.rs (TEE → External Storage fetch + processor pipeline implemented; Gateway relay not yet) | 04 |
 | §2.2 | Request format (single/fragmented/sidecar JSON) | [x] | crates/core/src/request.rs (ProcessRequest + InputData, serde tests match spec JSON) | 02 |
 | §2.3 | Response format (signature_hash + results + attestation) | [x] | crates/core/src/response.rs (ProcessResponse + VerifiableResponse, serde tests match spec JSON) | 02 |
 | §2.4 | Key bundle (per-suite key pair generation at startup) | [ ] | | |
@@ -78,10 +78,10 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
 | §5.2 | TEE startup sequence (key generation → notify Gateway) | [~] | crates/tee/src/lib.rs (TeeRuntime trait defined, startup logic not implemented) | 02 |
-| §5.2 | TEE request processing flow | [~] | crates/tee/src/lib.rs (TeeRuntime trait defined, flow not implemented) | 02 |
-| §5.2 | Content fetch: single (HTTP Range Request + ETag) | [~] | sandbox/01-c2pa-range-request/ (sandbox verified: sig verify, tamper detect, Range Request parity — all PASS) | 01 |
-| §5.2 | Content fetch: fragmented | [~] | sandbox/02-c2pa-fragment/ (sandbox verified: sign/verify roundtrip, tamper detect, partial verify — all PASS) | 01 |
-| §5.2 | Content fetch: sidecar | [ ] | | |
+| §5.2 | TEE request processing flow | [x] | crates/tee/src/orchestrator.rs (process_request: fetch → signature_hash → processors → JCS → attestation → ProcessResponse, 9 tests) | 04 |
+| §5.2 | Content fetch: single (HTTP GET + ETag) | [x] | crates/tee/src/content_fetch.rs (HttpContentFetcher + ContentFetcher trait, 3 tests) + sandbox/01-c2pa-range-request/ (Range Request sandbox) | 01, 04 |
+| §5.2 | Content fetch: fragmented | [x] | crates/tee/src/content_fetch.rs (init + segments concatenation, 3 tests) + sandbox/02-c2pa-fragment/ (fragment sandbox) | 01, 04 |
+| §5.2 | Content fetch: sidecar | [x] | crates/tee/src/content_fetch.rs (manifest + content separate fetch, 3 tests) + crates/core/src/c2pa_verify.rs (compute_signature_hash_from_manifest_data) | 04 |
 | §5.3 | Gateway: client auth + rate limiting | [ ] | | |
 | §5.3 | Gateway: TEE info relay | [ ] | | |
 | §5.3 | Gateway: request proxy | [ ] | | |

@@ -25,7 +25,10 @@ pub mod request;
 pub mod response;
 
 // Re-exports for convenience
-pub use c2pa_verify::{compute_signature_hash, C2paVerifyProcessor, C2PA_VERIFY_PROCESSOR_ID};
+pub use c2pa_verify::{
+    compute_signature_hash, compute_signature_hash_from_manifest_data, C2paVerifyProcessor,
+    C2PA_VERIFY_PROCESSOR_ID,
+};
 pub use error::CoreError;
 pub use processor::{Processor, ProcessorError, ProcessorRegistry};
 pub use request::{EncryptionSuite, EncryptedPayloadMetadata, InputData, ProcessRequest};

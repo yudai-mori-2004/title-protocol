@@ -142,6 +142,63 @@ fn read_desc_info(
     Ok(DescInfo { uuid, label })
 }
 
+/// Finds all manifest labels in JUMBF data.
+///
+/// Scans the top-level JUMBF superboxes and returns their labels.
+/// The active manifest is conventionally the last one in the list.
+///
+/// # Arguments
+/// * `jumbf_data` — Raw JUMBF bytes (from a .c2pa sidecar file or `load_jumbf_from_memory`)
+pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, ProcessorError> {
+    let mut reader = Cursor::new(jumbf_data);
+
+    // Read top-level superbox (c2pa store)
+    let top_header = read_header(&mut reader)?;
+    if top_header.box_type != BOX_TYPE_JUMB {
+        return Err(ProcessorError::C2paVerificationFailed(
+            "Top-level is not a JUMBF superbox".to_string(),
+        ));
+    }
+
+    // Read top-level description box
+    let desc_header = read_header(&mut reader)?;
+    if desc_header.box_type != BOX_TYPE_JUMD {
+        return Err(ProcessorError::C2paVerificationFailed(
+            "Description box not found".to_string(),
+        ));
+    }
+    let _top_desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
+
+    let mut labels = Vec::new();
+    let top_end = top_header.size;
+
+    while reader.position() < top_end {
+        let child_start = reader.position();
+        let child_header = read_header(&mut reader)?;
+        if child_header.box_type == 0 || child_header.size == 0 {
+            break;
+        }
+
+        if child_header.box_type == BOX_TYPE_JUMB {
+            let desc_header = read_header(&mut reader)?;
+            if desc_header.box_type == BOX_TYPE_JUMD {
+                let desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
+                if !desc.label.is_empty() {
+                    labels.push(desc.label);
+                }
+            }
+        }
+
+        reader
+            .seek(SeekFrom::Start(child_start + child_header.size))
+            .map_err(|e| {
+                ProcessorError::C2paVerificationFailed(format!("Seek error: {e}"))
+            })?;
+    }
+
+    Ok(labels)
+}
+
 /// Extracts the COSE signature bytes from JUMBF data for a given manifest label.
 ///
 /// Spec §1.3 — signature_hash = SHA-256(Active Manifest's COSE signature)

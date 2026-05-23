@@ -1,0 +1,718 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! # TEE Request Processing Orchestrator
+//!
+//! Spec SS5.2 -- TEE request processing flow
+//!
+//! Implements the full pipeline from `ProcessRequest` to `ProcessResponse`:
+//!
+//! 1. Fetch content from URL(s) based on input type
+//! 2. Compute `signature_hash` (SS1.3 -- mandatory for all requests)
+//! 3. Ensure `c2pa-verify` is in the processor list (SS1.3 -- implicitly required)
+//! 4. Execute processors via `ProcessorRegistry` (SS3.1)
+//! 5. Assemble results into `VerifiableResponse` (SS2.3)
+//! 6. JCS-canonicalize and SHA-256 hash (SS1.5, SS2.3)
+//! 7. Get Attestation Document with hash as `user_data` (SS1.2)
+//! 8. Build `ProcessResponse` (SS2.3)
+//!
+//! ## Sidecar handling
+//!
+//! For sidecar inputs, the manifest (.c2pa) is separate from the content file.
+//! The orchestrator computes `signature_hash` from the manifest JUMBF data
+//! directly, and runs `c2pa-verify` on the content bytes (which may fail if
+//! the content has no embedded manifest). Other processors receive the raw
+//! content bytes.
+
+use std::collections::HashMap;
+
+use base64::Engine;
+use sha2::{Digest, Sha256};
+
+use title_core::{
+    compute_signature_hash, compute_signature_hash_from_manifest_data, ProcessRequest,
+    ProcessResponse, ProcessorOutput, ProcessorRegistry, VerifiableResponse,
+    C2PA_VERIFY_PROCESSOR_ID,
+};
+
+use crate::content_fetch::{fetch_content, ContentFetcher, FetchError};
+use crate::TeeRuntime;
+
+// ---------------------------------------------------------------------------
+// Error type
+// ---------------------------------------------------------------------------
+
+/// Orchestrator error.
+/// Spec SS5.2
+#[derive(Debug, thiserror::Error)]
+pub enum OrchestratorError {
+    /// Content fetch failed.
+    #[error("Content fetch failed: {0}")]
+    FetchFailed(#[from] FetchError),
+
+    /// signature_hash computation failed.
+    /// This means the content has no valid C2PA signature -- the request
+    /// is rejected because Title Protocol requires C2PA-signed content.
+    /// Spec SS3.1 -- "C2PA署名のないコンテンツに対してはリクエスト全体が拒否される"
+    #[error("Failed to compute signature_hash: {0}")]
+    SignatureHashFailed(String),
+
+    /// JCS canonicalization failed.
+    #[error("JCS canonicalization failed: {0}")]
+    JcsFailed(String),
+
+    /// Attestation Document retrieval failed.
+    #[error("Attestation document retrieval failed: {0}")]
+    AttestationFailed(String),
+
+    /// JSON serialization error.
+    #[error("JSON serialization error: {0}")]
+    JsonError(#[from] serde_json::Error),
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Process a request through the full TEE pipeline.
+/// Spec SS5.2 -- TEE request processing flow
+///
+/// # Arguments
+/// * `request` -- Client request with content URL and processor IDs
+/// * `fetcher` -- Content fetcher (HTTP client or mock)
+/// * `registry` -- Processor registry with registered processors
+/// * `runtime` -- TEE runtime for Attestation Document retrieval
+///
+/// # Returns
+/// `ProcessResponse` containing processor results and Base64-encoded
+/// Attestation Document.
+///
+/// # Errors
+/// - Content fetch failure (network, HTTP error, empty content)
+/// - No valid C2PA signature in content (signature_hash computation fails)
+/// - JCS canonicalization failure
+/// - Attestation Document retrieval failure
+pub fn process_request(
+    request: &ProcessRequest,
+    fetcher: &dyn ContentFetcher,
+    registry: &ProcessorRegistry,
+    runtime: &dyn TeeRuntime,
+) -> Result<ProcessResponse, OrchestratorError> {
+    // Step 1: Fetch content from URL(s)
+    // Spec SS5.2 -- input type determines fetch strategy
+    let content = fetch_content(fetcher, &request.input)?;
+
+    // Step 2: Compute signature_hash
+    // Spec SS1.3 -- SHA-256(Active Manifest's COSE signature)
+    let signature_hash = if let Some(ref manifest_data) = content.manifest_bytes {
+        // Sidecar: compute from manifest JUMBF data directly
+        compute_signature_hash_from_manifest_data(manifest_data)
+            .map_err(|e| OrchestratorError::SignatureHashFailed(e.to_string()))?
+    } else {
+        // Single / Fragmented: compute from embedded C2PA in content
+        compute_signature_hash(&content.content_bytes, &content.content_type)
+            .map_err(|e| OrchestratorError::SignatureHashFailed(e.to_string()))?
+    };
+
+    // Step 3: Build processor ID list with c2pa-verify always included
+    // Spec SS1.3 -- c2pa-verify is mandatory, implicitly added if not specified
+    let processor_ids = ensure_c2pa_verify(&request.processor_ids);
+
+    // Step 4: Execute processors via registry
+    // Spec SS3.1 -- each processor runs independently; one failure does not
+    // affect others. Currently sequential; parallel execution is a future
+    // optimization.
+    let results = execute_processors(
+        registry,
+        &processor_ids,
+        &content.content_bytes,
+        &content.content_type,
+    );
+
+    // Step 5: Build VerifiableResponse
+    // Spec SS2.3 -- signature_hash + results
+    let verifiable = VerifiableResponse {
+        signature_hash,
+        results,
+    };
+
+    // Steps 6-8: JCS hash, Attestation Document, build ProcessResponse
+    build_attested_response(verifiable, runtime)
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Ensure `c2pa-verify` is in the processor ID list.
+/// Spec SS1.3 -- c2pa-verify is mandatory for all requests.
+///
+/// If the client did not include `c2pa-verify` in `processor_ids`,
+/// it is prepended to the list.
+fn ensure_c2pa_verify(processor_ids: &[String]) -> Vec<String> {
+    let mut ids = processor_ids.to_vec();
+    if !ids.iter().any(|id| id == C2PA_VERIFY_PROCESSOR_ID) {
+        ids.insert(0, C2PA_VERIFY_PROCESSOR_ID.to_string());
+    }
+    ids
+}
+
+/// Execute processors and collect results.
+/// Spec SS3.1 -- each processor runs independently.
+fn execute_processors(
+    registry: &ProcessorRegistry,
+    processor_ids: &[String],
+    content: &[u8],
+    content_type: &str,
+) -> HashMap<String, ProcessorOutput> {
+    registry.execute(processor_ids, content, content_type)
+}
+
+/// Compute JCS-canonicalized SHA-256 hash of a VerifiableResponse.
+/// Spec SS1.5, SS2.3
+///
+/// The hash is used as `user_data` in the Attestation Document, binding
+/// the processing results to the TEE attestation.
+fn compute_jcs_hash(verifiable: &VerifiableResponse) -> Result<Vec<u8>, OrchestratorError> {
+    let json_value = serde_json::to_value(verifiable)?;
+    let jcs_bytes = serde_json_canonicalizer::to_vec(&json_value)
+        .map_err(|e| OrchestratorError::JcsFailed(e.to_string()))?;
+    let hash = Sha256::digest(&jcs_bytes);
+    Ok(hash.to_vec())
+}
+
+/// Build the final ProcessResponse with Attestation Document.
+/// Spec SS1.2, SS2.3
+///
+/// 1. JCS-canonicalize the VerifiableResponse
+/// 2. SHA-256 hash
+/// 3. Get Attestation Document with hash as user_data
+/// 4. Base64-encode the Attestation Document
+/// 5. Assemble ProcessResponse
+fn build_attested_response(
+    verifiable: VerifiableResponse,
+    runtime: &dyn TeeRuntime,
+) -> Result<ProcessResponse, OrchestratorError> {
+    // Step 6: JCS canonicalize and hash
+    let jcs_hash = compute_jcs_hash(&verifiable)?;
+
+    // Step 7: Get Attestation Document
+    // Spec SS1.2 -- user_data = SHA-256(JCS(verifiable))
+    let attestation_doc = runtime
+        .get_attestation_document(&jcs_hash)
+        .map_err(|e| OrchestratorError::AttestationFailed(e.to_string()))?;
+
+    // Step 8: Base64-encode Attestation Document
+    let attestation = base64::engine::general_purpose::STANDARD.encode(&attestation_doc);
+
+    Ok(ProcessResponse {
+        verifiable,
+        attestation,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content_fetch::{FetchResponse, ContentFetcher, FetchError};
+    use crate::TeeError;
+    use std::sync::Mutex;
+    use title_core::{C2paVerifyProcessor, ProcessorRegistry};
+
+    // ---- Mock ContentFetcher ----
+
+    struct MockFetcher {
+        responses: HashMap<String, (Vec<u8>, Option<String>)>,
+    }
+
+    impl MockFetcher {
+        fn new() -> Self {
+            Self {
+                responses: HashMap::new(),
+            }
+        }
+
+        fn add(&mut self, url: &str, body: Vec<u8>, content_type: Option<&str>) {
+            self.responses
+                .insert(url.to_string(), (body, content_type.map(|s| s.to_string())));
+        }
+    }
+
+    impl ContentFetcher for MockFetcher {
+        fn fetch(&self, url: &str) -> Result<FetchResponse, FetchError> {
+            let (body, ct) = self.responses.get(url).ok_or(FetchError::HttpStatus {
+                status: 404,
+                url: url.to_string(),
+            })?;
+            Ok(FetchResponse {
+                body: body.clone(),
+                content_type: ct.clone(),
+                etag: Some("\"mock-etag\"".to_string()),
+            })
+        }
+    }
+
+    // ---- Mock TeeRuntime ----
+
+    struct MockRuntime {
+        received_user_data: Mutex<Option<Vec<u8>>>,
+    }
+
+    impl MockRuntime {
+        fn new() -> Self {
+            Self {
+                received_user_data: Mutex::new(None),
+            }
+        }
+
+        /// Returns the user_data that was passed to get_attestation_document.
+        fn last_user_data(&self) -> Option<Vec<u8>> {
+            self.received_user_data.lock().unwrap().clone()
+        }
+    }
+
+    impl TeeRuntime for MockRuntime {
+        fn tee_type(&self) -> &str {
+            "mock"
+        }
+
+        fn get_attestation_document(&self, user_data: &[u8]) -> Result<Vec<u8>, TeeError> {
+            *self.received_user_data.lock().unwrap() = Some(user_data.to_vec());
+            // Return a mock attestation: prefix + user_data for testability
+            let mut doc = b"mock-attestation:".to_vec();
+            doc.extend_from_slice(user_data);
+            Ok(doc)
+        }
+
+        fn random_bytes(&self, len: usize) -> Result<Vec<u8>, TeeError> {
+            Ok(vec![0u8; len])
+        }
+    }
+
+    // ---- Test helpers ----
+
+    /// Creates a minimal valid JPEG (4x4 pixels).
+    fn create_test_jpeg() -> Vec<u8> {
+        use image::{ImageBuffer, ImageEncoder, Rgb};
+        use std::io::Cursor;
+
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4, 4, |x, y| {
+            Rgb([(x * 60) as u8, (y * 60) as u8, 128])
+        });
+
+        let mut buf = Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new(&mut buf)
+            .write_image(img.as_raw(), 4, 4, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    /// Creates a C2PA-signed JPEG for testing.
+    fn create_signed_jpeg() -> Vec<u8> {
+        let test_jpeg = create_test_jpeg();
+        let signer =
+            c2pa::EphemeralSigner::new("task04-test").expect("Failed to create EphemeralSigner");
+
+        let definition = serde_json::json!({
+            "claim_generator_info": [{
+                "name": "task04-orchestrator-test",
+                "version": "0.1.0"
+            }],
+            "assertions": [{
+                "label": "c2pa.actions.v2",
+                "data": {
+                    "actions": [{
+                        "action": "c2pa.created",
+                        "digitalSourceType":
+                            "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+                    }]
+                }
+            }]
+        });
+
+        let mut source = std::io::Cursor::new(&test_jpeg);
+        let mut output = std::io::Cursor::new(Vec::new());
+
+        c2pa::Builder::from_context(c2pa::Context::default())
+            .with_definition(&definition.to_string())
+            .expect("Builder definition failed")
+            .sign(&signer, "image/jpeg", &mut source, &mut output)
+            .expect("Signing failed");
+
+        output.into_inner()
+    }
+
+    /// Sets up a registry with the real C2paVerifyProcessor.
+    fn create_registry() -> ProcessorRegistry {
+        let mut registry = ProcessorRegistry::new();
+        registry.register(Box::new(C2paVerifyProcessor::new()));
+        registry
+    }
+
+    // ---- ensure_c2pa_verify ----
+
+    #[test]
+    fn c2pa_verify_added_when_missing() {
+        let ids = ensure_c2pa_verify(&["image-pdq".into()]);
+        assert_eq!(ids[0], "c2pa-verify");
+        assert_eq!(ids[1], "image-pdq");
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn c2pa_verify_not_duplicated_when_present() {
+        let ids = ensure_c2pa_verify(&["c2pa-verify".into(), "image-pdq".into()]);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(
+            ids.iter()
+                .filter(|id| id.as_str() == "c2pa-verify")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn c2pa_verify_added_to_empty_list() {
+        let ids = ensure_c2pa_verify(&[]);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], "c2pa-verify");
+    }
+
+    // ---- compute_jcs_hash ----
+
+    #[test]
+    fn jcs_hash_deterministic() {
+        let verifiable = VerifiableResponse {
+            signature_hash: "sha256:abcdef1234".into(),
+            results: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "c2pa-verify".into(),
+                    ProcessorOutput::ok(serde_json::json!({"validation": "valid"})),
+                );
+                m
+            },
+        };
+
+        let hash1 = compute_jcs_hash(&verifiable).unwrap();
+        let hash2 = compute_jcs_hash(&verifiable).unwrap();
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn jcs_hash_changes_with_different_data() {
+        let v1 = VerifiableResponse {
+            signature_hash: "sha256:aaaa".into(),
+            results: HashMap::new(),
+        };
+        let v2 = VerifiableResponse {
+            signature_hash: "sha256:bbbb".into(),
+            results: HashMap::new(),
+        };
+
+        let hash1 = compute_jcs_hash(&v1).unwrap();
+        let hash2 = compute_jcs_hash(&v2).unwrap();
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn jcs_hash_is_sha256_length() {
+        let v = VerifiableResponse {
+            signature_hash: "sha256:test".into(),
+            results: HashMap::new(),
+        };
+        let hash = compute_jcs_hash(&v).unwrap();
+        assert_eq!(hash.len(), 32); // SHA-256 = 32 bytes
+    }
+
+    // ---- Full pipeline tests ----
+
+    #[test]
+    fn pipeline_single_content_success() {
+        let signed_jpeg = create_signed_jpeg();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/photo.jpg",
+            signed_jpeg,
+            Some("image/jpeg"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/photo.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+
+        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+
+        // Verify signature_hash is present and has correct format
+        assert!(response.verifiable.signature_hash.starts_with("sha256:"));
+
+        // Verify c2pa-verify result exists and is OK
+        let c2pa_result = &response.verifiable.results["c2pa-verify"];
+        assert_eq!(
+            c2pa_result.status,
+            title_core::response::ProcessorStatus::Ok
+        );
+
+        // Verify attestation is present (Base64-encoded mock attestation)
+        assert!(!response.attestation.is_empty());
+
+        // Verify attestation contains the JCS hash
+        let attestation_bytes =
+            base64::engine::general_purpose::STANDARD.decode(&response.attestation).unwrap();
+        assert!(attestation_bytes.starts_with(b"mock-attestation:"));
+
+        // The JCS hash in the attestation should match a recomputation
+        let expected_hash = compute_jcs_hash(&response.verifiable).unwrap();
+        assert_eq!(runtime.last_user_data().unwrap(), expected_hash);
+    }
+
+    #[test]
+    fn pipeline_c2pa_verify_implicit_addition() {
+        let signed_jpeg = create_signed_jpeg();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/photo.jpg",
+            signed_jpeg,
+            Some("image/jpeg"),
+        );
+
+        // Request does NOT include c2pa-verify in processor_ids
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/photo.jpg".to_string(),
+            },
+            processor_ids: vec![], // Empty -- c2pa-verify should be auto-added
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+
+        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+
+        // c2pa-verify should be in results even though not requested
+        assert!(
+            response.verifiable.results.contains_key("c2pa-verify"),
+            "c2pa-verify should be implicitly added"
+        );
+        assert_eq!(
+            response.verifiable.results["c2pa-verify"].status,
+            title_core::response::ProcessorStatus::Ok
+        );
+    }
+
+    #[test]
+    fn pipeline_unsigned_content_rejected() {
+        let unsigned_jpeg = create_test_jpeg();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/unsigned.jpg",
+            unsigned_jpeg,
+            Some("image/jpeg"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/unsigned.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+
+        // Unsigned content should fail at signature_hash computation
+        let result = process_request(&request, &fetcher, &registry, &runtime);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            OrchestratorError::SignatureHashFailed(_)
+        ));
+    }
+
+    #[test]
+    fn pipeline_fetch_failure_propagated() {
+        let fetcher = MockFetcher::new(); // No responses configured
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/missing.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+
+        let result = process_request(&request, &fetcher, &registry, &runtime);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            OrchestratorError::FetchFailed(_)
+        ));
+    }
+
+    #[test]
+    fn pipeline_unknown_processor_error_in_results() {
+        let signed_jpeg = create_signed_jpeg();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/photo.jpg",
+            signed_jpeg,
+            Some("image/jpeg"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/photo.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into(), "nonexistent-proc".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+
+        // Pipeline should succeed even though one processor is unknown
+        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+
+        // c2pa-verify should succeed
+        assert_eq!(
+            response.verifiable.results["c2pa-verify"].status,
+            title_core::response::ProcessorStatus::Ok
+        );
+        // Unknown processor should have error status
+        assert_eq!(
+            response.verifiable.results["nonexistent-proc"].status,
+            title_core::response::ProcessorStatus::Error
+        );
+    }
+
+    #[test]
+    fn attestation_binds_jcs_hash() {
+        let signed_jpeg = create_signed_jpeg();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/photo.jpg",
+            signed_jpeg,
+            Some("image/jpeg"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/photo.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+
+        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+
+        // Recompute JCS hash from the response's verifiable part
+        let recomputed_hash = compute_jcs_hash(&response.verifiable).unwrap();
+
+        // The mock runtime should have received this exact hash
+        let attestation_user_data = runtime.last_user_data().unwrap();
+        assert_eq!(
+            attestation_user_data, recomputed_hash,
+            "Attestation user_data must match JCS hash of VerifiableResponse"
+        );
+
+        // Verify the attestation decodes and contains the hash
+        let attestation_bytes =
+            base64::engine::general_purpose::STANDARD.decode(&response.attestation).unwrap();
+        let expected_prefix = b"mock-attestation:";
+        assert_eq!(&attestation_bytes[..expected_prefix.len()], expected_prefix);
+        assert_eq!(
+            &attestation_bytes[expected_prefix.len()..],
+            &recomputed_hash[..]
+        );
+    }
+
+    #[test]
+    fn signature_hash_deterministic_across_requests() {
+        let signed_jpeg = create_signed_jpeg();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/photo.jpg",
+            signed_jpeg,
+            Some("image/jpeg"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/photo.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+
+        let response1 =
+            process_request(&request, &fetcher, &registry, &MockRuntime::new()).unwrap();
+        let response2 =
+            process_request(&request, &fetcher, &registry, &MockRuntime::new()).unwrap();
+
+        assert_eq!(
+            response1.verifiable.signature_hash,
+            response2.verifiable.signature_hash,
+            "Same content must produce the same signature_hash"
+        );
+    }
+
+    #[test]
+    fn response_serialization_matches_spec() {
+        let signed_jpeg = create_signed_jpeg();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/photo.jpg",
+            signed_jpeg,
+            Some("image/jpeg"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/photo.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+
+        // Serialize and verify structure matches spec SS2.3
+        let json = serde_json::to_value(&response).unwrap();
+
+        // Top-level fields (flatten from VerifiableResponse)
+        assert!(json["signature_hash"].is_string());
+        assert!(json["signature_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert!(json["results"].is_object());
+        assert!(json["attestation"].is_string());
+
+        // c2pa-verify result
+        let c2pa = &json["results"]["c2pa-verify"];
+        assert_eq!(c2pa["status"], "ok");
+        assert!(c2pa["validation"].is_string());
+    }
+}

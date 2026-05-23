@@ -117,6 +117,31 @@ pub fn compute_signature_hash(
     Ok(format!("sha256:{}", hex::encode(hash)))
 }
 
+/// Computes the signature_hash from raw JUMBF manifest data (for sidecar inputs).
+/// Spec §1.3 — signature_hash for sidecar content
+///
+/// The `.c2pa` sidecar file contains raw JUMBF data (the manifest store).
+/// This function parses the JUMBF to find the active manifest (the last one
+/// by c2pa convention), extracts the COSE signature, and computes SHA-256.
+///
+/// # Arguments
+/// * `manifest_data` — Raw JUMBF bytes from a `.c2pa` sidecar file
+pub fn compute_signature_hash_from_manifest_data(
+    manifest_data: &[u8],
+) -> Result<String, ProcessorError> {
+    let labels = jumbf::find_manifest_labels(manifest_data)?;
+    let active_label = labels.last().ok_or_else(|| {
+        ProcessorError::C2paVerificationFailed(
+            "No manifest found in JUMBF sidecar data".to_string(),
+        )
+    })?;
+
+    let signature_bytes =
+        jumbf::extract_signature_from_jumbf(manifest_data, active_label)?;
+    let hash = Sha256::digest(&signature_bytes);
+    Ok(format!("sha256:{}", hex::encode(hash)))
+}
+
 // ---------------------------------------------------------------------------
 // Internal implementation
 // ---------------------------------------------------------------------------

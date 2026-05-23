@@ -1,7 +1,0 @@
-{
-  "signing_pubkey": "G3Ns7pVRsYYwVweszLsiBfEVcGDCY9aWveZkNP1hy19P",
-  "encryption_pubkey": "3X0QffBC0Fa2sHuarNue5q3Fj/7NUGDYDdvHmi/fUl0=",
-  "tee_node_pda": "ETS48e6HoXJyZtDbryrqy8qzF12p396hEqHtQAusaVHQ",
-  "core_tree_address": "ArYtTwdeUho6tPQMj9YP9tSbrQUTZSF1aS1GWzeNCNXP",
-  "ext_tree_address": "5Jue5np8weaghKaUTvjFACKeKuyH5j8UPZSPgWeixU6n"
-}

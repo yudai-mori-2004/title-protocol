@@ -16,20 +16,18 @@ If you discover a security vulnerability in Title Protocol, please report it res
 
 The following components are in scope for security reports:
 
-| Component | Path | Examples |
-|-----------|------|---------|
-| TEE Server | `crates/tee/` | Authentication bypass, key extraction, attestation spoofing |
-| Gateway | `crates/gateway/` | Request forgery, authorization bypass, SSRF |
-| Proxy | `crates/proxy/` | Protocol injection, data interception |
-| Cryptography | `crates/crypto/` | Key derivation flaws, nonce reuse, weak randomness |
-| TypeScript SDK | `sdk/ts/` | Encryption/decryption bugs, key handling errors |
-| Solana Program | `programs/title-config/` | Privilege escalation, unauthorized config changes |
-| WASM Modules | `wasm/` | Memory safety, sandbox escape |
+| Component | Description | Examples |
+|-----------|-------------|---------|
+| TEE Server | Trusted Execution Environment server | Key extraction, attestation spoofing, memory isolation bypass |
+| Gateway | HTTP API server | Request forgery, authorization bypass, SSRF |
+| Processors | Attribute extraction modules | Memory safety, input validation, hash collision exploitation |
+| Cryptography | Encryption suites and key management | Key derivation flaws, nonce reuse, weak randomness |
+| Solana Extension | On-chain integration | ZK proof bypass, whitelist manipulation, unauthorized minting |
 
 ### Out of Scope
 
-- `integration-tests/` — Integration tests, not deployed
-- `docs/` — Documentation only
+- `legacy/` -- Archived code, not deployed
+- `docs/` -- Documentation only
 
 ## Response Timeline
 
@@ -42,11 +40,9 @@ The following components are in scope for security reports:
 
 ## Severity Classification
 
-We follow a standard severity scale:
-
-- **Critical:** Remote code execution, key extraction from TEE, full bypass of authentication
-- **High:** Unauthorized minting of cNFTs, GlobalConfig manipulation, data exfiltration
-- **Medium:** Denial of service, information disclosure of non-sensitive data
+- **Critical:** Key extraction from TEE, attestation forgery, full authentication bypass
+- **High:** Unauthorized cNFT minting, whitelist manipulation, content data exfiltration
+- **Medium:** Denial of service (OOM, resource exhaustion), information disclosure of non-sensitive data
 - **Low:** Minor issues with limited impact
 
 ## Recognition

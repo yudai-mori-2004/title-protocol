@@ -8,16 +8,6 @@ dist/
 # TEE image artifacts
 *.eif
 
-# Terraform
-deploy/aws/terraform/.terraform/
-deploy/aws/terraform/*.tfstate
-deploy/aws/terraform/*.tfstate.backup
-deploy/aws/terraform/.terraform.lock.hcl
-deploy/aws/terraform/tfplan
-
-# WASM build output
-wasm-modules/
-
 # OS
 .DS_Store
 
@@ -35,24 +25,9 @@ CLAUDE.md
 .env.*
 !.env.example
 
-# Keys (keypairs, SSH keys)
+# Keys
 keys/
-!keys/README.md
-programs/title-config/keys/
-programs/title-config/Cargo.lock
-deploy/aws/keys/
 *.pem
 
-# Pending TX files (DAO approval)
-pending-*.bin
-
-# Network config (each developer creates their own via init-global)
-network.json
-
-# Integration test output
-integration-tests/output-*.json
-
-# Large perf test fixtures (generated locally, not committed)
-tests/fixtures/minimal/test_sized_*.mp4
-tests/fixtures/c2pa/signed/mp4-*mb.mp4
-tests/fixtures/DSC08440.ARW
+# Legacy code (local reference only, history preserved in git)
+legacy/

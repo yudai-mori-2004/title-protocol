@@ -4,7 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] - 2026-03-02
+## [Unreleased] — v0.1.2
+
+Full protocol rewrite. See [Technical Spec](docs/v0.1.2/SPECS_JA.md).
+
+### Changed
+- **Trust model**: Collection-based -> Attestation Document-based
+- **Module system**: WASM sandboxed modules -> Rust-native Processors compiled into TEE binary
+- **Communication**: Client -> Temp Storage -> TEE -> Solana replaced with Client -> Gateway -> TEE -> External Storage (direct fetch)
+- **Encryption**: Mandatory E2EE -> Optional (x25519 / p256 / ml-kem-768)
+- **Blockchain**: Core component (GlobalConfig PDA) -> Extension layer (Solana Extension)
+- **Architecture**: 7 crates + proxy + WASM host -> Gateway + TEE (2 components)
+
+### Added
+- Fragmented input support (CMAF streaming segments)
+- Sidecar input support (detached C2PA manifest)
+- HTTP Range Request for large file processing without full memory load
+- ResourcePool + Ticket memory management
+- ML-KEM-768 post-quantum encryption suite (FIPS 203)
+- Direction-separated key derivation (request_key / response_key)
+- ZK proof (SP1 zkVM) for on-chain TEE signing key whitelist
+- Developer-managed collections for Solana Extension
+
+### Removed
+- WASM execution engine (wasmtime)
+- TEE HTTP proxy
+- Temporary storage layer
+- GlobalConfig PDA (replaced by whitelist PDA)
+- `image-phash` processor (deprecated, replaced by `image-pdq`)
+- `cert-rootlens` processor (removed from initial processor list)
+
+## [0.1.0] — 2026-03-02
 
 Initial open-source release.
 

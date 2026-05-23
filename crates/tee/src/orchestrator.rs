@@ -6,14 +6,15 @@
 //!
 //! Implements the full pipeline from `ProcessRequest` to `ProcessResponse`:
 //!
-//! 1. Fetch content from URL(s) based on input type
-//! 2. Compute `signature_hash` (SS1.3 -- mandatory for all requests)
-//! 3. Ensure `c2pa-verify` is in the processor list (SS1.3 -- implicitly required)
-//! 4. Execute processors via `ProcessorRegistry` (SS3.1)
-//! 5. Assemble results into `VerifiableResponse` (SS2.3)
-//! 6. JCS-canonicalize and SHA-256 hash (SS1.5, SS2.3)
-//! 7. Get Attestation Document with hash as `user_data` (SS1.2)
-//! 8. Build `ProcessResponse` (SS2.3)
+//! 1. Admit request (SS4.1 -- ResourcePool admission check)
+//! 2. Fetch content from URL(s) based on input type (with memory tracking)
+//! 3. Compute `signature_hash` (SS1.3 -- mandatory for all requests)
+//! 4. Ensure `c2pa-verify` is in the processor list (SS1.3 -- implicitly required)
+//! 5. Execute processors via `ProcessorRegistry` (SS3.1)
+//! 6. Assemble results into `VerifiableResponse` (SS2.3)
+//! 7. JCS-canonicalize and SHA-256 hash (SS1.5, SS2.3)
+//! 8. Get Attestation Document with hash as `user_data` (SS1.2)
+//! 9. Build `ProcessResponse` (SS2.3)
 //!
 //! ## Sidecar handling
 //!
@@ -22,8 +23,16 @@
 //! directly, and runs `c2pa-verify` on the content bytes (which may fail if
 //! the content has no embedded manifest). Other processors receive the raw
 //! content bytes.
+//!
+//! ## Memory management (SS4.1, SS4.2)
+//!
+//! Each request gets a Ticket from the ResourcePool. Memory is tracked
+//! throughout the pipeline via Ticket.extend() calls in the content fetch
+//! layer. The Ticket is dropped at the end of the function, releasing all
+//! reserved memory.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -35,6 +44,7 @@ use title_core::{
 };
 
 use crate::content_fetch::{fetch_content, ContentFetcher, FetchError};
+use crate::resource_pool::ResourcePool;
 use crate::TeeRuntime;
 
 // ---------------------------------------------------------------------------
@@ -45,6 +55,11 @@ use crate::TeeRuntime;
 /// Spec SS5.2
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
+    /// Request rejected: ResourcePool admission limit exceeded.
+    /// Spec SS4.1 -- corresponds to HTTP 503.
+    #[error("Request rejected: memory admission limit exceeded (503)")]
+    AdmissionRejected,
+
     /// Content fetch failed.
     #[error("Content fetch failed: {0}")]
     FetchFailed(#[from] FetchError),
@@ -81,13 +96,15 @@ pub enum OrchestratorError {
 /// * `fetcher` -- Content fetcher (HTTP client or mock)
 /// * `registry` -- Processor registry with registered processors
 /// * `runtime` -- TEE runtime for Attestation Document retrieval
+/// * `pool` -- ResourcePool for memory management (SS4.1)
 ///
 /// # Returns
 /// `ProcessResponse` containing processor results and Base64-encoded
 /// Attestation Document.
 ///
 /// # Errors
-/// - Content fetch failure (network, HTTP error, empty content)
+/// - `AdmissionRejected` -- ResourcePool admission limit exceeded
+/// - Content fetch failure (network, HTTP error, empty content, memory limit)
 /// - No valid C2PA signature in content (signature_hash computation fails)
 /// - JCS canonicalization failure
 /// - Attestation Document retrieval failure
@@ -96,12 +113,20 @@ pub fn process_request(
     fetcher: &dyn ContentFetcher,
     registry: &ProcessorRegistry,
     runtime: &dyn TeeRuntime,
+    pool: &Arc<ResourcePool>,
 ) -> Result<ProcessResponse, OrchestratorError> {
-    // Step 1: Fetch content from URL(s)
-    // Spec SS5.2 -- input type determines fetch strategy
-    let content = fetch_content(fetcher, &request.input)?;
+    // Step 1: Admit request
+    // Spec SS4.1 -- check admission_limit, issue Ticket
+    let ticket = pool
+        .try_admit(0)
+        .ok_or(OrchestratorError::AdmissionRejected)?;
 
-    // Step 2: Compute signature_hash
+    // Step 2: Fetch content from URL(s) with memory tracking
+    // Spec SS5.2, SS4.2 -- input type determines fetch strategy,
+    // Ticket.extend() tracks memory usage
+    let content = fetch_content(fetcher, &request.input, &ticket)?;
+
+    // Step 3: Compute signature_hash
     // Spec SS1.3 -- SHA-256(Active Manifest's COSE signature)
     let signature_hash = if let Some(ref manifest_data) = content.manifest_bytes {
         // Sidecar: compute from manifest JUMBF data directly
@@ -113,11 +138,11 @@ pub fn process_request(
             .map_err(|e| OrchestratorError::SignatureHashFailed(e.to_string()))?
     };
 
-    // Step 3: Build processor ID list with c2pa-verify always included
+    // Step 4: Build processor ID list with c2pa-verify always included
     // Spec SS1.3 -- c2pa-verify is mandatory, implicitly added if not specified
     let processor_ids = ensure_c2pa_verify(&request.processor_ids);
 
-    // Step 4: Execute processors via registry
+    // Step 5: Execute processors via registry
     // Spec SS3.1 -- each processor runs independently; one failure does not
     // affect others. Currently sequential; parallel execution is a future
     // optimization.
@@ -128,15 +153,17 @@ pub fn process_request(
         &content.content_type,
     );
 
-    // Step 5: Build VerifiableResponse
+    // Step 6: Build VerifiableResponse
     // Spec SS2.3 -- signature_hash + results
     let verifiable = VerifiableResponse {
         signature_hash,
         results,
     };
 
-    // Steps 6-8: JCS hash, Attestation Document, build ProcessResponse
+    // Steps 7-9: JCS hash, Attestation Document, build ProcessResponse
     build_attested_response(verifiable, runtime)
+
+    // Ticket is dropped here, releasing all reserved memory
 }
 
 // ---------------------------------------------------------------------------
@@ -192,16 +219,16 @@ fn build_attested_response(
     verifiable: VerifiableResponse,
     runtime: &dyn TeeRuntime,
 ) -> Result<ProcessResponse, OrchestratorError> {
-    // Step 6: JCS canonicalize and hash
+    // Step 7: JCS canonicalize and hash
     let jcs_hash = compute_jcs_hash(&verifiable)?;
 
-    // Step 7: Get Attestation Document
+    // Step 8: Get Attestation Document
     // Spec SS1.2 -- user_data = SHA-256(JCS(verifiable))
     let attestation_doc = runtime
         .get_attestation_document(&jcs_hash)
         .map_err(|e| OrchestratorError::AttestationFailed(e.to_string()))?;
 
-    // Step 8: Base64-encode Attestation Document
+    // Step 9: Base64-encode Attestation Document
     let attestation = base64::engine::general_purpose::STANDARD.encode(&attestation_doc);
 
     Ok(ProcessResponse {
@@ -217,7 +244,8 @@ fn build_attested_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content_fetch::{FetchResponse, ContentFetcher, FetchError};
+    use crate::content_fetch::{ContentFetcher, FetchError, FetchResponse};
+    use crate::resource_pool::ResourcePool;
     use crate::TeeError;
     use std::sync::Mutex;
     use title_core::{C2paVerifyProcessor, ProcessorRegistry};
@@ -352,6 +380,11 @@ mod tests {
         registry
     }
 
+    /// Creates a large-enough pool for tests that don't care about limits.
+    fn test_pool() -> Arc<ResourcePool> {
+        Arc::new(ResourcePool::with_single_limit(1_000_000_000)) // 1 GB
+    }
+
     // ---- ensure_c2pa_verify ----
 
     #[test]
@@ -450,8 +483,9 @@ mod tests {
 
         let registry = create_registry();
         let runtime = MockRuntime::new();
+        let pool = test_pool();
 
-        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
 
         // Verify signature_hash is present and has correct format
         assert!(response.verifiable.signature_hash.starts_with("sha256:"));
@@ -474,6 +508,9 @@ mod tests {
         // The JCS hash in the attestation should match a recomputation
         let expected_hash = compute_jcs_hash(&response.verifiable).unwrap();
         assert_eq!(runtime.last_user_data().unwrap(), expected_hash);
+
+        // Pool should be empty after response (Ticket dropped)
+        assert_eq!(pool.total_used(), 0);
     }
 
     #[test]
@@ -497,8 +534,9 @@ mod tests {
 
         let registry = create_registry();
         let runtime = MockRuntime::new();
+        let pool = test_pool();
 
-        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
 
         // c2pa-verify should be in results even though not requested
         assert!(
@@ -531,9 +569,10 @@ mod tests {
 
         let registry = create_registry();
         let runtime = MockRuntime::new();
+        let pool = test_pool();
 
         // Unsigned content should fail at signature_hash computation
-        let result = process_request(&request, &fetcher, &registry, &runtime);
+        let result = process_request(&request, &fetcher, &registry, &runtime, &pool);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -555,8 +594,9 @@ mod tests {
 
         let registry = create_registry();
         let runtime = MockRuntime::new();
+        let pool = test_pool();
 
-        let result = process_request(&request, &fetcher, &registry, &runtime);
+        let result = process_request(&request, &fetcher, &registry, &runtime, &pool);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -584,9 +624,10 @@ mod tests {
 
         let registry = create_registry();
         let runtime = MockRuntime::new();
+        let pool = test_pool();
 
         // Pipeline should succeed even though one processor is unknown
-        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
 
         // c2pa-verify should succeed
         assert_eq!(
@@ -620,8 +661,9 @@ mod tests {
 
         let registry = create_registry();
         let runtime = MockRuntime::new();
+        let pool = test_pool();
 
-        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
 
         // Recompute JCS hash from the response's verifiable part
         let recomputed_hash = compute_jcs_hash(&response.verifiable).unwrap();
@@ -664,10 +706,22 @@ mod tests {
 
         let registry = create_registry();
 
-        let response1 =
-            process_request(&request, &fetcher, &registry, &MockRuntime::new()).unwrap();
-        let response2 =
-            process_request(&request, &fetcher, &registry, &MockRuntime::new()).unwrap();
+        let response1 = process_request(
+            &request,
+            &fetcher,
+            &registry,
+            &MockRuntime::new(),
+            &test_pool(),
+        )
+        .unwrap();
+        let response2 = process_request(
+            &request,
+            &fetcher,
+            &registry,
+            &MockRuntime::new(),
+            &test_pool(),
+        )
+        .unwrap();
 
         assert_eq!(
             response1.verifiable.signature_hash,
@@ -696,7 +750,8 @@ mod tests {
 
         let registry = create_registry();
         let runtime = MockRuntime::new();
-        let response = process_request(&request, &fetcher, &registry, &runtime).unwrap();
+        let pool = test_pool();
+        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
 
         // Serialize and verify structure matches spec SS2.3
         let json = serde_json::to_value(&response).unwrap();
@@ -714,5 +769,102 @@ mod tests {
         let c2pa = &json["results"]["c2pa-verify"];
         assert_eq!(c2pa["status"], "ok");
         assert!(c2pa["validation"].is_string());
+    }
+
+    // ---- Admission control ----
+
+    #[test]
+    fn pipeline_admission_rejected_when_pool_full() {
+        let signed_jpeg = create_signed_jpeg();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/photo.jpg",
+            signed_jpeg,
+            Some("image/jpeg"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/photo.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+
+        // Pool with admission_limit=0 -- rejects all new requests
+        let pool = Arc::new(ResourcePool::new(0, 1000));
+
+        let result = process_request(&request, &fetcher, &registry, &runtime, &pool);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            OrchestratorError::AdmissionRejected
+        ));
+    }
+
+    #[test]
+    fn pipeline_memory_released_after_completion() {
+        let signed_jpeg = create_signed_jpeg();
+        let jpeg_len = signed_jpeg.len();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/photo.jpg",
+            signed_jpeg,
+            Some("image/jpeg"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/photo.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+        // Pool just big enough for the JPEG
+        let pool = Arc::new(ResourcePool::with_single_limit(jpeg_len + 1024));
+
+        // Before: pool is empty
+        assert_eq!(pool.total_used(), 0);
+
+        let _response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
+
+        // After: Ticket dropped, pool should be empty again
+        assert_eq!(pool.total_used(), 0, "Memory must be released after request completes");
+    }
+
+    #[test]
+    fn pipeline_memory_released_on_error() {
+        let unsigned_jpeg = create_test_jpeg();
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/unsigned.jpg",
+            unsigned_jpeg,
+            Some("image/jpeg"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/unsigned.jpg".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: None,
+        };
+
+        let registry = create_registry();
+        let runtime = MockRuntime::new();
+        let pool = test_pool();
+
+        // This will fail at signature_hash (unsigned content)
+        let result = process_request(&request, &fetcher, &registry, &runtime, &pool);
+        assert!(result.is_err());
+
+        // Memory should still be released despite the error
+        assert_eq!(pool.total_used(), 0, "Memory must be released even on error");
     }
 }

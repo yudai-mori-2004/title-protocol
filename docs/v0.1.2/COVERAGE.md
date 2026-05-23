@@ -63,15 +63,15 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
-| §4.1 | ResourcePool (admission_limit / total_limit) | [ ] | | |
-| §4.2 | Ticket (incremental reservation / release) | [ ] | | |
-| §4.3 | Memory pattern: single file (Range Request) | [ ] | | |
-| §4.3 | Memory pattern: fragmented | [ ] | | |
-| §4.3 | Memory pattern: sidecar | [ ] | | |
-| §4.4 | Data size limits enforcement | [ ] | | |
-| §4.4 | Chunk timeout (60s) | [ ] | | |
-| §4.4 | Global timeout (max 30min, size-adaptive) | [ ] | | |
-| §4.4 | Decode memory protection (header-based estimation) | [ ] | | |
+| §4.1 | ResourcePool (admission_limit / total_limit) | [x] | crates/tee/src/resource_pool.rs (ResourcePool: 2-tier threshold, AtomicUsize counter, can_admit/try_admit/acquire, 5 tests) | 09 |
+| §4.2 | Ticket (incremental reservation / release) | [x] | crates/tee/src/resource_pool.rs (Ticket: CAS-loop extend/shrink, RAII Drop auto-release, Cell<Instant> timeout tracking, 14 tests incl. 2 concurrent) | 09 |
+| §4.3 | Memory pattern: single file (Range Request) | [x] | crates/tee/src/content_fetch.rs (fetch_single: ticket.extend on data arrival) + crates/tee/src/resource_pool.rs (Ticket API). Note: streaming Range Request with shrink is future optimization; current impl fetches full file. | 09 |
+| §4.3 | Memory pattern: fragmented | [x] | crates/tee/src/content_fetch.rs (fetch_fragmented: ticket.extend per segment, validate_fragment_count/size) + resource_pool.rs. Note: accumulates all fragments; streaming shrink-per-fragment requires streaming C2PA reader (future). | 09 |
+| §4.3 | Memory pattern: sidecar | [x] | crates/tee/src/content_fetch.rs (fetch_sidecar: ticket.extend for manifest + content separately) + resource_pool.rs | 09 |
+| §4.4 | Data size limits enforcement | [x] | crates/tee/src/limits.rs (MAX_FRAGMENT_COUNT=100K, MAX_FRAGMENT_SIZE=100MB, validate_fragment_count/size, 4 tests) | 09 |
+| §4.4 | Chunk timeout (60s) | [x] | crates/tee/src/resource_pool.rs (Ticket::extend checks Cell<Instant> last_activity against CHUNK_TIMEOUT) + crates/tee/src/limits.rs (CHUNK_TIMEOUT constant) | 09 |
+| §4.4 | Global timeout (max 30min, size-adaptive) | [x] | crates/tee/src/limits.rs (compute_global_timeout: min(30min, 60s + size/64KB/s), 3 tests) + crates/tee/src/resource_pool.rs (Ticket::extend checks created_at against global_timeout) | 09 |
+| §4.4 | Decode memory protection (header-based estimation) | [x] | crates/tee/src/limits.rs (estimate_decoded_size, 3 tests) + crates/tee/src/resource_pool.rs (Ticket::validate_decoded_size, 2 tests) | 09 |
 
 ### 5. System Implementation (§5)
 

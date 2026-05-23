@@ -1,0 +1,19 @@
+[package]
+name = "attestation-program"
+version = "0.1.0"
+edition = "2021"
+
+# SP1 guest は独立ワークスペースとして扱う
+[workspace]
+
+[dependencies]
+# SP1 guest ランタイム
+sp1-zkvm = "6.2"
+
+# Attestation Document 検証（Automata 実装を活用）
+# COSE_Sign1 パース + X.509 証明書チェーン検証 + COSE 署名検証
+# sp1 feature: P-256/SHA-256 の SP1 precompile パッチ版を使用
+aws-nitro-enclave-attestation-verifier = { git = "https://github.com/automata-network/aws-nitro-enclave-attestation", features = ["sp1"] }
+
+# SHA-256（検証済みデータのハッシュ化）
+sha2 = "0.10"

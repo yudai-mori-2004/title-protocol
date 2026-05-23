@@ -1,0 +1,243 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! # Title Protocol Gateway
+//!
+//! Gateway APIの型定義とサーバースケルトン。
+//!
+//! 仕様書 §1.7, §2.5, §5.3
+//!
+//! ## 役割
+//!
+//! Gatewayはクライアントとの間の薄い管理層:
+//! - クライアント認証（APIキー等）
+//! - TEE暗号化用公開鍵の提供（GET /keys）
+//! - 対応processor一覧の提供（GET /processors）
+//! - リクエストのTEEへの中継（POST /process）
+//! - TEE稼働状態の提供（GET /health）
+//!
+//! ## ステータス
+//!
+//! 現在は型定義のみ。HTTPサーバー実装は後続タスク。
+//!
+//! ## Legacy参照
+//!
+//! `legacy/v0.1.0/crates/gateway/` — 前バージョンのGateway実装（Axum）。
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// GET /keys (§2.5)
+// ---------------------------------------------------------------------------
+
+/// GET /keys レスポンス。
+/// 仕様書 §2.5
+///
+/// TEEが現在保持している暗号化用公開鍵の一覧。
+/// TEE再起動時に鍵は更新される。
+///
+/// # JSON例
+/// ```json
+/// {
+///   "keys": {
+///     "x25519": "(Base64公開鍵)",
+///     "p256": "(Base64公開鍵)",
+///     "ml-kem-768": "(Base64公開鍵)"
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeysResponse {
+    /// スイート名 → Base64エンコードされた公開鍵のマップ。
+    pub keys: HashMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// GET /processors (§2.5)
+// ---------------------------------------------------------------------------
+
+/// GET /processors レスポンス。
+/// 仕様書 §2.5
+///
+/// TEEが対応しているprocessorのID一覧。
+///
+/// # JSON例
+/// ```json
+/// {
+///   "processors": ["c2pa-verify", "image-pdq", "provenance-graph"]
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessorsResponse {
+    /// 対応processor IDの一覧。
+    pub processors: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// GET /health (§2.5)
+// ---------------------------------------------------------------------------
+
+/// GET /health レスポンス。
+/// 仕様書 §2.5
+///
+/// TEEの稼働状態。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HealthResponse {
+    /// 稼働状態。`"ok"` であればリクエスト受付可能。
+    pub status: String,
+
+    /// TEEベンダー種別。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tee_type: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// GET /solana-keys (§2.5)
+// ---------------------------------------------------------------------------
+
+/// GET /solana-keys レスポンス。
+/// 仕様書 §2.5
+///
+/// Solana Extension用の公開鍵情報（Extension有効時のみ）。
+///
+/// # JSON例
+/// ```json
+/// {
+///   "solana_pubkey": "(Base58公開鍵)"
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SolanaKeysResponse {
+    /// Solana Ed25519公開鍵（Base58エンコード）。
+    pub solana_pubkey: String,
+}
+
+// ---------------------------------------------------------------------------
+// POST /extension/solana (§2.5, §6.2)
+// ---------------------------------------------------------------------------
+
+/// POST /extension/solana リクエスト。
+/// 仕様書 §6.2
+///
+/// コア処理の成果物をSolana cNFTとして発行するリクエスト。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SolanaExtensionRequest {
+    /// コア処理結果のオフチェーンデータURL。
+    pub offchain_data_url: String,
+
+    /// コレクションアドレス（Base58）。
+    pub collection: String,
+
+    /// Merkle Treeアドレス（Base58）。
+    pub merkle_tree: String,
+
+    /// 最新のBlockhash（Base58）。
+    pub recent_blockhash: String,
+}
+
+/// POST /extension/solana レスポンス。
+/// 仕様書 §6.2
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SolanaExtensionResponse {
+    /// Base64エンコードされた部分署名済みトランザクション。
+    pub partial_tx: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── §2.5 GET /keys ──
+
+    #[test]
+    fn keys_response_from_spec() {
+        let json = r#"{
+            "keys": {
+                "x25519": "base64key1",
+                "p256": "base64key2",
+                "ml-kem-768": "base64key3"
+            }
+        }"#;
+        let resp: KeysResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.keys.len(), 3);
+        assert_eq!(resp.keys["x25519"], "base64key1");
+    }
+
+    #[test]
+    fn keys_response_roundtrip() {
+        let resp = KeysResponse {
+            keys: {
+                let mut m = HashMap::new();
+                m.insert("x25519".into(), "key1".into());
+                m.insert("p256".into(), "key2".into());
+                m
+            },
+        };
+        let json_str = serde_json::to_string(&resp).unwrap();
+        let restored: KeysResponse = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(resp, restored);
+    }
+
+    // ── §2.5 GET /processors ──
+
+    #[test]
+    fn processors_response_from_spec() {
+        let json = r#"{
+            "processors": ["c2pa-verify", "image-pdq", "provenance-graph"]
+        }"#;
+        let resp: ProcessorsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.processors.len(), 3);
+        assert!(resp.processors.contains(&"c2pa-verify".into()));
+    }
+
+    // ── §2.5 GET /health ──
+
+    #[test]
+    fn health_response_roundtrip() {
+        let resp = HealthResponse {
+            status: "ok".into(),
+            tee_type: Some("aws_nitro".into()),
+        };
+        let json_str = serde_json::to_string(&resp).unwrap();
+        let restored: HealthResponse = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(resp, restored);
+    }
+
+    #[test]
+    fn health_response_tee_type_optional() {
+        let resp = HealthResponse {
+            status: "ok".into(),
+            tee_type: None,
+        };
+        let json_str = serde_json::to_string(&resp).unwrap();
+        assert!(!json_str.contains("tee_type"));
+    }
+
+    // ── §6.2 Solana Extension ──
+
+    #[test]
+    fn solana_extension_request_from_spec() {
+        let json = r#"{
+            "offchain_data_url": "https://r2.example.com/output/abc123.json",
+            "collection": "Base58Collection",
+            "merkle_tree": "Base58MerkleTree",
+            "recent_blockhash": "Base58Blockhash"
+        }"#;
+        let req: SolanaExtensionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            req.offchain_data_url,
+            "https://r2.example.com/output/abc123.json"
+        );
+    }
+
+    #[test]
+    fn solana_extension_response_roundtrip() {
+        let resp = SolanaExtensionResponse {
+            partial_tx: "base64tx".into(),
+        };
+        let json_str = serde_json::to_string(&resp).unwrap();
+        let restored: SolanaExtensionResponse = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(resp, restored);
+    }
+}

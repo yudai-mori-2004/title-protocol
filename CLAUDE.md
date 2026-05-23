@@ -102,12 +102,13 @@ Solana Extension uses SP1 zkVM to verify Attestation Documents on-chain. Develop
 
 ## Build
 
-(To be defined as crates are created)
-
 ```bash
-# Placeholder — will be updated per task
+# Workspace build (all crates)
 cargo check --workspace
 cargo test --workspace
+
+# With vendor-aws feature (includes AWS Nitro skeleton)
+cargo test --workspace --features title-tee/vendor-aws
 
 # Sandbox projects (independent, not in workspace)
 cd sandbox/01-c2pa-range-request && cargo run
@@ -138,7 +139,11 @@ cd sandbox/03-sp1-attestation && cargo run
 
 ## Legacy Code Reference
 
+**設計や実装で迷ったら、まず `legacy/v0.1.0/` を読め。** 同じプロトコルの前バージョンであり、型設計・trait構成・crate分割の判断材料が揃っている。ゼロから考える前にまず既存の設計を確認すること。
+
 v0.1.0 implementation is archived at `legacy/v0.1.0/`. Useful for:
+- Crate structure and workspace layout (`legacy/v0.1.0/Cargo.toml`, `legacy/v0.1.0/crates/`)
+- Type definitions and data models (`legacy/v0.1.0/crates/types/`)
 - PDQ/vPDQ hash algorithm implementations (`legacy/v0.1.0/wasm/image-pdq/`, `legacy/v0.1.0/wasm/video-vpdq/`)
 - Certificate chain verification logic (`legacy/v0.1.0/wasm/cert-*/`)
 - Crypto primitives — AES-GCM, HKDF, X25519 (`legacy/v0.1.0/crates/crypto/`)

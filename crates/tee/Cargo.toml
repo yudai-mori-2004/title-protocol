@@ -1,0 +1,19 @@
+[package]
+name = "title-tee"
+description = "Title Protocol TEE runtime abstraction and vendor implementations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+vendor-aws = []
+
+[dependencies]
+title-core = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

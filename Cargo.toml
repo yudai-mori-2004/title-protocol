@@ -1,0 +1,31 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/tee",
+    "crates/gateway",
+]
+exclude = [
+    "sandbox",
+    "legacy",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.2"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/yudai-mori-2004/title-protocol"
+authors = ["Title Protocol Contributors"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Workspace-internal crate references
+title-core = { path = "crates/core" }
+title-tee = { path = "crates/tee" }
+title-gateway = { path = "crates/gateway" }
+
+[profile.release]
+overflow-checks = true

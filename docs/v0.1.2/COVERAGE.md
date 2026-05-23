@@ -17,12 +17,12 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
 | §1.2 | Attestation Document integration (user_data embedding) | [ ] | | |
-| §1.3 | Processor execution framework | [ ] | | |
+| §1.3 | Processor execution framework | [~] | crates/core/src/processor.rs (Processor trait + ProcessorRegistry) | 02 |
 | §1.3 | c2pa-verify (mandatory, signature_hash) | [ ] | | |
-| §1.3 | Input type: single file | [ ] | | |
-| §1.3 | Input type: fragmented (CMAF) | [ ] | | |
-| §1.3 | Input type: sidecar | [ ] | | |
-| §1.4 | Encryption (optional, x25519/p256/ml-kem-768) | [ ] | | |
+| §1.3 | Input type: single file | [~] | crates/core/src/request.rs (InputData::Single type defined) | 02 |
+| §1.3 | Input type: fragmented (CMAF) | [~] | crates/core/src/request.rs (InputData::Fragmented type defined) | 02 |
+| §1.3 | Input type: sidecar | [~] | crates/core/src/request.rs (InputData::Sidecar type defined) | 02 |
+| §1.4 | Encryption (optional, x25519/p256/ml-kem-768) | [~] | crates/core/src/request.rs (EncryptionSuite enum defined, logic not implemented) | 02 |
 | §1.5 | Verification model (JCS + hash comparison) | [ ] | | |
 | §1.7 | Gateway role definition | [ ] | | |
 
@@ -31,26 +31,26 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
 | §2.1 | Request flow (Client → Gateway → TEE → External Storage) | [ ] | | |
-| §2.2 | Request format (single/fragmented/sidecar JSON) | [ ] | | |
-| §2.3 | Response format (signature_hash + results + attestation) | [ ] | | |
+| §2.2 | Request format (single/fragmented/sidecar JSON) | [x] | crates/core/src/request.rs (ProcessRequest + InputData, serde tests match spec JSON) | 02 |
+| §2.3 | Response format (signature_hash + results + attestation) | [x] | crates/core/src/response.rs (ProcessResponse + VerifiableResponse, serde tests match spec JSON) | 02 |
 | §2.4 | Key bundle (per-suite key pair generation at startup) | [ ] | | |
 | §2.4 | Encryption flow (12-step client-TEE exchange) | [ ] | | |
 | §2.4 | Direction-separated key derivation (HKDF) | [ ] | | |
 | §2.4 | Wire format (request: suite_id + encap_key + nonce + ciphertext) | [ ] | | |
 | §2.4 | Wire format (response: nonce + ciphertext) | [ ] | | |
 | §2.4 | Encrypted payload internal structure (metadata_len + JSON + raw binary) | [ ] | | |
-| §2.5 | Gateway API: GET /keys | [ ] | | |
-| §2.5 | Gateway API: GET /processors | [ ] | | |
-| §2.5 | Gateway API: POST /process | [ ] | | |
-| §2.5 | Gateway API: GET /health | [ ] | | |
-| §2.5 | Gateway API: GET /solana-keys | [ ] | | |
-| §2.5 | Gateway API: POST /extension/solana | [ ] | | |
+| §2.5 | Gateway API: GET /keys | [~] | crates/gateway/src/lib.rs (KeysResponse type defined, HTTP handler not implemented) | 02 |
+| §2.5 | Gateway API: GET /processors | [~] | crates/gateway/src/lib.rs (ProcessorsResponse type defined, HTTP handler not implemented) | 02 |
+| §2.5 | Gateway API: POST /process | [~] | crates/gateway/src/lib.rs (types defined via title-core re-export, HTTP handler not implemented) | 02 |
+| §2.5 | Gateway API: GET /health | [~] | crates/gateway/src/lib.rs (HealthResponse type defined, HTTP handler not implemented) | 02 |
+| §2.5 | Gateway API: GET /solana-keys | [~] | crates/gateway/src/lib.rs (SolanaKeysResponse type defined, HTTP handler not implemented) | 02 |
+| §2.5 | Gateway API: POST /extension/solana | [~] | crates/gateway/src/lib.rs (SolanaExtensionRequest/Response types defined, HTTP handler not implemented) | 02 |
 
 ### 3. Processors (§3)
 
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
-| §3.1 | Processor trait/interface definition | [ ] | | |
+| §3.1 | Processor trait/interface definition | [x] | crates/core/src/processor.rs (Processor trait + ProcessorRegistry + ProcessorError, 7 tests) | 02 |
 | §3.2 | c2pa-verify processor | [ ] | | |
 | §3.2 | provenance-graph processor | [ ] | | |
 | §3.2 | image-pdq processor | [ ] | | |
@@ -77,8 +77,8 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
-| §5.2 | TEE startup sequence (key generation → notify Gateway) | [ ] | | |
-| §5.2 | TEE request processing flow | [ ] | | |
+| §5.2 | TEE startup sequence (key generation → notify Gateway) | [~] | crates/tee/src/lib.rs (TeeRuntime trait defined, startup logic not implemented) | 02 |
+| §5.2 | TEE request processing flow | [~] | crates/tee/src/lib.rs (TeeRuntime trait defined, flow not implemented) | 02 |
 | §5.2 | Content fetch: single (HTTP Range Request + ETag) | [~] | sandbox/01-c2pa-range-request/ (sandbox verified: sig verify, tamper detect, Range Request parity — all PASS) | 01 |
 | §5.2 | Content fetch: fragmented | [~] | sandbox/02-c2pa-fragment/ (sandbox verified: sign/verify roundtrip, tamper detect, partial verify — all PASS) | 01 |
 | §5.2 | Content fetch: sidecar | [ ] | | |

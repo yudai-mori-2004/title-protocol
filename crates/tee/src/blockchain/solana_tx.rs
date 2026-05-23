@@ -283,7 +283,15 @@ pub fn apply_partial_signature(
         .map_err(|_| "署名は64バイトである必要があります".to_string())?;
     let signature = Signature::from(sig_arr);
 
+
     let num_signers = tx.message.header().num_required_signatures as usize;
+    if tx.signatures.len() < num_signers {
+        return Err(format!(
+            "signature slot count {} is less than required signers {}",
+            tx.signatures.len(),
+            num_signers,
+        ));
+    }
     let static_keys = tx.message.static_account_keys();
     for i in 0..num_signers {
         if i < static_keys.len() && static_keys[i] == *pubkey {
@@ -620,22 +628,28 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_apply_partial_signature_create_tree() {
-        let payer = Pubkey::new_unique();
+#[test]
+    fn test_apply_partial_signature_truncated_slots() {
         let tree = Pubkey::new_unique();
-        let tree_creator = Pubkey::new_unique();
+        let tee_signer = Pubkey::new_unique();
+        let creator = Pubkey::new_unique();
         let blockhash = solana_sdk::hash::Hash::new_unique();
+        let alt = test_alt(&[tree], &[]);
 
-        let mut tx = build_create_tree_tx(&payer, &tree, &tree_creator, 20, 64, &blockhash);
+        let ix = build_mint_v2_ix(
+            &tree, &tee_signer, &creator,
+            "0x1234abcdef567890", "ar://test_uri", None, &creator,
+        );
+        let mut txs = pack_mint_txs(vec![ix], &creator, &blockhash, &alt);
+        assert_eq!(txs.len(), 1);
+
+        // simulate malformed tx where signature slots are truncated
+        txs[0].signatures.clear();
 
         let dummy_sig = [1u8; 64];
-        let result = apply_partial_signature(&mut tx, &tree_creator, &dummy_sig);
-        assert!(result.is_ok());
-
-        let unknown = Pubkey::new_unique();
-        let result = apply_partial_signature(&mut tx, &unknown, &dummy_sig);
+        let result = apply_partial_signature(&mut txs[0], &tee_signer, &dummy_sig);
         assert!(result.is_err());
+        assert!(result.unwrap_err().contains("signature slot count"));
     }
 
     #[test]

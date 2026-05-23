@@ -4,10 +4,12 @@ members = [
     "crates/crypto",
     "crates/tee",
     "crates/gateway",
+    "crates/solana",
 ]
 exclude = [
     "sandbox",
     "legacy",
+    "programs",
 ]
 resolver = "2"
 
@@ -35,6 +37,7 @@ title-core = { path = "crates/core" }
 title-tee = { path = "crates/tee" }
 title-crypto = { path = "crates/crypto" }
 title-gateway = { path = "crates/gateway" }
+title-solana = { path = "crates/solana" }
 
 [profile.release]
 overflow-checks = true

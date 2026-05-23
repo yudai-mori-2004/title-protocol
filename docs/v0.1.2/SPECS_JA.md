@@ -1129,9 +1129,10 @@ TEEの内部で行われるAttestation Documentの検証がこの仕組みの核
 ```json
 {
   "offchain_data_url": "https://r2.example.com/output/abc123.json",
-  "collection": "Base58エンコードされたコレクションアドレス",
+  "payer": "Base58エンコードされたpayer公開鍵（= leaf_owner / fee payer）",
   "merkle_tree": "Base58エンコードされたMerkle Treeアドレス",
-  "recent_blockhash": "Base58エンコードされたBlockhash"
+  "recent_blockhash": "Base58エンコードされたBlockhash",
+  "collection": "Base58エンコードされたコレクションアドレス（任意）"
 }
 ```
 

@@ -512,9 +512,10 @@ pub(crate) mod tests {
 
         let req_body = serde_json::json!({
             "offchain_data_url": "https://example.com/data.json",
-            "collection": "Base58Col",
+            "payer": "Base58Payer",
             "merkle_tree": "Base58Tree",
-            "recent_blockhash": "Base58Hash"
+            "recent_blockhash": "Base58Hash",
+            "collection": "Base58Col"
         });
 
         let (status, body) = send_post(&app, "/extension/solana", req_body).await;
@@ -530,7 +531,7 @@ pub(crate) mod tests {
 
         let req_body = serde_json::json!({
             "offchain_data_url": "https://example.com/data.json",
-            "collection": "Base58Col",
+            "payer": "Base58Payer",
             "merkle_tree": "Base58Tree",
             "recent_blockhash": "Base58Hash"
         });

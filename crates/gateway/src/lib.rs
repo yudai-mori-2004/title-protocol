@@ -133,14 +133,19 @@ pub struct SolanaExtensionRequest {
     /// コア処理結果のオフチェーンデータURL。
     pub offchain_data_url: String,
 
-    /// コレクションアドレス（Base58）。
-    pub collection: String,
+    /// Payer公開鍵（Base58）。Fee payer かつ leaf_owner。
+    pub payer: String,
 
     /// Merkle Treeアドレス（Base58）。
     pub merkle_tree: String,
 
     /// 最新のBlockhash（Base58）。
     pub recent_blockhash: String,
+
+    /// コレクションアドレス（Base58、任意）。
+    /// 開発者が選択するもので、信頼モデルの一部ではない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
 }
 
 /// POST /extension/solana レスポンス。
@@ -227,15 +232,30 @@ mod tests {
     fn solana_extension_request_from_spec() {
         let json = r#"{
             "offchain_data_url": "https://r2.example.com/output/abc123.json",
-            "collection": "Base58Collection",
+            "payer": "Base58Payer",
             "merkle_tree": "Base58MerkleTree",
-            "recent_blockhash": "Base58Blockhash"
+            "recent_blockhash": "Base58Blockhash",
+            "collection": "Base58Collection"
         }"#;
         let req: SolanaExtensionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(
             req.offchain_data_url,
             "https://r2.example.com/output/abc123.json"
         );
+        assert_eq!(req.payer, "Base58Payer");
+        assert_eq!(req.collection, Some("Base58Collection".into()));
+    }
+
+    #[test]
+    fn solana_extension_request_without_collection() {
+        let json = r#"{
+            "offchain_data_url": "https://r2.example.com/output/abc123.json",
+            "payer": "Base58Payer",
+            "merkle_tree": "Base58MerkleTree",
+            "recent_blockhash": "Base58Blockhash"
+        }"#;
+        let req: SolanaExtensionRequest = serde_json::from_str(json).unwrap();
+        assert!(req.collection.is_none());
     }
 
     #[test]

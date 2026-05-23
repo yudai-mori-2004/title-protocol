@@ -1,0 +1,21 @@
+[toolchain]
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+title_whitelist = "43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs"
+
+[programs.devnet]
+title_whitelist = "43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "echo 'Use: cargo test --workspace'"

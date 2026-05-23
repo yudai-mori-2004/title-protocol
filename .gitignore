@@ -28,6 +28,7 @@ CLAUDE.md
 # Keys
 keys/
 *.pem
+keypair.json
 
 # Legacy code (local reference only, history preserved in git)
 legacy/

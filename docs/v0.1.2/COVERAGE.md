@@ -92,12 +92,12 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
-| §6.1 | Extension framework (core result → extension request) | [ ] | | |
-| §6.2 | Solana Extension: Ed25519 signing key generation | [ ] | | |
-| §6.2 | Solana Extension: Attestation Document for signing key | [ ] | | |
-| §6.2 | Solana Extension: ZK proof generation (SP1 zkVM) | [~] | sandbox/03-sp1-attestation/ (sandbox verified: cert chain verify, core proof gen/verify, tamper detect 3/3 — all PASS. 96M cycles, 169B public values, Groth16 ~479B fits Solana 1,232B. Attestation verify internalized, zero git deps) | 01 |
-| §6.2 | Solana Extension: Whitelist PDA + ZK proof verification | [ ] | | |
-| §6.2 | Solana Extension: Developer collection setup + delegate | [ ] | | |
-| §6.2 | Solana Extension: cNFT mint (partial signing) | [ ] | | |
-| §6.2 | Solana Extension: Signing key expiry (90-day rotation) | [ ] | | |
-| §6.2 | Solana Extension: Whitelist key deletion (emergency) | [ ] | | |
+| §6.1 | Extension framework (core result → extension request) | [x] | crates/solana/src/extension.rs (ExtensionRequest, OffchainData, process_extension: verify attestation → build cNFT TX → partial sign → serialize, 9 tests) | 12 |
+| §6.2 | Solana Extension: Ed25519 signing key generation | [x] | crates/solana/src/signing_key.rs (SolanaSigningKey: generate, pubkey/pubkey_base58/pubkey_hash, sign, sign_transaction, 6 tests) | 12 |
+| §6.2 | Solana Extension: Attestation Document for signing key | [x] | crates/solana/src/signing_key.rs (pubkey_hash: SHA-256(pubkey) for user_data) + crates/solana/src/extension.rs (verify_attestation_binding: JCS hash matching, mock + production paths, 3 tests) | 12 |
+| §6.2 | Solana Extension: ZK proof generation (SP1 zkVM) | [~] | sandbox/03-sp1-attestation/ (sandbox verified: cert chain verify, core proof gen/verify, tamper detect 3/3 — all PASS. 96M cycles, 169B public values, Groth16 ~479B fits Solana 1,232B. Attestation verify internalized, zero git deps). Production integration: prover runs externally (shell script / standalone binary) | 01 |
+| §6.2 | Solana Extension: Whitelist PDA + ZK proof verification | [x] | programs/title-whitelist/ (Anchor program: RegisterKey with real SP1 Groth16 verification via sp1-solana + embedded v6.2 VK + public values parsing → PDA creation, devnet deployed at 43y8E..., 6 devnet integration tests) + crates/solana/src/whitelist.rs (client-side WhitelistEntry, derive_whitelist_pda, WhitelistInstruction, 7 tests) | 12 |
+| §6.2 | Solana Extension: Developer collection setup + delegate | [x] | crates/solana/src/cnft.rs (build_mint_v2_ix: Optional core_collection/collection_authority/mpl_core_cpi_signer, 2 tests). Collection is developer's choice, not part of trust model | 12 |
+| §6.2 | Solana Extension: cNFT mint (partial signing) | [x] | crates/solana/src/cnft.rs (build_create_tree_tx, build_mint_v2_ix, build_v0_tx, build_and_sign_mint_tx, serialize_transaction, 6 unit tests + devnet e2e: tree creation → cNFT mint → on-chain verify) | 12 |
+| §6.2 | Solana Extension: Signing key expiry (90-day rotation) | [x] | programs/title-whitelist/ (KEY_EXPIRY_SECONDS, expires_at set on registration) + crates/solana/src/whitelist.rs (is_valid_at/is_expired_at, 2 tests) | 12 |
+| §6.2 | Solana Extension: Whitelist key deletion (emergency) | [x] | programs/title-whitelist/ (DeleteKey instruction: admin-only PDA close with KeyDeleted event) + crates/solana/src/whitelist.rs (WhitelistInstruction::DeleteKey) | 12 |

@@ -1,0 +1,25 @@
+[package]
+name = "title-whitelist"
+version = "0.1.2"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/yudai-mori-2004/title-protocol"
+authors = ["Title Protocol Contributors"]
+description = "Title Protocol whitelist program — ZK proof verified TEE signing key registry"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "0.30"
+sha2 = "0.10"
+sp1-solana = "0.1.0"
+
+[profile.release]
+overflow-checks = true

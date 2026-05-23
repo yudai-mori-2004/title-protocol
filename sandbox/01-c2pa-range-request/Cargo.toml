@@ -1,0 +1,29 @@
+[package]
+name = "c2pa_range_request"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# C2PA verification
+c2pa = "0.84"
+
+# HTTP server (local test server with Range support)
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs"] }
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client (for Range Request adapter)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+
+# Crypto
+sha2 = "0.10"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Signing (for fixture generation)
+hex = "0.4"
+
+# Temp file management
+tempfile = "3"

@@ -108,6 +108,11 @@ Solana Extension uses SP1 zkVM to verify Attestation Documents on-chain. Develop
 # Placeholder — will be updated per task
 cargo check --workspace
 cargo test --workspace
+
+# Sandbox projects (independent, not in workspace)
+cd sandbox/01-c2pa-range-request && cargo run
+cd sandbox/02-c2pa-fragment && cargo run
+cd sandbox/03-sp1-attestation && cargo run
 ```
 
 ## Coding Conventions
@@ -142,6 +147,16 @@ v0.1.0 implementation is archived at `legacy/v0.1.0/`. Useful for:
 - Axum server patterns (`legacy/v0.1.0/crates/gateway/`, `legacy/v0.1.0/crates/tee/`)
 
 Note: v0.1.0 WASM modules are `#![no_std]` + dlmalloc. v0.1.2 processors are standard Rust — port the algorithms, not the scaffolding.
+
+## Key Dependencies (v0.1.2)
+
+| Crate | Version | Role |
+|---|---|---|
+| `c2pa` | 0.84+ | C2PA verification (was 0.78 in v0.1.0). Builder API: `Reader::default().with_stream()` |
+| `http-range-client` | latest | Read+Seek over HTTP Range Requests for large file processing |
+| `sp1-sdk` / `sp1-zkvm` | v6 "Hypercube" | ZK proof generation for Attestation Document verification |
+| `sp1-solana` | 0.1+ | On-chain Groth16 proof verification (~280K CU) |
+| `ml-kem` | latest | ML-KEM-768 (FIPS 203) post-quantum key exchange |
 
 ## Constraints
 

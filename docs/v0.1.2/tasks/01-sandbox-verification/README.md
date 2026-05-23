@@ -52,8 +52,8 @@ c2pa-rs の Reader が HTTP Range Request 経由で大容量ファイルを検�
 
 ### 想定される問題
 
-- Seek パターンがランダムすぎて HTTP リクエスト数が爆発する
-- `http-range-client` がリクエスト粒度の最適化に不十分
+- Seek パターンがランダムすぎて HTTP リクエスト数が爆発する → **杞憂だった。ほぼシーケンシャル（後方シークは冒頭の1回のみ）**
+- `http-range-client` がリクエスト粒度の最適化に不十分 → **自前の HttpRangeReader + 256KBバッファで十分**
 - サーバーが Range Request 非対応の場合のフォールバック
 
 ### 使用クレート

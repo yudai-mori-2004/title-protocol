@@ -79,7 +79,7 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 |---|---|---|---|---|
 | §5.2 | TEE startup sequence (key generation → notify Gateway) | [ ] | | |
 | §5.2 | TEE request processing flow | [ ] | | |
-| §5.2 | Content fetch: single (HTTP Range Request + ETag) | [ ] | | |
+| §5.2 | Content fetch: single (HTTP Range Request + ETag) | [~] | sandbox/01-c2pa-range-request/ (技術検証完了: 署名検証・改ざん検知・Range Request一致 全PASS) | 01 |
 | §5.2 | Content fetch: fragmented | [ ] | | |
 | §5.2 | Content fetch: sidecar | [ ] | | |
 | §5.3 | Gateway: client auth + rate limiting | [ ] | | |

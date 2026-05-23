@@ -17,7 +17,7 @@
 #![no_main]
 sp1_zkvm::entrypoint!(main);
 
-use aws_nitro_enclave_attestation_verifier::AttestationReport;
+use attestation_verify::AttestationReport;
 use sha2::{Digest, Sha256};
 
 pub fn main() {

@@ -1,0 +1,41 @@
+[package]
+name = "attestation-verify"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+# SP1 guest は独立ワークスペースとして扱う
+[workspace]
+
+[features]
+sp1 = ["dep:p256_sp1", "dep:sha2_sp1"]
+
+[dependencies]
+# X.509 証明書パース
+x509-parser = "0.16.0"
+
+# ECDSA 署名検証（RustCrypto 標準クレート）
+p384 = { version = "0.13.0" }
+p256 = { version = "0.13.2" }
+
+# SP1 precompile パッチ版（feature-gated）
+p256_sp1 = { git = "https://github.com/sp1-patches/elliptic-curves", rev = "patch-p256-13.2-sp1-5.0.0", package = "p256", optional = true }
+
+# RSA 署名検証
+rsa = { version = "0.9.6" }
+
+# SHA-256/384 ハッシュ
+sha2 = { version = "0.10.8", features = ["oid"] }
+sha2_sp1 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", branch = "patch-sha2-v0.10.8", package = "sha2", features = ["oid"], optional = true }
+
+# OID 定数
+oid = "0.2.1"
+
+# CBOR / シリアライズ
+serde_cbor = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_with = "3"
+
+# エラーハンドリング
+anyhow = { version = "1", features = ["backtrace"] }

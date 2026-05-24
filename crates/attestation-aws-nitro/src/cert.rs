@@ -78,7 +78,12 @@ impl<'a> Cert<'a> {
         let issuer_key = issuer.pubkey();
         let sig_algo = self.sig_algo()?;
         sig_algo.check_compatible_with_der(issuer_key.algo)?;
-        verify_signature_der(issuer_key, sig_algo, self.signature(), self.tbs_certificate())
+        verify_signature_der(
+            issuer_key,
+            sig_algo,
+            self.signature(),
+            self.tbs_certificate(),
+        )
     }
 }
 

@@ -117,10 +117,12 @@ impl ProxyContentFetcher {
             #[cfg(all(target_os = "linux", feature = "vendor-aws"))]
             ProxyEndpoint::Vsock { cid, port } => {
                 let url = format!("vsock://{cid}:{port}");
-                let stream = vsock::VsockStream::connect_with_cid_port(*cid, *port)
-                    .map_err(|e| FetchError::HttpError {
-                        url: url.clone(),
-                        reason: format!("vsock connect failed: {e}"),
+                let stream =
+                    vsock::VsockStream::connect_with_cid_port(*cid, *port).map_err(|e| {
+                        FetchError::HttpError {
+                            url: url.clone(),
+                            reason: format!("vsock connect failed: {e}"),
+                        }
                     })?;
                 stream
                     .set_read_timeout(Some(PROXY_IO_TIMEOUT))
@@ -176,10 +178,12 @@ impl ContentFetcher for ProxyContentFetcher {
                 });
             }
             let mut buf = vec![0u8; body_len];
-            socket.read_exact(&mut buf).map_err(|e| FetchError::HttpError {
-                url: url.to_string(),
-                reason: format!("body read failed after {body_len} bytes header: {e}"),
-            })?;
+            socket
+                .read_exact(&mut buf)
+                .map_err(|e| FetchError::HttpError {
+                    url: url.to_string(),
+                    reason: format!("body read failed after {body_len} bytes header: {e}"),
+                })?;
             buf
         };
 
@@ -222,18 +226,20 @@ impl ContentFetcher for ProxyContentFetcher {
 // ---------------------------------------------------------------------------
 
 fn write_u32(w: &mut dyn Write, value: u32, url_for_err: &str) -> Result<(), FetchError> {
-    w.write_all(&value.to_be_bytes()).map_err(|e| FetchError::HttpError {
-        url: url_for_err.to_string(),
-        reason: format!("proxy write_u32: {e}"),
-    })
+    w.write_all(&value.to_be_bytes())
+        .map_err(|e| FetchError::HttpError {
+            url: url_for_err.to_string(),
+            reason: format!("proxy write_u32: {e}"),
+        })
 }
 
 fn write_string(w: &mut dyn Write, value: &str, url_for_err: &str) -> Result<(), FetchError> {
     write_u32(w, value.len() as u32, url_for_err)?;
-    w.write_all(value.as_bytes()).map_err(|e| FetchError::HttpError {
-        url: url_for_err.to_string(),
-        reason: format!("proxy write_string: {e}"),
-    })
+    w.write_all(value.as_bytes())
+        .map_err(|e| FetchError::HttpError {
+            url: url_for_err.to_string(),
+            reason: format!("proxy write_string: {e}"),
+        })
 }
 
 fn write_bytes(w: &mut dyn Write, value: &[u8], url_for_err: &str) -> Result<(), FetchError> {
@@ -287,10 +293,11 @@ fn read_chunked_body(
         }
         let start = body.len();
         body.resize(start + n, 0);
-        r.read_exact(&mut body[start..]).map_err(|e| FetchError::HttpError {
-            url: url_for_err.to_string(),
-            reason: format!("chunked body read failed: {e}"),
-        })?;
+        r.read_exact(&mut body[start..])
+            .map_err(|e| FetchError::HttpError {
+                url: url_for_err.to_string(),
+                reason: format!("chunked body read failed: {e}"),
+            })?;
     }
 }
 
@@ -316,7 +323,10 @@ mod tests {
     fn spawn_fake_proxy(
         response_status: u32,
         response_body: Vec<u8>,
-    ) -> (String, thread::JoinHandle<Option<(String, String, Vec<u8>)>>) {
+    ) -> (
+        String,
+        thread::JoinHandle<Option<(String, String, Vec<u8>)>>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let handle = thread::spawn(move || {
@@ -330,7 +340,9 @@ mod tests {
             let body = read_n(&mut stream, body_len as usize)?;
             // Write canned response
             stream.write_all(&response_status.to_be_bytes()).ok()?;
-            stream.write_all(&(response_body.len() as u32).to_be_bytes()).ok()?;
+            stream
+                .write_all(&(response_body.len() as u32).to_be_bytes())
+                .ok()?;
             stream.write_all(&response_body).ok()?;
             Some((
                 String::from_utf8(method).ok()?,

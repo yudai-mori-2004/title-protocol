@@ -22,11 +22,9 @@ pub struct P256Encapsulator {
 
 impl P256Encapsulator {
     pub fn from_public_key(bytes: &[u8]) -> Result<Self, CryptoError> {
-        let pk = PublicKey::from_sec1_bytes(bytes).map_err(|_| {
-            CryptoError::InvalidKeyLength {
-                expected: 65,
-                actual: bytes.len(),
-            }
+        let pk = PublicKey::from_sec1_bytes(bytes).map_err(|_| CryptoError::InvalidKeyLength {
+            expected: 65,
+            actual: bytes.len(),
         })?;
         Ok(Self {
             recipient_pubkey: pk,
@@ -75,16 +73,13 @@ impl Decapsulator for P256Decapsulator {
     }
 
     fn decapsulate(&self, encap_key: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        let eph_pk = PublicKey::from_sec1_bytes(encap_key).map_err(|_| {
-            CryptoError::InvalidKeyLength {
+        let eph_pk =
+            PublicKey::from_sec1_bytes(encap_key).map_err(|_| CryptoError::InvalidKeyLength {
                 expected: 65,
                 actual: encap_key.len(),
-            }
-        })?;
-        let shared = p256::ecdh::diffie_hellman(
-            self.secret.to_nonzero_scalar(),
-            eph_pk.as_affine(),
-        );
+            })?;
+        let shared =
+            p256::ecdh::diffie_hellman(self.secret.to_nonzero_scalar(), eph_pk.as_affine());
         Ok(shared.raw_secret_bytes().to_vec())
     }
 }

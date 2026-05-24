@@ -164,10 +164,14 @@ impl Default for HttpContentFetcher {
 
 impl ContentFetcher for HttpContentFetcher {
     fn fetch(&self, url: &str) -> Result<FetchResponse, FetchError> {
-        let resp = self.client.get(url).send().map_err(|e| FetchError::HttpError {
-            url: url.to_string(),
-            reason: e.to_string(),
-        })?;
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .map_err(|e| FetchError::HttpError {
+                url: url.to_string(),
+                reason: e.to_string(),
+            })?;
 
         let status = resp.status().as_u16();
         if status == 412 {
@@ -281,9 +285,7 @@ pub fn detect_content_type(bytes: &[u8], url: &str, server_type: Option<&str>) -
             return "image/jpeg".to_string();
         }
         // PNG: 89 50 4E 47 0D 0A 1A 0A
-        if bytes.len() >= 8
-            && bytes[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-        {
+        if bytes.len() >= 8 && bytes[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
             return "image/png".to_string();
         }
         // MP4/fMP4: ftyp box at offset 4
@@ -458,8 +460,11 @@ fn fetch_sidecar(
     }
     ticket.extend(content_resp.body.len())?;
 
-    let content_type =
-        detect_content_type(&content_resp.body, content_url, content_resp.content_type.as_deref());
+    let content_type = detect_content_type(
+        &content_resp.body,
+        content_url,
+        content_resp.content_type.as_deref(),
+    );
 
     Ok(FetchedContent {
         content_bytes: content_resp.body,
@@ -522,7 +527,9 @@ mod tests {
 
     #[test]
     fn detect_jpeg_magic_bytes() {
-        let bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01];
+        let bytes = vec![
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+        ];
         assert_eq!(
             detect_content_type(&bytes, "https://example.com/img", None),
             "image/jpeg"
@@ -531,7 +538,9 @@ mod tests {
 
     #[test]
     fn detect_png_magic_bytes() {
-        let bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D];
+        let bytes = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+        ];
         assert_eq!(
             detect_content_type(&bytes, "https://example.com/img", None),
             "image/png"
@@ -574,7 +583,9 @@ mod tests {
     #[test]
     fn detect_magic_overrides_server_header() {
         // JPEG magic bytes with wrong server header
-        let bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01];
+        let bytes = vec![
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+        ];
         assert_eq!(
             detect_content_type(&bytes, "https://example.com/img", Some("text/plain")),
             "image/jpeg"
@@ -597,7 +608,9 @@ mod tests {
         let mut fetcher = MockFetcher::new();
         fetcher.add(
             "https://storage.example.com/photo.jpg",
-            vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01],
+            vec![
+                0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+            ],
             Some("image/jpeg"),
         );
 
@@ -653,7 +666,9 @@ mod tests {
         let mut fetcher = MockFetcher::new();
         fetcher.add(
             "https://storage.example.com/large.jpg",
-            vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01],
+            vec![
+                0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+            ],
             Some("image/jpeg"),
         );
 
@@ -859,7 +874,9 @@ mod tests {
         // Content file
         fetcher.add(
             "https://storage.example.com/photo.jpg",
-            vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01],
+            vec![
+                0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+            ],
             Some("image/jpeg"),
         );
 
@@ -929,7 +946,9 @@ mod tests {
         );
         fetcher.add(
             "https://storage.example.com/photo.jpg",
-            vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01],
+            vec![
+                0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+            ],
             None,
         );
 

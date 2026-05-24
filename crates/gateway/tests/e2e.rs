@@ -73,10 +73,10 @@ fn build_tee_state(fetcher: TestFetcher) -> Arc<TeeAppState> {
         registry,
         pool: Arc::new(ResourcePool::with_single_limit(1_000_000_000)),
         fetcher: Box::new(fetcher),
-        attestation_verifier: Box::new(
-            title_attestation::MockAttestationVerifier::new(),
-        ),
-        expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT.to_vec().into_boxed_slice(),
+        attestation_verifier: Box::new(title_attestation::MockAttestationVerifier::new()),
+        expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT
+            .to_vec()
+            .into_boxed_slice(),
         registration_attestation: Vec::new(),
         started_at: Instant::now(),
     })
@@ -131,9 +131,8 @@ fn create_test_jpeg() -> Vec<u8> {
     use image::{ImageBuffer, ImageEncoder, Rgb};
     use std::io::Cursor;
 
-    let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4, 4, |x, y| {
-        Rgb([(x * 60) as u8, (y * 60) as u8, 128])
-    });
+    let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+        ImageBuffer::from_fn(4, 4, |x, y| Rgb([(x * 60) as u8, (y * 60) as u8, 128]));
 
     let mut buf = Cursor::new(Vec::new());
     image::codecs::jpeg::JpegEncoder::new(&mut buf)
@@ -182,11 +181,7 @@ async fn e2e_health_through_gateway() {
     let gw_url = start_gateway(&tee_url, vec![]).await;
 
     let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{gw_url}/health"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{gw_url}/health")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -200,11 +195,7 @@ async fn e2e_keys_through_gateway() {
     let gw_url = start_gateway(&tee_url, vec![]).await;
 
     let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{gw_url}/keys"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{gw_url}/keys")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -319,11 +310,7 @@ async fn e2e_api_key_auth() {
     let client = reqwest::Client::new();
 
     // Without auth: 401
-    let resp = client
-        .get(format!("{gw_url}/keys"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{gw_url}/keys")).send().await.unwrap();
     assert_eq!(resp.status(), 401);
 
     // With wrong key: 401
@@ -345,11 +332,7 @@ async fn e2e_api_key_auth() {
     assert_eq!(resp.status(), 200);
 
     // Health always works without auth
-    let resp = client
-        .get(format!("{gw_url}/health"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{gw_url}/health")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -391,11 +374,7 @@ async fn e2e_tee_restart_detection() {
     let client = reqwest::Client::new();
 
     // Verify initial keys through Gateway
-    let resp = client
-        .get(format!("{gw_url}/keys"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{gw_url}/keys")).send().await.unwrap();
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["keys"]["x25519"], key1);
 
@@ -422,11 +401,7 @@ async fn e2e_tee_restart_detection() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Verify Gateway cache was refreshed with TEE #2's keys
-    let resp = client
-        .get(format!("{gw_url}/keys"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{gw_url}/keys")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["keys"]["x25519"], key2);

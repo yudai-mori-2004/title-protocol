@@ -38,35 +38,30 @@ async fn main() -> anyhow::Result<()> {
     // to this proxy via vsock loopback.
     const MIN_ACCEPTED_CID: u32 = 3;
 
-    std::thread::spawn(move || {
-        loop {
-            match listener.accept() {
-                Ok((s, peer)) => {
-                    let peer_cid = peer.cid();
-                    if peer_cid < MIN_ACCEPTED_CID {
+    std::thread::spawn(move || loop {
+        match listener.accept() {
+            Ok((s, peer)) => {
+                let peer_cid = peer.cid();
+                if peer_cid < MIN_ACCEPTED_CID {
+                    tracing::warn!(peer_cid, "rejecting vsock connection from reserved CID");
+                    continue;
+                }
+                match tx.try_send(s) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                         tracing::warn!(
+                            queued = 32,
                             peer_cid,
-                            "rejecting vsock connection from reserved CID"
+                            "vsock accept backpressure; dropping incoming connection"
                         );
-                        continue;
                     }
-                    match tx.try_send(s) {
-                        Ok(()) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            tracing::warn!(
-                                queued = 32,
-                                peer_cid,
-                                "vsock accept backpressure; dropping incoming connection"
-                            );
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            tracing::info!("channel closed; vsock accept loop exiting");
-                            break;
-                        }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::info!("channel closed; vsock accept loop exiting");
+                        break;
                     }
                 }
-                Err(e) => tracing::error!(error = %e, "vsock accept error"),
             }
+            Err(e) => tracing::error!(error = %e, "vsock accept error"),
         }
     });
 
@@ -162,10 +157,7 @@ mod vsock_async {
             Poll::Ready(self.get_mut().0.flush())
         }
 
-        fn poll_shutdown(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<std::io::Result<()>> {
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             use std::net::Shutdown;
             // Half-close the write side so the upstream sees a clean EOF.
             // A failure here is best-effort: the OS will tear the socket
@@ -224,11 +216,17 @@ mod tests {
         url: &str,
         body: &[u8],
     ) {
-        w.write_all(&(method.len() as u32).to_be_bytes()).await.unwrap();
+        w.write_all(&(method.len() as u32).to_be_bytes())
+            .await
+            .unwrap();
         w.write_all(method.as_bytes()).await.unwrap();
-        w.write_all(&(url.len() as u32).to_be_bytes()).await.unwrap();
+        w.write_all(&(url.len() as u32).to_be_bytes())
+            .await
+            .unwrap();
         w.write_all(url.as_bytes()).await.unwrap();
-        w.write_all(&(body.len() as u32).to_be_bytes()).await.unwrap();
+        w.write_all(&(body.len() as u32).to_be_bytes())
+            .await
+            .unwrap();
         w.write_all(body).await.unwrap();
         w.flush().await.unwrap();
     }
@@ -236,7 +234,9 @@ mod tests {
     async fn read_response<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> (u32, Vec<u8>) {
         use crate::protocol::MAX_RESPONSE_BYTES;
         let status = protocol::read_u32_async(r).await.unwrap();
-        let body = protocol::read_bytes_async(r, MAX_RESPONSE_BYTES as usize).await.unwrap();
+        let body = protocol::read_bytes_async(r, MAX_RESPONSE_BYTES as usize)
+            .await
+            .unwrap();
         (status, body)
     }
 
@@ -292,7 +292,9 @@ mod tests {
         write_request(&mut stream, "DELETE", "http://example.com", &[]).await;
         let (status, body) = read_response(&mut stream).await;
         assert_eq!(status, 400);
-        assert!(String::from_utf8(body).unwrap().contains("Unsupported method"));
+        assert!(String::from_utf8(body)
+            .unwrap()
+            .contains("Unsupported method"));
     }
 
     #[tokio::test]
@@ -310,9 +312,9 @@ mod tests {
 
     #[tokio::test]
     async fn chunked_get_uses_sentinel() {
+        use crate::protocol::CHUNKED_SENTINEL;
         use axum::body::Body;
         use axum::http::Response;
-        use crate::protocol::CHUNKED_SENTINEL;
 
         // Upstream that sends Transfer-Encoding: chunked with no Content-Length.
         let app = Router::new().route(

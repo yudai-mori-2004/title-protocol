@@ -108,10 +108,7 @@ impl HttpTeeClient {
         Self { endpoint, client }
     }
 
-    async fn get<T: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-    ) -> Result<T, TeeClientError> {
+    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, TeeClientError> {
         let url = format!("{}{}", self.endpoint, path);
         let resp = self
             .client

@@ -111,19 +111,13 @@ pub fn read_u32_sync(r: &mut impl std::io::Read) -> std::io::Result<u32> {
 }
 
 #[cfg(all(target_os = "linux", feature = "vendor-aws"))]
-pub fn read_string_sync(
-    r: &mut impl std::io::Read,
-    max_len: usize,
-) -> std::io::Result<String> {
+pub fn read_string_sync(r: &mut impl std::io::Read, max_len: usize) -> std::io::Result<String> {
     let buf = read_bytes_sync(r, max_len)?;
     String::from_utf8(buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 #[cfg(all(target_os = "linux", feature = "vendor-aws"))]
-pub fn read_bytes_sync(
-    r: &mut impl std::io::Read,
-    max_len: usize,
-) -> std::io::Result<Vec<u8>> {
+pub fn read_bytes_sync(r: &mut impl std::io::Read, max_len: usize) -> std::io::Result<Vec<u8>> {
     let len = read_u32_sync(r)? as usize;
     if len > max_len {
         return Err(std::io::Error::new(

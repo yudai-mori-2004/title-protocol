@@ -463,7 +463,9 @@ mod tests {
         assert_eq!(pool.total_used(), 500);
 
         // New request when used=500 < 600: still admitted
-        let t2 = pool.try_admit(Some(0)).expect("should admit under admission_limit");
+        let t2 = pool
+            .try_admit(Some(0))
+            .expect("should admit under admission_limit");
         t2.extend(100).unwrap();
         assert_eq!(pool.total_used(), 600);
 

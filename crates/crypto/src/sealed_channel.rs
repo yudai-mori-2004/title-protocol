@@ -12,8 +12,8 @@
 use title_core::EncryptionSuite;
 
 use crate::aead::NONCE_SIZE;
-use crate::key_bundle::KeyBundle;
 use crate::kem::create_encapsulator;
+use crate::key_bundle::KeyBundle;
 use crate::{aead, hkdf, wire, CryptoError};
 
 /// Build the AEAD AAD from the wire suite header.
@@ -177,8 +177,7 @@ mod tests {
         let pk = bundle.public_key_bytes(EncryptionSuite::MlKem768);
         let plaintext = b"post-quantum encrypted content";
 
-        let (wire, client_channel) =
-            seal_for(EncryptionSuite::MlKem768, &pk, plaintext).unwrap();
+        let (wire, client_channel) = seal_for(EncryptionSuite::MlKem768, &pk, plaintext).unwrap();
         let opened = open_request(&bundle, EncryptionSuite::MlKem768, &wire).unwrap();
         assert_eq!(opened.plaintext, plaintext);
 

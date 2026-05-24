@@ -102,7 +102,9 @@ pub enum OrchestratorError {
 
     /// The encryption suite declared on `ProcessRequest.encryption` does
     /// not match the suite encoded in the wire payload header.
-    #[error("encryption suite mismatch: request declared {declared:?}, wire payload says {wire:?}")]
+    #[error(
+        "encryption suite mismatch: request declared {declared:?}, wire payload says {wire:?}"
+    )]
     EncryptionSuiteMismatch {
         declared: EncryptionSuite,
         wire: EncryptionSuite,
@@ -115,9 +117,7 @@ pub enum OrchestratorError {
 
     /// The signature_hash declared inside the encrypted payload does not
     /// match the value computed from the actual content. Spec §2.4 step 8.
-    #[error(
-        "signature_hash mismatch between encrypted payload metadata and decrypted content"
-    )]
+    #[error("signature_hash mismatch between encrypted payload metadata and decrypted content")]
     SignatureHashMismatch,
 
     /// Encrypting the response with the negotiated response key failed.
@@ -172,9 +172,7 @@ pub fn process_request(
     // touching the network. Spec §2.4 — only `Single` inputs carry the
     // encrypted wire payload; for `Fragmented`/`Sidecar` we would otherwise
     // fetch every URL only to bail out on decrypt.
-    if request.encryption.is_some()
-        && !matches!(request.input, InputData::Single { .. })
-    {
+    if request.encryption.is_some() && !matches!(request.input, InputData::Single { .. }) {
         return Err(OrchestratorError::EncryptionRequiresSingleInput);
     }
 
@@ -188,7 +186,9 @@ pub fn process_request(
         InputData::Fragmented {
             init_url: _,
             fragment_urls,
-        } => Some((fragment_urls.len() as u64).saturating_mul(crate::limits::MAX_FRAGMENT_SIZE as u64)),
+        } => Some(
+            (fragment_urls.len() as u64).saturating_mul(crate::limits::MAX_FRAGMENT_SIZE as u64),
+        ),
     };
     let ticket = pool
         .try_admit(size_hint)
@@ -477,9 +477,8 @@ mod tests {
         use image::{ImageBuffer, ImageEncoder, Rgb};
         use std::io::Cursor;
 
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4, 4, |x, y| {
-            Rgb([(x * 60) as u8, (y * 60) as u8, 128])
-        });
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(4, 4, |x, y| Rgb([(x * 60) as u8, (y * 60) as u8, 128]));
 
         let mut buf = Cursor::new(Vec::new());
         image::codecs::jpeg::JpegEncoder::new(&mut buf)
@@ -491,8 +490,8 @@ mod tests {
     /// Creates a C2PA-signed JPEG for testing.
     fn create_signed_jpeg() -> Vec<u8> {
         let test_jpeg = create_test_jpeg();
-        let signer =
-            c2pa::EphemeralSigner::new("title-orchestrator-test").expect("Failed to create EphemeralSigner");
+        let signer = c2pa::EphemeralSigner::new("title-orchestrator-test")
+            .expect("Failed to create EphemeralSigner");
 
         let definition = serde_json::json!({
             "claim_generator_info": [{
@@ -564,9 +563,7 @@ mod tests {
         let ids = ensure_c2pa_verify(&["c2pa-verify".into(), "image-pdq".into()]);
         assert_eq!(ids.len(), 2);
         assert_eq!(
-            ids.iter()
-                .filter(|id| id.as_str() == "c2pa-verify")
-                .count(),
+            ids.iter().filter(|id| id.as_str() == "c2pa-verify").count(),
             1
         );
     }
@@ -649,24 +646,32 @@ mod tests {
         let runtime = MockRuntime::new();
         let pool = test_pool();
 
-        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
+        let response = unwrap_plaintext(
+            process_request(
+                &request,
+                &fetcher,
+                &registry,
+                &runtime,
+                &pool,
+                &test_key_bundle(),
+            )
+            .unwrap(),
+        );
 
         // Verify signature_hash is present and has correct format
         assert!(response.verifiable.signature_hash.starts_with("sha256:"));
 
         // Verify c2pa-verify result exists and is OK
         let c2pa_result = &response.verifiable.results["c2pa-verify"];
-        assert_eq!(
-            c2pa_result.status,
-            title_core::ProcessorStatus::Ok
-        );
+        assert_eq!(c2pa_result.status, title_core::ProcessorStatus::Ok);
 
         // Verify attestation is present (Base64-encoded mock attestation)
         assert!(!response.attestation.is_empty());
 
         // Verify attestation contains the JCS hash
-        let attestation_bytes =
-            base64::engine::general_purpose::STANDARD.decode(&response.attestation).unwrap();
+        let attestation_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&response.attestation)
+            .unwrap();
         assert!(attestation_bytes.starts_with(b"mock-attestation:"));
 
         // The JCS hash in the attestation should match a recomputation
@@ -700,7 +705,17 @@ mod tests {
         let runtime = MockRuntime::new();
         let pool = test_pool();
 
-        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
+        let response = unwrap_plaintext(
+            process_request(
+                &request,
+                &fetcher,
+                &registry,
+                &runtime,
+                &pool,
+                &test_key_bundle(),
+            )
+            .unwrap(),
+        );
 
         // c2pa-verify should be in results even though not requested
         assert!(
@@ -736,7 +751,14 @@ mod tests {
         let pool = test_pool();
 
         // Unsigned content should fail at signature_hash computation
-        let result = process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle());
+        let result = process_request(
+            &request,
+            &fetcher,
+            &registry,
+            &runtime,
+            &pool,
+            &test_key_bundle(),
+        );
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -760,7 +782,14 @@ mod tests {
         let runtime = MockRuntime::new();
         let pool = test_pool();
 
-        let result = process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle());
+        let result = process_request(
+            &request,
+            &fetcher,
+            &registry,
+            &runtime,
+            &pool,
+            &test_key_bundle(),
+        );
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -791,7 +820,17 @@ mod tests {
         let pool = test_pool();
 
         // Pipeline should succeed even though one processor is unknown
-        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
+        let response = unwrap_plaintext(
+            process_request(
+                &request,
+                &fetcher,
+                &registry,
+                &runtime,
+                &pool,
+                &test_key_bundle(),
+            )
+            .unwrap(),
+        );
 
         // c2pa-verify should succeed
         assert_eq!(
@@ -827,7 +866,17 @@ mod tests {
         let runtime = MockRuntime::new();
         let pool = test_pool();
 
-        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
+        let response = unwrap_plaintext(
+            process_request(
+                &request,
+                &fetcher,
+                &registry,
+                &runtime,
+                &pool,
+                &test_key_bundle(),
+            )
+            .unwrap(),
+        );
 
         // Recompute JCS hash from the response's verifiable part
         let recomputed_hash = compute_jcs_hash(&response.verifiable).unwrap();
@@ -840,8 +889,9 @@ mod tests {
         );
 
         // Verify the attestation decodes and contains the hash
-        let attestation_bytes =
-            base64::engine::general_purpose::STANDARD.decode(&response.attestation).unwrap();
+        let attestation_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&response.attestation)
+            .unwrap();
         let expected_prefix = b"mock-attestation:";
         assert_eq!(&attestation_bytes[..expected_prefix.len()], expected_prefix);
         assert_eq!(
@@ -870,28 +920,31 @@ mod tests {
 
         let registry = create_registry();
 
-        let response1 = unwrap_plaintext(process_request(
-            &request,
-            &fetcher,
-            &registry,
-            &MockRuntime::new(),
-            &test_pool(),
-            &test_key_bundle(),
-        )
-        .unwrap());
-        let response2 = unwrap_plaintext(process_request(
-            &request,
-            &fetcher,
-            &registry,
-            &MockRuntime::new(),
-            &test_pool(),
-            &test_key_bundle(),
-        )
-        .unwrap());
+        let response1 = unwrap_plaintext(
+            process_request(
+                &request,
+                &fetcher,
+                &registry,
+                &MockRuntime::new(),
+                &test_pool(),
+                &test_key_bundle(),
+            )
+            .unwrap(),
+        );
+        let response2 = unwrap_plaintext(
+            process_request(
+                &request,
+                &fetcher,
+                &registry,
+                &MockRuntime::new(),
+                &test_pool(),
+                &test_key_bundle(),
+            )
+            .unwrap(),
+        );
 
         assert_eq!(
-            response1.verifiable.signature_hash,
-            response2.verifiable.signature_hash,
+            response1.verifiable.signature_hash, response2.verifiable.signature_hash,
             "Same content must produce the same signature_hash"
         );
     }
@@ -917,7 +970,17 @@ mod tests {
         let registry = create_registry();
         let runtime = MockRuntime::new();
         let pool = test_pool();
-        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
+        let response = unwrap_plaintext(
+            process_request(
+                &request,
+                &fetcher,
+                &registry,
+                &runtime,
+                &pool,
+                &test_key_bundle(),
+            )
+            .unwrap(),
+        );
 
         // Serialize and verify structure matches spec §2.3
         let json = serde_json::to_value(&response).unwrap();
@@ -963,7 +1026,14 @@ mod tests {
         // Pool with admission_limit=0 -- rejects all new requests
         let pool = Arc::new(ResourcePool::new(0, 1000));
 
-        let result = process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle());
+        let result = process_request(
+            &request,
+            &fetcher,
+            &registry,
+            &runtime,
+            &pool,
+            &test_key_bundle(),
+        );
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -998,10 +1068,24 @@ mod tests {
         // Before: pool is empty
         assert_eq!(pool.total_used(), 0);
 
-        let _response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
+        let _response = unwrap_plaintext(
+            process_request(
+                &request,
+                &fetcher,
+                &registry,
+                &runtime,
+                &pool,
+                &test_key_bundle(),
+            )
+            .unwrap(),
+        );
 
         // After: Ticket dropped, pool should be empty again
-        assert_eq!(pool.total_used(), 0, "Memory must be released after request completes");
+        assert_eq!(
+            pool.total_used(),
+            0,
+            "Memory must be released after request completes"
+        );
     }
 
     #[test]
@@ -1027,11 +1111,22 @@ mod tests {
         let pool = test_pool();
 
         // This will fail at signature_hash (unsigned content)
-        let result = process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle());
+        let result = process_request(
+            &request,
+            &fetcher,
+            &registry,
+            &runtime,
+            &pool,
+            &test_key_bundle(),
+        );
         assert!(result.is_err());
 
         // Memory should still be released despite the error
-        assert_eq!(pool.total_used(), 0, "Memory must be released even on error");
+        assert_eq!(
+            pool.total_used(),
+            0,
+            "Memory must be released even on error"
+        );
     }
 
     // ---- Encryption pipeline (§2.4) ----
@@ -1101,10 +1196,7 @@ mod tests {
             serde_json::from_slice(&plaintext_response).expect("response is JSON");
         assert_eq!(response.verifiable.signature_hash, signature_hash);
         let c2pa_result = &response.verifiable.results["c2pa-verify"];
-        assert_eq!(
-            c2pa_result.status,
-            title_core::ProcessorStatus::Ok
-        );
+        assert_eq!(c2pa_result.status, title_core::ProcessorStatus::Ok);
     }
 
     /// If the client lies about `signature_hash` in the encrypted payload's

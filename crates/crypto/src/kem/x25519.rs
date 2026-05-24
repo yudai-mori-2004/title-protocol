@@ -20,13 +20,12 @@ pub struct X25519Encapsulator {
 
 impl X25519Encapsulator {
     pub fn from_public_key(bytes: &[u8]) -> Result<Self, CryptoError> {
-        let arr: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| CryptoError::InvalidKeyLength {
-                    expected: 32,
-                    actual: bytes.len(),
-                })?;
+        let arr: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| CryptoError::InvalidKeyLength {
+                expected: 32,
+                actual: bytes.len(),
+            })?;
         Ok(Self {
             recipient_pubkey: PublicKey::from(arr),
         })
@@ -63,13 +62,12 @@ impl Decapsulator for X25519Decapsulator {
     }
 
     fn decapsulate(&self, encap_key: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        let arr: [u8; 32] =
-            encap_key
-                .try_into()
-                .map_err(|_| CryptoError::InvalidKeyLength {
-                    expected: 32,
-                    actual: encap_key.len(),
-                })?;
+        let arr: [u8; 32] = encap_key
+            .try_into()
+            .map_err(|_| CryptoError::InvalidKeyLength {
+                expected: 32,
+                actual: encap_key.len(),
+            })?;
         let eph_pubkey = PublicKey::from(arr);
         let shared = self.secret.diffie_hellman(&eph_pubkey);
         reject_zero_shared_secret(shared.as_bytes())?;

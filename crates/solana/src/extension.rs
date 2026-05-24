@@ -95,9 +95,7 @@ fn parse_hash(s: &str) -> Result<Hash, ExtensionError> {
 
 /// Compute JCS-canonicalized SHA-256 hash of a VerifiableResponse.
 /// Spec §1.5, §2.3 — same as orchestrator.rs but standalone.
-fn compute_verifiable_hash(
-    response: &ProcessResponse,
-) -> Result<Vec<u8>, ExtensionError> {
+fn compute_verifiable_hash(response: &ProcessResponse) -> Result<Vec<u8>, ExtensionError> {
     let json_value = serde_json::to_value(&response.verifiable)
         .map_err(|e| ExtensionError::ParseFailed(e.to_string()))?;
     let jcs_bytes = serde_json_canonicalizer::to_vec(&json_value)
@@ -261,9 +259,7 @@ mod tests {
         let response = mock_process_response();
         // MockAttestationVerifier emits an all-zero 48-byte measurement.
         let expected = MockAttestationVerifier::MEASUREMENT;
-        assert!(
-            verify_attestation_binding(&verifier(), &response, Some(&expected), 0).is_ok()
-        );
+        assert!(verify_attestation_binding(&verifier(), &response, Some(&expected), 0).is_ok());
     }
 
     #[test]
@@ -279,8 +275,7 @@ mod tests {
             payer: Pubkey::new_unique(),
         };
 
-        let tx_bytes =
-            process_extension(&verifier(), &key, &response, &request, None, 0).unwrap();
+        let tx_bytes = process_extension(&verifier(), &key, &response, &request, None, 0).unwrap();
         assert!(!tx_bytes.is_empty());
 
         let tx: solana_sdk::transaction::VersionedTransaction =

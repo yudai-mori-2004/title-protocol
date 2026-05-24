@@ -69,10 +69,8 @@ pub fn parse_payload(data: &[u8]) -> Result<ParsedPayload<'_>, CryptoError> {
         )));
     }
 
-    let metadata: EncryptedPayloadMetadata =
-        serde_json::from_slice(&data[4..meta_end]).map_err(|e| {
-            CryptoError::InvalidPayload(format!("metadata JSON parse failed: {e}"))
-        })?;
+    let metadata: EncryptedPayloadMetadata = serde_json::from_slice(&data[4..meta_end])
+        .map_err(|e| CryptoError::InvalidPayload(format!("metadata JSON parse failed: {e}")))?;
 
     Ok(ParsedPayload {
         metadata,

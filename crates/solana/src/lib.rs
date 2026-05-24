@@ -10,7 +10,7 @@
 //! - cNFT (Bubblegum V2) transaction construction and partial signing
 //! - Solana Extension orchestration (offchain data verification → cNFT mint)
 
-pub mod signing_key;
-pub mod whitelist;
 pub mod cnft;
 pub mod extension;
+pub mod signing_key;
+pub mod whitelist;

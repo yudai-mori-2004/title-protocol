@@ -88,8 +88,7 @@ impl WhitelistEntry {
 
 /// Title Protocol whitelist program ID.
 /// Matches `declare_id!` in `programs/title-whitelist/src/lib.rs`.
-pub const WHITELIST_PROGRAM_ID: Pubkey =
-    pubkey!("43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs");
+pub const WHITELIST_PROGRAM_ID: Pubkey = pubkey!("43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs");
 
 /// Derive the whitelist PDA for a given signing public key.
 pub fn derive_whitelist_pda(signing_pubkey: &[u8; 32]) -> (Pubkey, u8) {

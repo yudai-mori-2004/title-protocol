@@ -13,8 +13,8 @@ use axum::middleware;
 use axum::Router;
 
 use crate::auth::{api_key_auth, ApiKeySet};
-use crate::rate_limit::rate_limit_middleware;
 use crate::endpoints;
+use crate::rate_limit::rate_limit_middleware;
 use crate::rate_limit::RateLimiter;
 use crate::state::{self, GatewayState};
 use crate::tee_client::TeeClient;
@@ -44,7 +44,6 @@ pub struct GatewayConfig {
     /// TEE health check interval in seconds.
     pub health_check_interval_secs: u64,
 }
-
 
 // ---------------------------------------------------------------------------
 // Router
@@ -263,10 +262,7 @@ pub(crate) mod tests {
                 .ok_or_else(|| TeeClientError::Unreachable("no mock".into()))
         }
 
-        async fn process(
-            &self,
-            _req: &ProcessRequest,
-        ) -> Result<ProcessOutcome, TeeClientError> {
+        async fn process(&self, _req: &ProcessRequest) -> Result<ProcessOutcome, TeeClientError> {
             if *self.should_fail.lock().unwrap() {
                 return Err(TeeClientError::Unreachable("mock failure".into()));
             }
@@ -332,10 +328,7 @@ pub(crate) mod tests {
     use tower::ServiceExt;
 
     async fn send_get(app: &Router, path: &str) -> (StatusCode, serde_json::Value) {
-        let req = Request::builder()
-            .uri(path)
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri(path).body(Body::empty()).unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         let status = resp.status();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -617,10 +610,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn auth_rejects_without_key() {
-        let state = test_state_with_auth(
-            MockTeeClient::new(),
-            vec!["valid-key".into()],
-        );
+        let state = test_state_with_auth(MockTeeClient::new(), vec!["valid-key".into()]);
         state.refresh_tee_info().await.unwrap();
         let app = router(state);
 
@@ -630,10 +620,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn auth_rejects_invalid_key() {
-        let state = test_state_with_auth(
-            MockTeeClient::new(),
-            vec!["valid-key".into()],
-        );
+        let state = test_state_with_auth(MockTeeClient::new(), vec!["valid-key".into()]);
         state.refresh_tee_info().await.unwrap();
         let app = router(state);
 
@@ -643,10 +630,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn auth_accepts_valid_key() {
-        let state = test_state_with_auth(
-            MockTeeClient::new(),
-            vec!["valid-key".into()],
-        );
+        let state = test_state_with_auth(MockTeeClient::new(), vec!["valid-key".into()]);
         state.refresh_tee_info().await.unwrap();
         let app = router(state);
 
@@ -657,10 +641,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn health_skips_auth() {
-        let state = test_state_with_auth(
-            MockTeeClient::new(),
-            vec!["valid-key".into()],
-        );
+        let state = test_state_with_auth(MockTeeClient::new(), vec!["valid-key".into()]);
         state.refresh_tee_info().await.unwrap();
         let app = router(state);
 
@@ -784,10 +765,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn process_with_auth() {
-        let state = test_state_with_auth(
-            MockTeeClient::new(),
-            vec!["my-api-key".into()],
-        );
+        let state = test_state_with_auth(MockTeeClient::new(), vec!["my-api-key".into()]);
         state.refresh_tee_info().await.unwrap();
         let app = router(state);
 
@@ -802,8 +780,7 @@ pub(crate) mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
         // With auth: 200
-        let (status, body) =
-            send_post_with_auth(&app, "/process", req_body, "my-api-key").await;
+        let (status, body) = send_post_with_auth(&app, "/process", req_body, "my-api-key").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["signature_hash"], "sha256:mock");
     }

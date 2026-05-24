@@ -165,9 +165,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(f)
     } else {
         tracing::info!(addr = %proxy_addr, "Content fetcher: proxy-mediated");
-        let endpoint = ProxyEndpoint::parse(&proxy_addr).map_err(|e| {
-            format!("Invalid PROXY_ADDR={proxy_addr}: {e}")
-        })?;
+        let endpoint = ProxyEndpoint::parse(&proxy_addr)
+            .map_err(|e| format!("Invalid PROXY_ADDR={proxy_addr}: {e}"))?;
         Box::new(ProxyContentFetcher::new(endpoint))
     };
 
@@ -227,4 +226,3 @@ fn tee_seeded_rng(
         .map_err(|v: Vec<u8>| format!("expected 32 entropy bytes, got {}", v.len()))?;
     Ok(rand_chacha::ChaCha20Rng::from_seed(seed))
 }
-

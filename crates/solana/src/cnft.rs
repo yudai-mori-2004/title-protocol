@@ -4,6 +4,7 @@
 //!
 //! Spec §6.2 — Bubblegum V2 cNFT mint transaction construction and partial signing.
 
+use crate::signing_key::SolanaSigningKey;
 use mpl_bubblegum::instructions::{CreateTreeConfigV2Builder, MintV2Builder};
 use mpl_bubblegum::types::{Creator, MetadataArgsV2, TokenStandard};
 use solana_sdk::{
@@ -16,7 +17,6 @@ use solana_sdk::{
     system_instruction,
     transaction::VersionedTransaction,
 };
-use crate::signing_key::SolanaSigningKey;
 
 /// SPL Account Compression V2 program ID — backs Bubblegum V2 Merkle trees.
 pub const SPL_ACCOUNT_COMPRESSION_V2_ID: Pubkey =
@@ -276,9 +276,13 @@ mod tests {
         let owner = Pubkey::new_unique();
 
         let ix = build_mint_v2_ix(
-            &tree, &tee, &owner,
-            "sha256:abcdef12", "https://example.com/data.json",
-            None, &owner,
+            &tree,
+            &tee,
+            &owner,
+            "sha256:abcdef12",
+            "https://example.com/data.json",
+            None,
+            &owner,
         );
 
         assert_eq!(ix.program_id, mpl_bubblegum::ID);
@@ -293,9 +297,13 @@ mod tests {
         let collection = Pubkey::new_unique();
 
         let ix = build_mint_v2_ix(
-            &tree, &tee, &owner,
-            "sha256:abcdef12", "https://example.com/data.json",
-            Some(&collection), &owner,
+            &tree,
+            &tee,
+            &owner,
+            "sha256:abcdef12",
+            "https://example.com/data.json",
+            Some(&collection),
+            &owner,
         );
 
         assert_eq!(ix.program_id, mpl_bubblegum::ID);
@@ -311,9 +319,13 @@ mod tests {
         let blockhash = Hash::new_unique();
 
         let ix = build_mint_v2_ix(
-            &tree, &tee, &owner,
-            "sha256:abcdef12", "https://example.com/data.json",
-            None, &owner,
+            &tree,
+            &tee,
+            &owner,
+            "sha256:abcdef12",
+            "https://example.com/data.json",
+            None,
+            &owner,
         );
 
         let tx = build_v0_tx(&[ix], &owner, &blockhash, &[]).unwrap();
@@ -330,10 +342,16 @@ mod tests {
         let blockhash = Hash::new_unique();
 
         let tx = build_and_sign_mint_tx(
-            &key, &tree, &owner,
-            "sha256:abcdef1234567890", "https://example.com/data.json",
-            None, &owner, &blockhash,
-        ).unwrap();
+            &key,
+            &tree,
+            &owner,
+            "sha256:abcdef1234567890",
+            "https://example.com/data.json",
+            None,
+            &owner,
+            &blockhash,
+        )
+        .unwrap();
 
         // TEE signing key's signature slot should not be default
         let tee_pubkey = key.pubkey();
@@ -358,9 +376,13 @@ mod tests {
         let blockhash = Hash::new_unique();
 
         let ix = build_mint_v2_ix(
-            &tree, &tee, &owner,
-            "sha256:abcdef12", "https://example.com/data.json",
-            None, &owner,
+            &tree,
+            &tee,
+            &owner,
+            "sha256:abcdef12",
+            "https://example.com/data.json",
+            None,
+            &owner,
         );
 
         let tx = build_v0_tx(&[ix], &owner, &blockhash, &[]).unwrap();

@@ -35,7 +35,10 @@ pub enum KeyAlgo {
 impl KeyAlgo {
     pub fn from_algo(algo: &AlgorithmIdentifier) -> anyhow::Result<Self> {
         if algo.oid() != &OID_KEY_ALGO_EC {
-            return Err(anyhow!("unsupported public-key algorithm: {:?}", algo.oid()));
+            return Err(anyhow!(
+                "unsupported public-key algorithm: {:?}",
+                algo.oid()
+            ));
         }
         let params = algo
             .parameters
@@ -67,7 +70,10 @@ impl SigAlgo {
         } else if oid == &OID_SIG_ALGO_ECDSA_SHA384 {
             Ok(SigAlgo::EcdsaSHA384)
         } else {
-            Err(anyhow!("unsupported signature OID: {:?}", oid.to_id_string()))
+            Err(anyhow!(
+                "unsupported signature OID: {:?}",
+                oid.to_id_string()
+            ))
         }
     }
 

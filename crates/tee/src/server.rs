@@ -161,9 +161,7 @@ async fn handle_process(
     })?;
 
     match result {
-        Ok(orchestrator::ProcessOutcome::Plaintext(response)) => {
-            Ok(Json(response).into_response())
-        }
+        Ok(orchestrator::ProcessOutcome::Plaintext(response)) => Ok(Json(response).into_response()),
         Ok(orchestrator::ProcessOutcome::Encrypted(bytes)) => {
             use axum::http::header;
             Ok((
@@ -190,10 +188,9 @@ fn orchestrator_error_to_response(
     let status = match &e {
         O::AdmissionRejected => StatusCode::SERVICE_UNAVAILABLE,
         O::FetchFailed(_) => StatusCode::BAD_GATEWAY,
-        O::AttestationFailed(_)
-        | O::JcsFailed(_)
-        | O::JsonError(_)
-        | O::ResponseSealFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        O::AttestationFailed(_) | O::JcsFailed(_) | O::JsonError(_) | O::ResponseSealFailed(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
         O::EncryptionRequiresSingleInput
         | O::EncryptionSuiteMismatch { .. }
         | O::PayloadMetadataInvalid(_)
@@ -310,8 +307,8 @@ async fn handle_solana_extension(
     }
     drop(ticket);
 
-    let offchain_data: title_core::ProcessResponse =
-        serde_json::from_slice(&offchain_resp.body).map_err(|e| {
+    let offchain_data: title_core::ProcessResponse = serde_json::from_slice(&offchain_resp.body)
+        .map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": format!("Invalid offchain data: {e}") })),
@@ -417,10 +414,10 @@ mod tests {
             registry,
             pool: Arc::new(ResourcePool::with_single_limit(1_000_000_000)),
             fetcher: Box::new(fetcher),
-            attestation_verifier: Box::new(
-                title_attestation::MockAttestationVerifier::new(),
-            ),
-            expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT.to_vec().into_boxed_slice(),
+            attestation_verifier: Box::new(title_attestation::MockAttestationVerifier::new()),
+            expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT
+                .to_vec()
+                .into_boxed_slice(),
             registration_attestation: Vec::new(),
             started_at: Instant::now(),
         })
@@ -553,7 +550,10 @@ mod tests {
 
         let (status, json) = post_json(&app, "/process", body).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(json["signature_hash"].as_str().unwrap().starts_with("sha256:"));
+        assert!(json["signature_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
         assert_eq!(json["results"]["c2pa-verify"]["status"], "ok");
         assert!(json["attestation"].is_string());
     }
@@ -600,9 +600,8 @@ mod tests {
         use image::{ImageBuffer, ImageEncoder, Rgb};
         use std::io::Cursor;
 
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4, 4, |x, y| {
-            Rgb([(x * 60) as u8, (y * 60) as u8, 128])
-        });
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(4, 4, |x, y| Rgb([(x * 60) as u8, (y * 60) as u8, 128]));
 
         let mut buf = Cursor::new(Vec::new());
         image::codecs::jpeg::JpegEncoder::new(&mut buf)
@@ -613,8 +612,8 @@ mod tests {
 
     fn create_signed_jpeg() -> Vec<u8> {
         let test_jpeg = create_test_jpeg();
-        let signer =
-            c2pa::EphemeralSigner::new("tee-server-test").expect("Failed to create EphemeralSigner");
+        let signer = c2pa::EphemeralSigner::new("tee-server-test")
+            .expect("Failed to create EphemeralSigner");
 
         let definition = serde_json::json!({
             "claim_generator_info": [{

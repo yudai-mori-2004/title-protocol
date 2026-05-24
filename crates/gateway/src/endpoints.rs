@@ -126,9 +126,7 @@ pub async fn handle_process(
 ///
 /// Always responds (even without auth). Returns cached TEE type if available,
 /// or probes TEE directly.
-pub async fn handle_health(
-    State(state): State<Arc<GatewayState>>,
-) -> Json<HealthResponse> {
+pub async fn handle_health(State(state): State<Arc<GatewayState>>) -> Json<HealthResponse> {
     let cache = state.tee_cache.read().await;
     let tee_type = cache.tee_type.clone();
     let status = if state.is_tee_available() {
@@ -173,15 +171,15 @@ pub async fn handle_solana_extension(
     // the TEE is back up the cache is rebuilt and the 404 path becomes
     // a real "Solana Extension not enabled" answer.
     if !state.is_tee_available() {
-        return Err(GatewayError::TeeUnavailable(
-            "TEE is not available".into(),
-        ));
+        return Err(GatewayError::TeeUnavailable("TEE is not available".into()));
     }
 
     {
         let cache = state.tee_cache.read().await;
         if cache.solana_keys.is_none() {
-            return Err(GatewayError::NotFound("Solana Extension not enabled".into()));
+            return Err(GatewayError::NotFound(
+                "Solana Extension not enabled".into(),
+            ));
         }
     }
 

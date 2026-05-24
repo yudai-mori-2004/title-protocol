@@ -43,8 +43,8 @@ pub fn parse_request(payload: &[u8]) -> Result<ParsedRequest<'_>, CryptoError> {
     }
 
     let suite_id = payload[0];
-    let suite = EncryptionSuite::from_suite_id(suite_id)
-        .ok_or(CryptoError::UnsupportedSuite(suite_id))?;
+    let suite =
+        EncryptionSuite::from_suite_id(suite_id).ok_or(CryptoError::UnsupportedSuite(suite_id))?;
 
     let ek_len = u16::from_be_bytes([payload[1], payload[2]]) as usize;
     let expected_ek_len = encap_key_len(suite);

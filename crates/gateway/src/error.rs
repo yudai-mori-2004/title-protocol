@@ -85,10 +85,7 @@ mod tests {
                 StatusCode::UNAUTHORIZED,
             ),
             (GatewayError::RateLimited, StatusCode::TOO_MANY_REQUESTS),
-            (
-                GatewayError::NotFound("no".into()),
-                StatusCode::NOT_FOUND,
-            ),
+            (GatewayError::NotFound("no".into()), StatusCode::NOT_FOUND),
         ];
 
         for (error, expected) in cases {

@@ -100,7 +100,10 @@ mod tests {
     /// so tests don't depend on anything outside the crate tree.
     #[test]
     fn verifies_real_aws_nitro_attestation() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/attestation_1.report");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/attestation_1.report"
+        );
         let doc_bytes = std::fs::read(path).expect("fixture must exist alongside the crate");
 
         let v = AwsNitroVerifier::new();
@@ -120,7 +123,10 @@ mod tests {
     /// rejected — the trait contract calls this out explicitly.
     #[test]
     fn rejects_doc_timestamp_in_future() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/attestation_1.report");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/attestation_1.report"
+        );
         let doc_bytes = std::fs::read(path).expect("fixture must exist alongside the crate");
         let report = AttestationReport::parse(&doc_bytes).unwrap();
         let doc_ts_secs = report.doc().timestamp / 1000;

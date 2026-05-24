@@ -36,10 +36,14 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
         .and_then(|u| u.host_str().map(str::to_owned))
         .unwrap_or_default();
 
-    let connect_timeout =
-        std::time::Duration::from_secs(env_secs("PROXY_CONNECT_TIMEOUT_SECS", DEFAULT_CONNECT_TIMEOUT_SECS));
-    let total_timeout =
-        std::time::Duration::from_secs(env_secs("PROXY_REQUEST_TIMEOUT_SECS", DEFAULT_TOTAL_TIMEOUT_SECS));
+    let connect_timeout = std::time::Duration::from_secs(env_secs(
+        "PROXY_CONNECT_TIMEOUT_SECS",
+        DEFAULT_CONNECT_TIMEOUT_SECS,
+    ));
+    let total_timeout = std::time::Duration::from_secs(env_secs(
+        "PROXY_REQUEST_TIMEOUT_SECS",
+        DEFAULT_TOTAL_TIMEOUT_SECS,
+    ));
 
     let client = reqwest::Client::builder()
         .connect_timeout(connect_timeout)
@@ -116,7 +120,11 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
                 written += chunk.len() as u64;
             }
             if written < len {
-                tracing::warn!(written, content_length = len, "upstream sent fewer bytes than Content-Length");
+                tracing::warn!(
+                    written,
+                    content_length = len,
+                    "upstream sent fewer bytes than Content-Length"
+                );
             }
             w.flush().await?;
             tracing::info!(url, status, content_length = len, duration_ms = started.elapsed().as_millis() as u64, upstream_host = %upstream_host, "streamed GET");
@@ -165,13 +173,18 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
         };
         if body_bytes.len() as u64 > MAX_RESPONSE_BYTES {
             tracing::warn!(body_len = body_bytes.len(), max = MAX_RESPONSE_BYTES, upstream_host = %upstream_host, "response too large");
-            let msg = format!("response too large: {} > {MAX_RESPONSE_BYTES}", body_bytes.len()).into_bytes();
+            let msg = format!(
+                "response too large: {} > {MAX_RESPONSE_BYTES}",
+                body_bytes.len()
+            )
+            .into_bytes();
             write_error(w, PROXY_ERROR_STATUS, &msg).await?;
             return shutdown_write(w).await;
         }
         tracing::info!(url, status, body_len = body_bytes.len(), duration_ms = started.elapsed().as_millis() as u64, upstream_host = %upstream_host, "forwarded");
         w.write_all(&status.to_be_bytes()).await?;
-        w.write_all(&(body_bytes.len() as u32).to_be_bytes()).await?;
+        w.write_all(&(body_bytes.len() as u32).to_be_bytes())
+            .await?;
         w.write_all(&body_bytes).await?;
         w.flush().await?;
         shutdown_write(w).await

@@ -114,9 +114,7 @@ pub enum SigningKeyError {
     /// `signatures.len() == num_required_signatures`, but a malformed
     /// `VersionedTransaction` deserialised from untrusted bytes can violate
     /// it. Reject the request rather than panicking on the slot write.
-    #[error(
-        "transaction signature slot {index} missing (only {len} slots present)"
-    )]
+    #[error("transaction signature slot {index} missing (only {len} slots present)")]
     SignatureSlotMissing { index: usize, len: usize },
 }
 

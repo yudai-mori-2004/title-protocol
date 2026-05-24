@@ -30,8 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     // Step 1: Parse configuration from environment
-    let tee_endpoint = std::env::var("TEE_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:4000".to_string());
+    let tee_endpoint =
+        std::env::var("TEE_ENDPOINT").unwrap_or_else(|_| "http://localhost:4000".to_string());
     tracing::info!(tee_endpoint = %tee_endpoint, "TEE endpoint configured");
 
     let api_keys: Vec<String> = std::env::var("API_KEYS")
@@ -62,8 +62,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
 
-    let bind_addr = std::env::var("GATEWAY_BIND_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:3000".to_string());
+    let bind_addr =
+        std::env::var("GATEWAY_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
 
     // Step 2: Initialize HttpTeeClient
     let tee_client = HttpTeeClient::new(tee_endpoint);

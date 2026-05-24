@@ -58,12 +58,9 @@ fn build_register_key_ix(
     let program_id = whitelist_program();
 
     // Derive PDAs
-    let (whitelist_pda, _bump) = Pubkey::find_program_address(
-        &[b"whitelist", signing_pubkey.as_ref()],
-        &program_id,
-    );
-    let (approved_vkeys_pda, _) =
-        Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
+    let (whitelist_pda, _bump) =
+        Pubkey::find_program_address(&[b"whitelist", signing_pubkey.as_ref()], &program_id);
+    let (approved_vkeys_pda, _) = Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
     let (approved_measurements_pda, _) =
         Pubkey::find_program_address(&[b"approved_measurements"], &program_id);
 
@@ -122,18 +119,12 @@ fn build_initialize_approved_measurements_ix(admin: &Pubkey) -> Instruction {
 }
 
 /// Build a `revoke_key` instruction.
-fn build_revoke_key_ix(
-    admin: &Pubkey,
-    signing_pubkey: &[u8; 32],
-) -> Instruction {
+fn build_revoke_key_ix(admin: &Pubkey, signing_pubkey: &[u8; 32]) -> Instruction {
     let program_id = whitelist_program();
 
-    let (whitelist_pda, _bump) = Pubkey::find_program_address(
-        &[b"whitelist", signing_pubkey.as_ref()],
-        &program_id,
-    );
-    let (approved_vkeys_pda, _) =
-        Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
+    let (whitelist_pda, _bump) =
+        Pubkey::find_program_address(&[b"whitelist", signing_pubkey.as_ref()], &program_id);
+    let (approved_vkeys_pda, _) = Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
 
     let disc = anchor_discriminator("revoke_key");
 
@@ -216,8 +207,8 @@ fn register_key_rejects_invalid_proof() {
     let mut fake_pv = Vec::new();
     fake_pv.extend_from_slice(&0u32.to_le_bytes()); // module_id len = 0
     fake_pv.extend_from_slice(&0u64.to_le_bytes()); // timestamp
-    fake_pv.extend_from_slice(&[0u8; 48]);           // pcr0
-    fake_pv.push(0);                                  // has_user_data = false
+    fake_pv.extend_from_slice(&[0u8; 48]); // pcr0
+    fake_pv.push(0); // has_user_data = false
 
     let ix = build_register_key_ix(
         &payer.pubkey(),
@@ -280,7 +271,10 @@ fn revoke_key_rejects_non_admin() {
     );
 
     let result = client.send_and_confirm_transaction(&tx);
-    assert!(result.is_err(), "Non-admin should not be able to delete keys");
+    assert!(
+        result.is_err(),
+        "Non-admin should not be able to delete keys"
+    );
     let err_msg = format!("{:?}", result.unwrap_err());
     println!("Expected error for non-admin delete: {err_msg}");
 }
@@ -312,7 +306,10 @@ fn cnft_mint_tx_construction() {
 
     let tx_bytes = cnft::serialize_transaction(&tx).unwrap();
     println!("cNFT mint TX size: {} bytes (limit: 1232)", tx_bytes.len());
-    assert!(tx_bytes.len() <= 1232, "TX must fit in Solana's 1232B limit");
+    assert!(
+        tx_bytes.len() <= 1232,
+        "TX must fit in Solana's 1232B limit"
+    );
 
     // Verify TEE signature is present
     let tee_pubkey = key.pubkey();
@@ -487,9 +484,7 @@ fn initialize_registries_devnet() {
     match client.send_and_confirm_transaction(&tx) {
         Ok(sig) => {
             println!("Initialized both registry PDAs in {sig}");
-            println!(
-                "Explorer: https://explorer.solana.com/tx/{sig}?cluster=devnet"
-            );
+            println!("Explorer: https://explorer.solana.com/tx/{sig}?cluster=devnet");
         }
         Err(e) => {
             let msg = format!("{e:?}");
@@ -513,8 +508,7 @@ fn add_placeholder_vkey_devnet() {
     let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
     let admin = load_authority_keypair();
     let program_id = whitelist_program();
-    let (registry_pda, _) =
-        Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
+    let (registry_pda, _) = Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
 
     // Placeholder: deterministic non-zero bytes so it's recognizable.
     // Real value comes from `sp1-guests/attestation-aws-nitro/host: cargo run --bin vkey`.
@@ -535,12 +529,7 @@ fn add_placeholder_vkey_devnet() {
     };
 
     let blockhash = client.get_latest_blockhash().unwrap();
-    let tx = Transaction::new_signed_with_payer(
-        &[ix],
-        Some(&admin.pubkey()),
-        &[&admin],
-        blockhash,
-    );
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&admin.pubkey()), &[&admin], blockhash);
 
     match client.send_and_confirm_transaction(&tx) {
         Ok(sig) => println!("Added placeholder vkey in {sig}"),
@@ -564,8 +553,7 @@ fn add_placeholder_measurement_devnet() {
     let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
     let admin = load_authority_keypair();
     let program_id = whitelist_program();
-    let (registry_pda, _) =
-        Pubkey::find_program_address(&[b"approved_measurements"], &program_id);
+    let (registry_pda, _) = Pubkey::find_program_address(&[b"approved_measurements"], &program_id);
 
     // Placeholder 48-byte measurement, matching AWS Nitro PCR0 size.
     let placeholder: Vec<u8> = vec![0xBB; 48];
@@ -584,12 +572,7 @@ fn add_placeholder_measurement_devnet() {
     };
 
     let blockhash = client.get_latest_blockhash().unwrap();
-    let tx = Transaction::new_signed_with_payer(
-        &[ix],
-        Some(&admin.pubkey()),
-        &[&admin],
-        blockhash,
-    );
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&admin.pubkey()), &[&admin], blockhash);
 
     match client.send_and_confirm_transaction(&tx) {
         Ok(sig) => println!("Added placeholder measurement in {sig}"),

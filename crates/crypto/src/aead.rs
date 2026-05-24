@@ -18,7 +18,12 @@ pub const KEY_SIZE: usize = 32;
 ///
 /// `aad` is bound into the GCM tag but not included in the ciphertext.
 /// Callers must supply the same AAD at decryption time.
-pub fn encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn encrypt(
+    key: &[u8],
+    nonce: &[u8],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     if key.len() != KEY_SIZE {
         return Err(CryptoError::InvalidKeyLength {
             expected: KEY_SIZE,
@@ -33,12 +38,18 @@ pub fn encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8], aad: &[u8]) -> Result
         )));
     }
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::EncryptError)?;
-    let nonce_arr: &[u8; NONCE_SIZE] = nonce.try_into().map_err(|_| {
-        CryptoError::InvalidWireFormat("invalid nonce".into())
-    })?;
+    let nonce_arr: &[u8; NONCE_SIZE] = nonce
+        .try_into()
+        .map_err(|_| CryptoError::InvalidWireFormat("invalid nonce".into()))?;
     let nonce: &Nonce = nonce_arr.into();
     cipher
-        .encrypt(nonce, Payload { msg: plaintext, aad })
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| CryptoError::EncryptError)
 }
 
@@ -46,7 +57,12 @@ pub fn encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8], aad: &[u8]) -> Result
 ///
 /// `aad` must match the value supplied during encryption — a mismatch
 /// will produce `DecryptError` (GCM tag verification failure).
-pub fn decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn decrypt(
+    key: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     if key.len() != KEY_SIZE {
         return Err(CryptoError::InvalidKeyLength {
             expected: KEY_SIZE,
@@ -61,12 +77,18 @@ pub fn decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: &[u8]) -> Resul
         )));
     }
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::DecryptError)?;
-    let nonce_arr: &[u8; NONCE_SIZE] = nonce.try_into().map_err(|_| {
-        CryptoError::InvalidWireFormat("invalid nonce".into())
-    })?;
+    let nonce_arr: &[u8; NONCE_SIZE] = nonce
+        .try_into()
+        .map_err(|_| CryptoError::InvalidWireFormat("invalid nonce".into()))?;
     let nonce: &Nonce = nonce_arr.into();
     cipher
-        .decrypt(nonce, Payload { msg: ciphertext, aad })
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| CryptoError::DecryptError)
 }
 

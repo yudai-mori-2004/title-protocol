@@ -49,14 +49,14 @@ pub fn create_encapsulator(
     public_key: &[u8],
 ) -> Result<Box<dyn Encapsulator>, CryptoError> {
     match suite {
-        EncryptionSuite::X25519 => {
-            Ok(Box::new(x25519::X25519Encapsulator::from_public_key(public_key)?))
-        }
-        EncryptionSuite::P256 => {
-            Ok(Box::new(p256_ecdh::P256Encapsulator::from_public_key(public_key)?))
-        }
-        EncryptionSuite::MlKem768 => {
-            Ok(Box::new(ml_kem768::MlKem768Encapsulator::from_public_key(public_key)?))
-        }
+        EncryptionSuite::X25519 => Ok(Box::new(x25519::X25519Encapsulator::from_public_key(
+            public_key,
+        )?)),
+        EncryptionSuite::P256 => Ok(Box::new(p256_ecdh::P256Encapsulator::from_public_key(
+            public_key,
+        )?)),
+        EncryptionSuite::MlKem768 => Ok(Box::new(
+            ml_kem768::MlKem768Encapsulator::from_public_key(public_key)?,
+        )),
     }
 }

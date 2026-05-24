@@ -161,7 +161,9 @@ mod tests {
             .header("authorization", "Bearer test-key-123")
             .body(axum::body::Body::empty())
             .unwrap();
-        assert!(matches!(parse_auth_header(&req), AuthHeader::Bearer(ref s) if s == "test-key-123"));
+        assert!(
+            matches!(parse_auth_header(&req), AuthHeader::Bearer(ref s) if s == "test-key-123")
+        );
     }
 
     #[test]

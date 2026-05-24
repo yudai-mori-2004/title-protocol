@@ -63,9 +63,8 @@ all of that is handled by the scripts.
 
 Single `c5.xlarge` ($0.214/hr Tokyo) + 50 GB gp3 EBS. Stop the instance
 when idle and you only pay for EBS (~$5/mo); destroy with `terraform
-destroy` and you pay nothing. There is no Elastic IP, so the public IP
-changes on every stop/start — always re-read `terraform output public_ip`
-after restarting.
+destroy` and you pay nothing. Public IP changes on every stop/start —
+re-read `terraform output public_ip` after restarting.
 
 ---
 

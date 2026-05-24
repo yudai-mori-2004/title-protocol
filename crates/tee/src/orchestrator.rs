@@ -2,19 +2,19 @@
 
 //! # TEE Request Processing Orchestrator
 //!
-//! Spec SS5.2 -- TEE request processing flow
+//! Spec §5.2 -- TEE request processing flow
 //!
 //! Implements the full pipeline from `ProcessRequest` to `ProcessResponse`:
 //!
-//! 1. Admit request (SS4.1 -- ResourcePool admission check)
+//! 1. Admit request (§4.1 -- ResourcePool admission check)
 //! 2. Fetch content from URL(s) based on input type (with memory tracking)
-//! 3. Compute `signature_hash` (SS1.3 -- mandatory for all requests)
-//! 4. Ensure `c2pa-verify` is in the processor list (SS1.3 -- implicitly required)
-//! 5. Execute processors via `ProcessorRegistry` (SS3.1)
-//! 6. Assemble results into `VerifiableResponse` (SS2.3)
-//! 7. JCS-canonicalize and SHA-256 hash (SS1.5, SS2.3)
-//! 8. Get Attestation Document with hash as `user_data` (SS1.2)
-//! 9. Build `ProcessResponse` (SS2.3)
+//! 3. Compute `signature_hash` (§1.3 -- mandatory for all requests)
+//! 4. Ensure `c2pa-verify` is in the processor list (§1.3 -- implicitly required)
+//! 5. Execute processors via `ProcessorRegistry` (§3.1)
+//! 6. Assemble results into `VerifiableResponse` (§2.3)
+//! 7. JCS-canonicalize and SHA-256 hash (§1.5, §2.3)
+//! 8. Get Attestation Document with hash as `user_data` (§1.2)
+//! 9. Build `ProcessResponse` (§2.3)
 //!
 //! ## Sidecar handling
 //!
@@ -24,7 +24,7 @@
 //! the content has no embedded manifest). Other processors receive the raw
 //! content bytes.
 //!
-//! ## Memory management (SS4.1, SS4.2)
+//! ## Memory management (§4.1, §4.2)
 //!
 //! Each request gets a Ticket from the ResourcePool. Memory is tracked
 //! throughout the pipeline via Ticket.extend() calls in the content fetch
@@ -55,11 +55,11 @@ use crate::TeeRuntime;
 // ---------------------------------------------------------------------------
 
 /// Orchestrator error.
-/// Spec SS5.2
+/// Spec §5.2
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
     /// Request rejected: ResourcePool admission limit exceeded.
-    /// Spec SS4.1 -- corresponds to HTTP 503.
+    /// Spec §4.1 -- corresponds to HTTP 503.
     #[error("Request rejected: memory admission limit exceeded (503)")]
     AdmissionRejected,
 
@@ -70,7 +70,7 @@ pub enum OrchestratorError {
     /// signature_hash computation failed.
     /// This means the content has no valid C2PA signature -- the request
     /// is rejected because Title Protocol requires C2PA-signed content.
-    /// Spec SS3.1 -- "C2PA署名のないコンテンツに対してはリクエスト全体が拒否される"
+    /// Spec §3.1 -- "C2PA署名のないコンテンツに対してはリクエスト全体が拒否される"
     #[error("Failed to compute signature_hash: {0}")]
     SignatureHashFailed(String),
 
@@ -324,7 +324,7 @@ fn decrypt_single_payload(
 // ---------------------------------------------------------------------------
 
 /// Ensure `c2pa-verify` is in the processor ID list.
-/// Spec SS1.3 -- c2pa-verify is mandatory for all requests.
+/// Spec §1.3 -- c2pa-verify is mandatory for all requests.
 ///
 /// If the client did not include `c2pa-verify` in `processor_ids`,
 /// it is prepended to the list.
@@ -337,7 +337,7 @@ fn ensure_c2pa_verify(processor_ids: &[String]) -> Vec<String> {
 }
 
 /// Execute processors and collect results.
-/// Spec SS3.1 -- each processor runs independently.
+/// Spec §3.1 -- each processor runs independently.
 fn execute_processors(
     registry: &ProcessorRegistry,
     processor_ids: &[String],
@@ -348,7 +348,7 @@ fn execute_processors(
 }
 
 /// Compute JCS-canonicalized SHA-256 hash of a VerifiableResponse.
-/// Spec SS1.5, SS2.3
+/// Spec §1.5, §2.3
 ///
 /// The hash is used as `user_data` in the Attestation Document, binding
 /// the processing results to the TEE attestation.
@@ -361,7 +361,7 @@ fn compute_jcs_hash(verifiable: &VerifiableResponse) -> Result<Vec<u8>, Orchestr
 }
 
 /// Build the final ProcessResponse with Attestation Document.
-/// Spec SS1.2, SS2.3
+/// Spec §1.2, §2.3
 ///
 /// 1. JCS-canonicalize the VerifiableResponse
 /// 2. SHA-256 hash
@@ -376,7 +376,7 @@ fn build_attested_response(
     let jcs_hash = compute_jcs_hash(&verifiable)?;
 
     // Step 8: Get Attestation Document
-    // Spec SS1.2 -- user_data = SHA-256(JCS(verifiable))
+    // Spec §1.2 -- user_data = SHA-256(JCS(verifiable))
     let attestation_doc = runtime
         .get_attestation_document(&jcs_hash)
         .map_err(|e| OrchestratorError::AttestationFailed(e.to_string()))?;
@@ -495,11 +495,11 @@ mod tests {
     fn create_signed_jpeg() -> Vec<u8> {
         let test_jpeg = create_test_jpeg();
         let signer =
-            c2pa::EphemeralSigner::new("task04-test").expect("Failed to create EphemeralSigner");
+            c2pa::EphemeralSigner::new("title-orchestrator-test").expect("Failed to create EphemeralSigner");
 
         let definition = serde_json::json!({
             "claim_generator_info": [{
-                "name": "task04-orchestrator-test",
+                "name": "title-orchestrator-test",
                 "version": "0.1.0"
             }],
             "assertions": [{
@@ -922,7 +922,7 @@ mod tests {
         let pool = test_pool();
         let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
 
-        // Serialize and verify structure matches spec SS2.3
+        // Serialize and verify structure matches spec §2.3
         let json = serde_json::to_value(&response).unwrap();
 
         // Top-level fields (flatten from VerifiableResponse)

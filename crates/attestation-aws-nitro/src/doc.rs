@@ -2,7 +2,6 @@
 //
 // AWS Nitro Attestation Document — parsing, certificate chain construction,
 // and signature verification orchestration.
-// Origin: Automata Network — aws-nitro-enclave-attestation (Apache-2.0).
 
 use std::collections::BTreeMap;
 

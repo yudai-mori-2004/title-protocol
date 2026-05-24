@@ -2,7 +2,7 @@
 
 //! # Data Size Limits and Timeout Configuration
 //!
-//! Spec SS4.4 -- Attack defense parameters
+//! Spec §4.4 -- Attack defense parameters
 //!
 //! Defines constants and utilities for enforcing data size limits,
 //! chunk timeouts, and global request timeouts.
@@ -10,35 +10,27 @@
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
-// Data size limits (SS4.4)
+// Data size limits (§4.4)
 // ---------------------------------------------------------------------------
 
 /// Maximum number of fragments in a fragmented input.
-/// Spec SS4.4 -- 2-second segments x 100,000 ~= 55 hours of video.
+/// Spec §4.4 -- 2-second segments x 100,000 ~= 55 hours of video.
 pub const MAX_FRAGMENT_COUNT: usize = 100_000;
 
 /// Maximum size of a single fragment in bytes.
-/// Spec SS4.4 -- 100 MB covers 10-second high-resolution video segments.
+/// Spec §4.4 -- 100 MB covers 10-second high-resolution video segments.
 pub const MAX_FRAGMENT_SIZE: usize = 100 * 1024 * 1024; // 100 MB
 
-/// Default fraction of TEE memory to use as total_limit.
-/// Spec SS4.4 -- 80% of TEE memory, reserving 20% for OS/runtime.
-pub const DEFAULT_TOTAL_LIMIT_FRACTION: f64 = 0.80;
-
-/// Maximum node + edge count for provenance graph extraction.
-/// Spec SS4.4
-pub const MAX_PROVENANCE_GRAPH_SIZE: usize = 10_000;
-
 // ---------------------------------------------------------------------------
-// Timeout configuration (SS4.4)
+// Timeout configuration (§4.4)
 // ---------------------------------------------------------------------------
 
 /// Chunk timeout: maximum time between consecutive data arrivals.
-/// Spec SS4.4 -- 60 seconds. Prevents slow-loris style resource occupation.
+/// Spec §4.4 -- 60 seconds. Prevents slow-loris style resource occupation.
 pub const CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Maximum global timeout for a single request.
-/// Spec SS4.4 -- 30 minutes.
+/// Spec §4.4 -- 30 minutes.
 pub const MAX_GLOBAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Base timeout for small requests.
@@ -46,7 +38,7 @@ pub const MAX_GLOBAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub const BASE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Minimum transfer speed assumption for timeout calculation.
-/// Spec SS4.4 -- bytes per second. Used to compute size-adaptive timeouts.
+/// Spec §4.4 -- bytes per second. Used to compute size-adaptive timeouts.
 /// 64 KB/s is conservative enough to accommodate slow connections while
 /// still bounding processing time.
 pub const MIN_TRANSFER_SPEED: u64 = 64 * 1024; // 64 KB/s
@@ -77,7 +69,7 @@ pub fn compute_global_timeout(data_size_hint: Option<u64>) -> Duration {
 // ---------------------------------------------------------------------------
 
 /// Validate fragment count against the maximum limit.
-/// Spec SS4.4 -- rejects requests exceeding MAX_FRAGMENT_COUNT.
+/// Spec §4.4 -- rejects requests exceeding MAX_FRAGMENT_COUNT.
 ///
 /// # Returns
 /// `Ok(())` if within limits, `Err` with a descriptive message otherwise.
@@ -93,7 +85,7 @@ pub fn validate_fragment_count(count: usize) -> Result<(), LimitsError> {
 }
 
 /// Validate a single fragment size against the maximum limit.
-/// Spec SS4.4 -- rejects fragments exceeding MAX_FRAGMENT_SIZE.
+/// Spec §4.4 -- rejects fragments exceeding MAX_FRAGMENT_SIZE.
 ///
 /// # Returns
 /// `Ok(())` if within limits, `Err` with a descriptive message otherwise.
@@ -109,16 +101,7 @@ pub fn validate_fragment_size(size: usize) -> Result<(), LimitsError> {
 }
 
 /// Estimate decoded memory size from image header information.
-/// Spec SS4.4 -- decode memory protection.
-///
-/// # Arguments
-/// * `width` -- Image width in pixels
-/// * `height` -- Image height in pixels
-/// * `channels` -- Number of color channels (e.g., 3 for RGB, 4 for RGBA)
-/// * `bit_depth` -- Bits per channel (e.g., 8, 16)
-///
-/// # Returns
-/// Estimated memory size in bytes for the decoded image.
+/// Spec §4.4 — decode memory protection.
 pub fn estimate_decoded_size(width: u32, height: u32, channels: u32, bit_depth: u32) -> u64 {
     let bytes_per_pixel = (channels * bit_depth + 7) / 8;
     u64::from(width) * u64::from(height) * u64::from(bytes_per_pixel)
@@ -129,7 +112,7 @@ pub fn estimate_decoded_size(width: u32, height: u32, channels: u32, bit_depth: 
 // ---------------------------------------------------------------------------
 
 /// Error type for data size limit violations.
-/// Spec SS4.4
+/// Spec §4.4
 #[derive(Debug, thiserror::Error)]
 pub enum LimitsError {
     /// Fragment count exceeds the maximum.
@@ -157,13 +140,6 @@ pub enum LimitsError {
         estimated: u64,
         /// total_limit in bytes.
         limit: usize,
-    },
-
-    /// Request global timeout exceeded.
-    #[error("Request exceeded global timeout of {timeout:?}")]
-    GlobalTimeoutExceeded {
-        /// The timeout that was exceeded.
-        timeout: Duration,
     },
 
     /// Chunk timeout exceeded (no data arrived within the window).

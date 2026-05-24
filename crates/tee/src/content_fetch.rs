@@ -2,13 +2,13 @@
 
 //! # Content Fetch Layer
 //!
-//! Spec SS5.2 -- Content fetch from external storage
+//! Spec §5.2 -- Content fetch from external storage
 //!
 //! Fetches content from URL(s) based on input type (single / fragmented / sidecar).
 //! Provides a trait-based abstraction over the HTTP client, enabling mock-based
 //! testing without network I/O.
 //!
-//! ## Memory tracking (SS4.2, SS4.4)
+//! ## Memory tracking (§4.2, §4.4)
 //!
 //! All fetch operations accept a `Ticket` and call `extend()` as data arrives.
 //! This tracks actual memory usage and enforces timeouts and limits.
@@ -22,11 +22,6 @@
 //! | Fragmented | Sequential HTTP GET: init.mp4, then each seg-*.m4s |
 //! | Sidecar | Two HTTP GETs: manifest (.c2pa) + content file |
 //!
-//! ## ETag consistency (SS5.2)
-//!
-//! For Range Request scenarios (future optimization), the initial ETag is
-//! recorded and sent in subsequent If-Match headers. A 412 response means
-//! the file changed during transfer, and the request is aborted.
 
 use std::io::Read;
 use std::time::Duration;
@@ -41,7 +36,7 @@ use crate::resource_pool::{Ticket, TicketError};
 // ---------------------------------------------------------------------------
 
 /// Error during content fetching.
-/// Spec SS5.2
+/// Spec §5.2
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
     /// HTTP request failed (network error, DNS failure, etc.).
@@ -63,7 +58,7 @@ pub enum FetchError {
     },
 
     /// ETag mismatch during Range Request sequence.
-    /// Spec SS5.2 -- 412 Precondition Failed
+    /// Spec §5.2 -- 412 Precondition Failed
     #[error("File changed during transfer (412 Precondition Failed): {url}")]
     EtagMismatch {
         /// The URL where the mismatch was detected.
@@ -79,12 +74,12 @@ pub enum FetchError {
     NoFragments,
 
     /// Memory reservation failed (Ticket.extend rejected).
-    /// Spec SS4.2, SS4.4
+    /// Spec §4.2, §4.4
     #[error("Memory limit: {0}")]
     MemoryLimit(#[from] TicketError),
 
     /// Data size validation failed (fragment count/size exceeded).
-    /// Spec SS4.4
+    /// Spec §4.4
     #[error("Data limit: {0}")]
     DataLimit(#[from] LimitsError),
 }
@@ -105,7 +100,7 @@ pub struct FetchResponse {
 }
 
 /// Content fetcher trait.
-/// Spec SS5.2
+/// Spec §5.2
 ///
 /// Abstraction over the HTTP client for testability.
 /// The orchestrator depends on this trait, not on `reqwest` directly.
@@ -133,19 +128,11 @@ impl HttpContentFetcher {
     /// Connect-timeout: detect unreachable origins quickly.
     pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-    /// Per-fetch wall-clock budget. Spec §4.4 specifies a 60-second chunk
-    /// timeout enforced by `ResourcePool::Ticket` between successive
-    /// data-arrival callbacks. Here we apply a single overall timeout on the
-    /// blocking client as the floor protection: a non-responsive origin
-    /// cannot stall a fetch beyond this duration even if `Ticket::extend`
-    /// is never reached. Large legitimate fetches must use the Range Request
-    /// path (a future addition) rather than a single multi-minute bulk GET.
+    /// Per-fetch wall-clock budget. Caps how long a single GET can block,
+    /// independent of `Ticket` chunk timeouts (Spec §4.4).
     pub const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
-    /// Default body-size ceiling. Matches the largest single-fragment limit
-    /// the protocol allows (`MAX_FRAGMENT_SIZE = 100 MB`); single files that
-    /// genuinely exceed this size must be fetched via Range Requests, which
-    /// is a separate code path.
+    /// Default body-size ceiling — matches `MAX_FRAGMENT_SIZE = 100 MB`.
     pub const DEFAULT_MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
 
     /// Construct with default size/timeout limits.
@@ -260,7 +247,7 @@ impl ContentFetcher for HttpContentFetcher {
 // ---------------------------------------------------------------------------
 
 /// Fetched content, normalized for processor consumption.
-/// Spec SS5.2
+/// Spec §5.2
 #[derive(Debug)]
 pub struct FetchedContent {
     /// Content bytes.
@@ -340,7 +327,7 @@ pub fn detect_content_type(bytes: &[u8], url: &str, server_type: Option<&str>) -
 // ---------------------------------------------------------------------------
 
 /// Fetch content based on input data type, tracking memory via Ticket.
-/// Spec SS5.2, SS4.2
+/// Spec §5.2, §4.2
 ///
 /// Each fetch operation calls `ticket.extend()` as data arrives,
 /// enforcing memory limits and timeouts.
@@ -356,7 +343,7 @@ pub fn fetch_content(
             fragment_urls,
         } => {
             // Validate fragment count before starting any fetches
-            // Spec SS4.4
+            // Spec §4.4
             limits::validate_fragment_count(fragment_urls.len())?;
             fetch_fragmented(fetcher, init_url, fragment_urls, ticket)
         }
@@ -368,7 +355,7 @@ pub fn fetch_content(
 }
 
 /// Fetch single file content.
-/// Spec SS5.2 -- HTTP GET for the content URL.
+/// Spec §5.2 -- HTTP GET for the content URL.
 fn fetch_single(
     fetcher: &dyn ContentFetcher,
     url: &str,
@@ -380,7 +367,7 @@ fn fetch_single(
     }
 
     // Track memory for the fetched data
-    // Spec SS4.2 -- incremental reservation on data arrival
+    // Spec §4.2 -- incremental reservation on data arrival
     ticket.extend(resp.body.len())?;
 
     let content_type = detect_content_type(&resp.body, url, resp.content_type.as_deref());
@@ -393,18 +380,16 @@ fn fetch_single(
 }
 
 /// Fetch fragmented content (CMAF init + segments).
-/// Spec SS5.2 -- Sequential HTTP GET for init.mp4 then each seg-*.m4s.
+/// Spec §5.2 -- Sequential HTTP GET for init.mp4 then each seg-*.m4s.
 ///
 /// BMFF/ISO-14496-12 fragmented MP4 is a sequence of boxes:
 /// ftyp + moov (from init.mp4) followed by moof + mdat (from each segment).
 /// Simple byte concatenation produces a valid fragmented MP4 container.
 ///
-/// ## Memory pattern (SS4.3)
+/// ## Memory pattern (§4.3)
 ///
-/// Currently accumulates all fragments into a single buffer, tracking total
-/// memory via Ticket. The spec's ideal pattern (extend per fragment → process
-/// → shrink) requires a streaming C2PA reader, which is a future optimization.
-/// Peak memory = init + all fragments.
+/// All fragments are accumulated into a single buffer; peak memory is
+/// `init + Σ fragments`, tracked via `Ticket::extend`.
 fn fetch_fragmented(
     fetcher: &dyn ContentFetcher,
     init_url: &str,
@@ -432,7 +417,7 @@ fn fetch_fragmented(
             return Err(FetchError::EmptyContent(fragment_url.clone()));
         }
         // Validate individual fragment size
-        // Spec SS4.4
+        // Spec §4.4
         limits::validate_fragment_size(frag_resp.body.len())?;
         // Track memory for this fragment
         ticket.extend(frag_resp.body.len())?;
@@ -447,9 +432,9 @@ fn fetch_fragmented(
 }
 
 /// Fetch sidecar content (manifest + content separately).
-/// Spec SS5.2 -- Two HTTP GETs for the manifest (.c2pa) and content file.
+/// Spec §5.2 -- Two HTTP GETs for the manifest (.c2pa) and content file.
 ///
-/// ## Memory pattern (SS4.3)
+/// ## Memory pattern (§4.3)
 ///
 /// Two-stage: manifest (typically a few KB) + content file.
 /// Both are tracked via Ticket.extend().

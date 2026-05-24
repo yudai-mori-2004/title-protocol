@@ -3,8 +3,6 @@
 //! # cNFT Transaction Construction
 //!
 //! Spec §6.2 — Bubblegum V2 cNFT mint transaction construction and partial signing.
-//!
-//! Ported from `legacy/v0.1.0/crates/tee/src/blockchain/solana_tx.rs`.
 
 use mpl_bubblegum::instructions::{CreateTreeConfigV2Builder, MintV2Builder};
 use mpl_bubblegum::types::{Creator, MetadataArgsV2, TokenStandard};

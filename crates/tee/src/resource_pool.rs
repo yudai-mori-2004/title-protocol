@@ -2,41 +2,22 @@
 
 //! # Two-tier threshold ResourcePool with Ticket-based reservation
 //!
-//! Spec SS4.1, SS4.2 -- TEE memory management
+//! Spec §4.1, §4.2 — TEE memory management.
 //!
-//! Manages memory usage across concurrent requests in the TEE using a single
-//! `AtomicUsize` counter and two thresholds:
+//! Two thresholds gate concurrent requests against a single `AtomicUsize`:
 //!
-//! - **`admission_limit`**: New request admission threshold.
-//!   Only admits new requests when `used < admission_limit`.
-//!   Reserves headroom for in-progress requests to extend.
-//!
-//! - **`total_limit`**: Absolute ceiling for all `extend()` calls.
-//!   In-progress requests can use memory up to this limit. Beyond this,
-//!   `extend()` fails.
+//! - `admission_limit` — new requests are only admitted when
+//!   `used < admission_limit`, reserving headroom for in-progress tickets.
+//! - `total_limit` — absolute ceiling for all `extend()` calls.
 //!
 //! ```text
-//! |<--- new requests OK --->|<--- in-progress only --->|<--- OS/unmanaged --->|
-//! 0                   admission_limit            total_limit         TEE memory
+//! |<--- new requests OK --->|<--- in-progress only --->|<--- unmanaged --->|
+//! 0                   admission_limit            total_limit       TEE memory
 //! ```
 //!
-//! `Ticket` is a RAII handle that tracks reserved bytes:
-//! - `extend(n)`: CAS-loop adds `n` bytes (non-blocking, lock-free)
-//! - `shrink(n)`: Returns `n` bytes to the pool
-//! - `Drop`: Releases all remaining reservation
-//!
-//! ## Timeout support (SS4.4)
-//!
-//! Each Ticket records creation time and last activity time:
-//! - **Chunk timeout**: Rejects extend if no activity within the chunk timeout
-//! - **Global timeout**: Rejects extend if total elapsed exceeds the request's
-//!   global timeout
-//!
-//! ## Design notes (from legacy v0.1.0)
-//!
-//! The CAS-loop pattern in `extend()` is carried forward from
-//! `legacy/v0.1.0/crates/wasm-host/src/resource_pool.rs`.
-//! It provides lock-free, non-blocking reservation under contention.
+//! `Ticket` is a RAII handle: `extend(n)` (lock-free CAS), `shrink(n)`,
+//! and `Drop` releases what's left. Each ticket also enforces a chunk
+//! timeout (max gap between extends) and a global timeout (Spec §4.4).
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,7 +31,7 @@ use crate::limits::{self, LimitsError};
 // ---------------------------------------------------------------------------
 
 /// Two-tier threshold resource pool.
-/// Spec SS4.1
+/// Spec §4.1
 #[derive(Debug)]
 pub struct ResourcePool {
     /// New request admission threshold (Ticket issuance check).
@@ -89,7 +70,7 @@ impl ResourcePool {
 
     /// Check whether a new request can be admitted.
     /// Returns `true` if `used < admission_limit`.
-    /// Spec SS4.1
+    /// Spec §4.1
     pub fn can_admit(&self) -> bool {
         self.used.load(Ordering::Acquire) < self.admission_limit
     }
@@ -161,7 +142,7 @@ impl ResourcePool {
 // ---------------------------------------------------------------------------
 
 /// RAII reservation handle. Releases all reserved bytes on Drop.
-/// Spec SS4.2
+/// Spec §4.2
 ///
 /// A Ticket belongs to a single request thread and must not be shared
 /// across threads (it is `Send` but not `Sync` due to `Cell<Instant>`).
@@ -175,10 +156,10 @@ pub struct Ticket {
     /// accessed from a single request thread.
     last_activity: Cell<Instant>,
     /// Global timeout for this request.
-    /// Spec SS4.4 -- adaptive: min(max, base + size/speed)
+    /// Spec §4.4 -- adaptive: min(max, base + size/speed)
     global_timeout: Duration,
     /// Chunk timeout -- max time between consecutive data arrivals.
-    /// Spec SS4.4 -- default 60s.
+    /// Spec §4.4 -- default 60s.
     chunk_timeout: Duration,
 }
 
@@ -222,9 +203,9 @@ impl Ticket {
     }
 
     /// Reserve additional bytes from the pool.
-    /// Spec SS4.2 -- incremental reservation via CAS loop.
+    /// Spec §4.2 -- incremental reservation via CAS loop.
     ///
-    /// Also checks chunk timeout and global timeout (SS4.4).
+    /// Also checks chunk timeout and global timeout (§4.4).
     ///
     /// # Returns
     /// `Ok(())` if the reservation succeeded.
@@ -235,13 +216,13 @@ impl Ticket {
         }
 
         // Check global timeout
-        // Spec SS4.4 -- total request processing time
+        // Spec §4.4 -- total request processing time
         if self.created_at.elapsed() > self.global_timeout {
             return Err(TicketError::GlobalTimeout(self.global_timeout));
         }
 
         // Check chunk timeout
-        // Spec SS4.4 -- time since last data arrival
+        // Spec §4.4 -- time since last data arrival
         if self.last_activity.get().elapsed() > self.chunk_timeout {
             return Err(TicketError::ChunkTimeout(
                 LimitsError::ChunkTimeoutExceeded {
@@ -294,7 +275,7 @@ impl Ticket {
     }
 
     /// Return bytes to the pool.
-    /// Spec SS4.2
+    /// Spec §4.2
     ///
     /// # Panics
     /// Debug-asserts that `amount <= reserved`.
@@ -337,7 +318,7 @@ impl Ticket {
     }
 
     /// Validate that an estimated decoded size fits within total_limit.
-    /// Spec SS4.4 -- decode memory protection.
+    /// Spec §4.4 -- decode memory protection.
     ///
     /// # Arguments
     /// * `estimated_bytes` -- Estimated memory needed for decoding

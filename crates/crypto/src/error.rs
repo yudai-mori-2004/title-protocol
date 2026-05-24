@@ -8,9 +8,6 @@
 /// Spec §2.4
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
-    #[error("ECDH key exchange failed")]
-    EcdhError,
-
     #[error("HKDF key derivation failed: {0}")]
     HkdfError(String),
 

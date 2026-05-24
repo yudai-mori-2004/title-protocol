@@ -54,14 +54,8 @@ pub enum AttestationError {
     #[error("document signature verification failed: {0}")]
     SignatureInvalid(String),
 
-    #[error("attestation expired or not yet valid: {0}")]
-    Expired(String),
-
     #[error("required field missing: {0}")]
     MissingField(String),
-
-    #[error("verifier error: {0}")]
-    Other(String),
 }
 
 /// Vendor-specific Attestation Document verifier.
@@ -94,15 +88,11 @@ pub trait AttestationVerifier {
 mod mock {
     use super::*;
 
-    /// In-memory `AttestationVerifier` for tests and the mock TEE runtime.
+    /// In-memory `AttestationVerifier` for tests.
     ///
-    /// Pairs with the `MockRuntime` in `title-tee`: accepts attestations of the
-    /// form `"mock-attestation:" || user_data`, returns a zero-measurement
-    /// `VerifiedAttestation` with the trailing bytes as `user_data`.
-    ///
-    /// Performs no cryptographic verification. Exists so the orchestration
-    /// pipeline can be exercised without a real Attestation Document; never
-    /// compiled into TEE binaries built for real hardware.
+    /// Accepts attestations of the form `"mock-attestation:" || user_data`,
+    /// returns a zero-measurement `VerifiedAttestation` whose `user_data`
+    /// is the trailing bytes. Gated behind the `mock` feature.
     #[derive(Debug, Default, Clone, Copy)]
     pub struct MockAttestationVerifier;
 

@@ -17,10 +17,6 @@
 //! - TEE health monitoring (GET /health, §2.5)
 //! - TEE restart detection and key refresh (§5.3)
 //! - Solana Extension endpoints (GET /solana-keys, POST /extension/solana, §6.2)
-//!
-//! ## Legacy
-//!
-//! `legacy/v0.1.0/crates/gateway/` -- Previous Gateway implementation (Axum).
 
 pub mod auth;
 pub mod endpoints;

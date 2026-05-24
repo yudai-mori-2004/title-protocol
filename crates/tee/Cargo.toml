@@ -12,17 +12,13 @@ name = "title-tee"
 path = "src/main.rs"
 
 [features]
-# Default ships zero runtimes — a downstream binary must explicitly opt in
-# to either `runtime-mock` (dev / CI) or a vendor runtime such as
-# `vendor-aws` (production). This makes it a compile-time error to release a
-# TEE binary that has no real runtime, and prevents the mock from being
-# accidentally selected at runtime in production builds.
-default = []
-# Dev / CI runtime. Compiles in `MockRuntime` and `MockAttestationVerifier`,
-# making `TEE_RUNTIME=mock` selectable. NEVER enable in production builds.
+# Default picks `runtime-mock` so a bare `cargo build` produces a usable
+# (dev / CI) binary. Production Docker builds explicitly request
+# `--no-default-features --features vendor-aws`.
+default = ["runtime-mock"]
+# Mock runtime for development / CI.
 runtime-mock = ["title-attestation/mock"]
-# AWS Nitro Enclaves runtime. Compiles in `NitroRuntime` and the AWS Nitro
-# attestation verifier, making `TEE_RUNTIME=nitro` selectable.
+# AWS Nitro Enclaves runtime for production.
 vendor-aws = [
     "dep:title-attestation-aws-nitro",
     "dep:aws-nitro-enclaves-nsm-api",

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // X.509 certificate chain construction and verification.
-// Origin: Automata Network — aws-nitro-enclave-attestation (Apache-2.0).
 
 use crate::sign::{verify_signature_der, KeyAlgo, PubKey, SigAlgo};
 

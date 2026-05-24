@@ -1,14 +1,9 @@
 # Title Protocol — AWS infrastructure (v0.1.2)
 #
-# Single EC2 with Nitro Enclaves, no Elastic IP, no S3, no IAM user.
-# A fresh `terraform apply` provisions everything required to run a TEE node.
-# A fresh `terraform destroy` removes everything (the only AWS residue is the
-# legacy `title-signed-json-devnet` S3 bucket, which lives outside this state
-# on purpose).
-#
-# IP address is allocated by AWS at instance launch and changes whenever the
-# instance is stopped/started. Clients reach the gateway via whatever
-# `terraform output -raw public_ip` reports at the time.
+# Single Nitro-Enclaves-capable EC2 + minimal security group + auto-generated
+# SSH key. `terraform apply` provisions the full TEE node; `terraform destroy`
+# removes it. The public IP is reassigned on each stop/start — re-read
+# `terraform output -raw public_ip` after restarting the instance.
 
 terraform {
   required_version = ">= 1.5"
@@ -139,11 +134,9 @@ resource "aws_instance" "node" {
     volume_type = "gp3"
   }
 
-  # First-boot provisioning: install Docker, nitro-cli, allocate hugepages.
-  # See user-data.sh for the script. `user_data_replace_on_change = true`
-  # would rebuild the instance on every script edit; we keep it false so
-  # iterations don't churn the box. Re-running provisioning manually is
-  # `bash deploy/aws/scripts/provision.sh` (idempotent).
+  # First-boot provisioning (Docker, nitro-cli, hugepages) — see user-data.sh.
+  # Edits to user-data.sh don't rebuild the instance; rerun by re-execing
+  # the script over SSH if needed.
   user_data = templatefile("${path.module}/user-data.sh", {
     enclave_memory_mib = var.enclave_memory_mib
     enclave_cpu_count  = var.enclave_cpu_count

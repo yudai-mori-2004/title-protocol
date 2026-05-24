@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 
-use title_attestation::{AttestationError, AttestationVerifier, VerifiedAttestation};
+use title_attestation::{AttestationVerifier, VerifiedAttestation};
 use title_core::ProcessResponse;
 
 use crate::cnft;
@@ -28,26 +28,17 @@ use crate::signing_key::SolanaSigningKey;
 /// Errors from Solana Extension processing.
 #[derive(Debug, thiserror::Error)]
 pub enum ExtensionError {
-    #[error("Failed to fetch offchain data: {0}")]
-    FetchFailed(String),
-
     #[error("Failed to parse offchain data: {0}")]
     ParseFailed(String),
 
     #[error("Attestation verification failed: {0}")]
     AttestationInvalid(String),
 
-    #[error("Attestation verifier: {0}")]
-    Verifier(#[from] AttestationError),
-
     #[error("TEE measurement mismatch: expected {expected}, got {actual}")]
     MeasurementMismatch { expected: String, actual: String },
 
     #[error("user_data hash mismatch")]
     UserDataMismatch,
-
-    #[error("Signing key not whitelisted or expired")]
-    KeyNotWhitelisted,
 
     #[error("Transaction construction failed: {0}")]
     TxFailed(#[from] cnft::CnftError),
@@ -131,7 +122,9 @@ pub fn verify_attestation_binding(
         .decode(&response.attestation)
         .map_err(|e| ExtensionError::AttestationInvalid(format!("Base64 decode: {}", e)))?;
 
-    let verified = verifier.verify(&attestation_bytes, now_unix_secs)?;
+    let verified = verifier
+        .verify(&attestation_bytes, now_unix_secs)
+        .map_err(|e| ExtensionError::AttestationInvalid(e.to_string()))?;
 
     let expected_hash = compute_verifiable_hash(response)?;
     let user_data = verified

@@ -22,8 +22,7 @@
 //! is used as the protocol-level content identifier (spec §1.3) and
 //! appears in the top-level `ProcessResponse` (spec §2.3).
 //!
-//! The utility is public because the TEE orchestration layer (Task 04)
-//! also needs it when assembling the final response.
+//! The utility is public because the TEE orchestration layer //! also needs it when assembling the final response.
 
 use crate::jumbf;
 use crate::processor::{Processor, ProcessorError};

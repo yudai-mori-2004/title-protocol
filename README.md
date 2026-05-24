@@ -125,9 +125,7 @@ No trust in the Gateway, storage provider, or protocol operator is required.
 
 **v0.1.2 — Implementation in progress.**
 
-The protocol has been redesigned from the ground up. See [Technical Specification (Japanese)](docs/v0.1.2/SPECS_JA.md) for the full design.
-
-Previous implementation (v0.1.0) is archived in `legacy/v0.1.0/` for reference.
+See [Technical Specification (Japanese)](docs/v0.1.2/SPECS_JA.md) for the full design.
 
 ## Documentation
 

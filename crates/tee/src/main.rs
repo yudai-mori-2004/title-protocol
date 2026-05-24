@@ -80,12 +80,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Step 2: Generate encryption key bundle
-    // Spec §2.4, §5.2 — per-suite key pairs, lost on restart. Entropy comes
-    // from the TEE hardware via `TeeRuntime::random_bytes` (NSM GetRandom on
-    // Nitro). Using the host kernel's `OsRng` directly would defeat the
-    // point: enclave-internal entropy must be vendor-attestable, and Nitro's
-    // /dev/urandom has no guaranteed seed source other than NSM.
+    // Step 2: Generate encryption key bundle. Entropy must come from the
+    // TEE (NSM on Nitro), not host OsRng — see `tee_seeded_rng`.
     tracing::info!("Generating encryption key bundle from TEE entropy...");
     let mut key_bundle_rng = tee_seeded_rng(runtime.as_ref(), "key_bundle")?;
     let key_bundle = KeyBundle::generate(&mut key_bundle_rng)?;

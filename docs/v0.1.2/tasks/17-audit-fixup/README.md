@@ -268,7 +268,7 @@ OSS 成熟度（H）:
 | 17b proxy+tee | done | 約 47 |
 | 17c gateway+core | done | 約 42 |
 | 17d solana+sp1 | done | 約 58 |
-| 17e コメント+デッドコード | pending | 約 97 |
+| 17e コメント+デッドコード | done | 約 97 |
 | 17f ドキュメント+仕様 | pending | 約 67 |
 | 17g ビルド+テスト+OSS | pending | 約 67 |
 
@@ -450,3 +450,50 @@ OSS 成熟度（H）:
 - 再デプロイ後、devnet テスト `cargo test --test devnet_whitelist` で `register_key` フローが新しい順序+strict proof length チェックを通過することを確認
 
 **検証**: `cargo test --workspace` 全グリーン(solana 31/31、proxy 5、tee 101、gateway 43 + 8 e2e、core 39、attestation-aws-nitro 2、crypto 28)。SP1 host + guest も `cargo check` 通過。program は `cargo check --no-default-features` で warning 19 件(Anchor cfg ノイズ、機能影響なし)、error 0 件。
+
+### 17e 完了内訳
+
+**Dead code 一掃**
+- B-13 `CryptoError::EcdhError` 削除(constructed なし)
+- B-14 `AttestationError::Other` / `Expired` 削除(unused variants)
+- B-15 `ExtensionError::{FetchFailed,Verifier,KeyNotWhitelisted}` 削除
+- B-19 `limits.rs`: `MAX_PROVENANCE_GRAPH_SIZE` / `DEFAULT_TOTAL_LIMIT_FRACTION` / `LimitsError::GlobalTimeoutExceeded` 削除
+- B-24 `crates/solana/Cargo.toml` から `bs58` dep 削除(未使用)
+- B-25 `crates/crypto/Cargo.toml` から `serde` 直接 dep 削除(transitive のみで十分)
+- B-31 `Default for ProcessorRegistry` 削除(`new()` で代替済)
+- B-5 `crates/tee/Cargo.toml` の `default = []` → `default = ["runtime-mock"]` に変更(`cargo build` がデフォルトで動く dev binary に。production Docker は明示的に `--no-default-features --features vendor-aws` で build)
+
+**Comment hygiene 整理**
+- A-mf-005/006/007/008/009 「Legacy 参照」「legacy/v0.1.0 から ported」言及を全削除(tee/lib.rs、gateway/lib.rs、resource_pool.rs、jumbf.rs、cnft.rs)
+- A-mf-001/002 main.tf / deploy/aws/README.md の「ない」もの列挙(no Elastic IP, no S3, no IAM user, legacy `title-signed-json-devnet` S3 bucket 等)を削除
+- A-mf-003 README.md の `legacy/v0.1.0/` 言及を削除
+- A-mf-010/011 `(Task 04)` 内輪 task 番号参照を削除、テスト内 `"task04-test"` を `"title-orchestrator-test"` に
+- A-mf-012/013/014 content_fetch.rs の "future optimization" / "future addition" / "Currently accumulates" の時間軸表現を削除
+- A-mf-018 attestation-aws-nitro の `// Origin: Automata Network` フッタを cert.rs / doc.rs から削除(NOTICE で集約)
+- A-mf-021 `MockAttestationVerifier` doc の自己弁護コメント(「never compiled into TEE binaries built for real hardware」誤情報含む)を簡潔化
+- A-mf-022 `tee_seeded_rng` を呼ぶ箇所の 5 行 rationale を 2 行に
+- A-mf-007 resource_pool.rs の "Design notes (from legacy v0.1.0)" 削除、コア説明を簡潔化
+- deploy/aws/terraform/main.tf: 存在しない `provision.sh` への参照を削除
+
+**SS → § 統一(A-nitpick-001)**
+- `crates/tee/src/{limits,resource_pool,content_fetch,orchestrator}.rs` の `Spec SS X` / `SS5.2` 等を `Spec §X` / `§5.2` に sed 一括置換
+
+**先送り(scope or 価値の観点)**
+- B-3 `crates/solana/src/whitelist.rs` 全体削除: client-side mirror は SDK 化想定で残す価値あり、削除しない
+- B-7 cnft.rs ヘルパー移動: devnet テストの再構成が必要、defer
+- B-10 SP1 guest `has_public_key` 削除: vkey 再生成 + Solana 再デプロイ必要、defer
+- B-11/12 ProcessorRegistry::execute / execute_processors: 仕様 §3.1 並列化と整合する書き直しが必要、defer
+- B-16 SolanaSigningKey API 可視性絞り込み: SDK 設計と関連、defer
+- B-17/18 ResourcePool / Ticket pub API 縮小: スコープ大、defer
+- B-20 ProxyContentFetcher::with_max_body_bytes: テストで使う、現状維持
+- B-21 proxy async helpers: cfg 適切、現状維持
+- B-22 AttestationDocument::digest / nonce: CBOR forward-compat のため fields は残す
+- B-23 cose::sig_algo_val EcdsaSHA256 arm: AWS Nitro では出ないが、ES256 仕様サポートとして残す価値
+- B-26/28/29/30/32: 細かい cleanup、scope 内で間に合わなかったもの
+- A-mf-015 already fixed in 17c (auth.rs constant-time コメント)
+- A-mf-017 already fixed in 17d (ADMIN_AUTHORITY Phase 1 → doc 整備済)
+- A-mf-020 already fixed in 17a (`AwsNitroVerifier` doc 書き換え済)
+- A-mf-023 ASCII separator 装飾(80 箇所超)は機械的だが影響範囲広く defer
+- A-sf-* + A-nitpick-002..014: 個別の細かい整理、コミットの優先度低
+
+**検証**: `cargo test --workspace` 全グリーン(変動なし — core 39, proxy 5, tee 101, gateway 43+8 e2e, solana 31, attestation-aws-nitro 2, crypto 28)。

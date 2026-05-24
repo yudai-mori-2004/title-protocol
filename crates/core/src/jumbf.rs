@@ -2,15 +2,9 @@
 
 //! # JUMBF (ISO 19566-5) minimal parser
 //!
-//! Spec §1.3 — signature_hash = SHA-256(Active Manifest's COSE signature)
-//!
-//! Extracts the COSE signature bytes from a C2PA JUMBF data structure
-//! for a specified manifest label. The COSE signature is found in the
-//! `c2pa.signature` box (identified by a well-known UUID) inside the
-//! manifest's JUMBF superbox.
-//!
-//! Ported from `legacy/v0.1.0/crates/core/src/jumbf.rs` with error type
-//! adapted for v0.1.2 processor framework.
+//! Spec §1.3 — `signature_hash = SHA-256(Active Manifest's COSE signature)`.
+//! Walks the JUMBF box tree to locate the manifest's `c2pa.signature` box
+//! and returns the embedded COSE CBOR bytes.
 
 use crate::processor::ProcessorError;
 use std::io::{Cursor, Read, Seek, SeekFrom};

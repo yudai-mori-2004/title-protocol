@@ -22,7 +22,6 @@ solana-sdk = "2.2"
 # mpl-bubblegum 2.1 is the V2 ABI we target; the field shape on
 # MetadataArgsV2 changed in 2.1 so don't allow auto-upgrade across 2.x.
 mpl-bubblegum = "~2.1"
-bs58 = "0.5"
 rand = "0.8"
 bincode = "1.3"
 

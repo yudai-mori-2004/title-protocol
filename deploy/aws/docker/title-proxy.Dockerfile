@@ -35,7 +35,7 @@ RUN mkdir -p crates/attestation/src && echo "" > crates/attestation/src/lib.rs \
 
 # title-proxy ships with `default = []`; pass --features vendor-aws here
 # to pull in the vsock listener. linux/amd64 only.
-RUN cargo build --release --bin title-proxy --features vendor-aws 2>&1 || true
+RUN cargo build --release --bin title-proxy --features vendor-aws 2>&1
 
 COPY crates/ crates/
 RUN find crates -name "*.rs" -exec touch {} + \

@@ -30,7 +30,12 @@ keys/
 *.pem
 keypair.json
 
-# Legacy code (local reference only, history preserved in git)
+# Legacy code (local reference only, history preserved in git).
+# `Cargo.toml [workspace].exclude` でも除外しているが、こちらは「新規
+# ファイルを legacy/ 配下に追加させない」運用ルール。既存ファイルを
+# 修正する場合は track 済みなので直接編集可能。`programs/` と
+# `sp1-guests/` は workspace 外だが意図的に tracked にしており、
+# `.gitignore` の対象外にしている。
 legacy/
 
 # TEE runtime artifacts captured from a live enclave (regenerated on

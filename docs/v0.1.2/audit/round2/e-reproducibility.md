@@ -530,12 +530,13 @@ Round 2 で修正が入った領域（特に CI 追加、proxy Dockerfile、Carg
 |---|---|---|
 | must-fix-001 / 005 | fixed | Round 2 認定済み。 |
 | must-fix-002 | fixed | `crates/attestation-aws-nitro/Cargo.toml` の `sha2_sp1` を `branch=` から `rev = "1f224388fdede7cef649bce0d63876d1a9e3f515"` に変更。upstream branch 進行に追従しない構造に変更し、SP1 vkey の silent drift を阻止。 |
-| must-fix-003 | fixed | `docker/gateway.Dockerfile`, `docker/tee-mock.Dockerfile`, `deploy/aws/docker/tee-nitro.Dockerfile` の 3 つに `COPY crates/proxy/Cargo.toml` + stub `crates/proxy/src/main.rs` を追加。`|| true` のエラー潜伏も削除し、dep cache 層を fail-fast 化。 |
-| must-fix-004 | wontfix(AMI pin は terraform deploy フローの仕様変更を伴い、devops 検証を要する。CI 整備フェーズで対応) | |
+| must-fix-003 | partially-fixed | `docker/gateway.Dockerfile`, `docker/tee-mock.Dockerfile`, `deploy/aws/docker/tee-nitro.Dockerfile` の 3 つに `COPY crates/proxy/Cargo.toml` + stub `crates/proxy/src/main.rs` を追加。これら 3 ファイルからは `\|\| true` を削除済み。**ただし `deploy/aws/docker/title-proxy.Dockerfile:38` に `\|\| true` 残置** (Round 3 r3-must-fix-001 で訂正、Round 3 で削除済み)。 |
+| must-fix-004 | fixed | `deploy/aws/terraform/main.tf:43-47` で `variable "al2023_ami_id" = "ami-0c8698b371227f828"` をハードコード。`aws_ami.al2023` data source は削除。Round 2 処理ログでは `wontfix` と書いたが実際は fix 完了済みであり、Round 3 監査で訂正。 |
 | must-fix-006 | partially-fixed(`.terraform.lock.hcl` は commit 済み。`terraform.tfstate*` の運用ガイド整備は OPERATIONS_JA 拡張で対応) | |
 | should-fix-001 | fixed | Round 2 認定済み。 |
-| should-fix-002 / 003 / 004 / 005 / 006 / 007 / 010 | wontfix(SP1 toolchain, base image digest pinning, profile.release tuning 等は CI/CD 整備と同時に対応するべき infrastructure 改善。本観点では deferred) | |
-| should-fix-005 | fixed | must-fix-003 と統合対応。`|| true` を 3 Dockerfile から削除。 |
+| should-fix-002 / 003 / 004 / 006 / 007 / 010 | wontfix(SP1 toolchain, base image digest pinning, profile.release tuning 等は CI/CD 整備と同時に対応するべき infrastructure 改善。本観点では deferred) | |
+| should-fix-005 | partially-fixed | must-fix-003 と統合対応で 3 Dockerfile から `\|\| true` を削除。`deploy/aws/docker/title-proxy.Dockerfile:38` に残置していたが Round 3 r3-must-fix-001 で削除済み。 |
 | should-fix-008 / 009 | partially-fixed(CI/workspace dep は 17g で部分対応済み。網羅的整備は v0.1.3) | |
-| nitpick-001..007 | wontfix(`.dockerignore` 絞り込み・workspace order・Anchor scripts・wallet path 等は v0.1.3 OSS 公開前整理) | |
+| nitpick-001..005, 007 | wontfix(`.dockerignore` 絞り込み・workspace order・Anchor scripts・wallet path 等は v0.1.3 OSS 公開前整理) | |
+| nitpick-006 | fixed | `deploy/aws/scripts/run-stack.sh:87-101` で `TEE_READY=0/1` フラグ + 60s timeout 後 `exit 1` を実装済み。Round 2 処理ログでは `wontfix` と書いたが実際は fix 完了済みであり、Round 3 監査で訂正。 |
 | new-must-fix-001 / new-should-fix-001..003 / new-nitpick-001..004 | wontfix(CI 詳細化 (`--locked` / clippy `-D warnings` / 各 toolchain カバー) は CI 整備フェーズで一括対応) | |

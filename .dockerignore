@@ -1,3 +1,7 @@
+# `Cargo.lock` と `rust-toolchain.toml` は仕様 §5.4 「リプロデューシブル
+# ビルド」の再現性アンカー。この .dockerignore からこれらを除外する変更を
+# 入れると、image 内の依存バージョンが silent に drift する。除外したい
+# 衝動が出たら、まず §5.4 の意図を確認すること。
 target/
 legacy/
 programs/

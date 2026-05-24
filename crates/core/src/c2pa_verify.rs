@@ -27,9 +27,47 @@
 
 use crate::jumbf;
 use crate::processor::{Processor, ProcessorError};
-use crate::processor_outputs::{C2paAction, C2paVerifyOutput, SignerInfo};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
+
+/// c2pa-verify processor output. Spec §3.2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct C2paVerifyOutput {
+    /// `"valid"` or `"invalid"` — an invalid signature is still a successful
+    /// processor run.
+    pub validation: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer: Option<SignerInfo>,
+
+    /// C2PA signing timestamp in ISO 8601.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+
+    /// Signing tool / device name. Built from `claim_generator_info` when
+    /// the manifest carries it (preferred), else the raw `claim_generator`
+    /// string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_generator: Option<String>,
+
+    #[serde(default)]
+    pub actions: Vec<C2paAction>,
+}
+
+/// Issuer and certificate serial of the C2PA signing identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignerInfo {
+    pub issuer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cert_serial: Option<String>,
+}
+
+/// One entry from the manifest's action history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct C2paAction {
+    pub action: String,
+}
 
 /// c2pa-verify processor ID.
 /// Spec §3.2
@@ -118,11 +156,13 @@ pub fn compute_signature_hash(
 }
 
 /// Computes the signature_hash from raw JUMBF manifest data (for sidecar inputs).
-/// Spec §1.3 — signature_hash for sidecar content
+/// Spec §1.3 — signature_hash for sidecar content.
 ///
 /// The `.c2pa` sidecar file contains raw JUMBF data (the manifest store).
-/// This function parses the JUMBF to find the active manifest (the last one
-/// by c2pa convention), extracts the COSE signature, and computes SHA-256.
+/// C2PA 2.1 §13.4 defines the active manifest as the last `c2pa.manifest`
+/// box in the store; this function follows that ordering convention,
+/// extracts the COSE signature from the active manifest, and computes
+/// SHA-256.
 ///
 /// # Arguments
 /// * `manifest_data` — Raw JUMBF bytes from a `.c2pa` sidecar file
@@ -287,7 +327,6 @@ fn extract_actions(manifest: &c2pa::Manifest) -> Vec<C2paAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::processor_outputs::C2paVerifyOutput;
 
     /// Creates a minimal valid JPEG for testing.
     /// Uses the `image` crate to generate a 4x4 pixel JPEG image.

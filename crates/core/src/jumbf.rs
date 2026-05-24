@@ -32,9 +32,11 @@ const CAI_SIGNATURE_UUID: [u8; 16] = [
     0x71,
 ];
 
-/// Maximum COSE signature data size (16 MiB).
-/// Rejects oversized data to prevent OOM attacks.
-const MAX_SIGNATURE_SIZE: u64 = 16 * 1024 * 1024;
+/// Upper bound on the COSE signature CBOR blob — sized to cover realistic
+/// PKI deployments (ECDSA signature ~70 B, certificate chain a few KiB per
+/// certificate, OCSP/timestamp tokens up to a few hundred KiB) with a
+/// comfortable margin while rejecting attack-sized inputs.
+const MAX_SIGNATURE_SIZE: u64 = 256 * 1024;
 
 /// JUMBF box header.
 struct BoxHeader {
@@ -48,41 +50,40 @@ struct DescInfo {
     label: String,
 }
 
-/// Reads a JUMBF box header.
-/// Returns box_type=0, size=0 on EOF.
-fn read_header(reader: &mut Cursor<&[u8]>) -> Result<BoxHeader, ProcessorError> {
+/// Read a JUMBF box header. `Ok(None)` signals clean EOF.
+fn read_header(reader: &mut Cursor<&[u8]>) -> Result<Option<BoxHeader>, ProcessorError> {
     let mut buf = [0u8; 8];
-    if reader.read(&mut buf).map_err(|e| {
+    let n = reader.read(&mut buf).map_err(|e| {
         ProcessorError::C2paVerificationFailed(format!("JUMBF header read error: {e}"))
-    })? < 8
-    {
-        return Ok(BoxHeader {
-            box_type: 0,
-            size: 0,
-        });
+    })?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if n < 8 {
+        return Err(ProcessorError::C2paVerificationFailed(
+            "truncated JUMBF box header".into(),
+        ));
     }
 
     let size = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
     let box_type = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
 
     if size == 1 {
-        // Extended size (u64)
         let mut ext_buf = [0u8; 8];
         reader.read_exact(&mut ext_buf).map_err(|e| {
             ProcessorError::C2paVerificationFailed(format!(
                 "JUMBF extended size read error: {e}"
             ))
         })?;
-        let large_size = u64::from_be_bytes(ext_buf);
-        Ok(BoxHeader {
+        Ok(Some(BoxHeader {
             box_type,
-            size: large_size,
-        })
+            size: u64::from_be_bytes(ext_buf),
+        }))
     } else {
-        Ok(BoxHeader {
+        Ok(Some(BoxHeader {
             box_type,
             size: size as u64,
-        })
+        }))
     }
 }
 
@@ -109,8 +110,6 @@ fn read_desc_info(
 
     let mut label = String::new();
     if toggles[0] & 0x02 != 0 {
-        // Null-terminated label string.
-        // C2PA labels are ASCII-only, so byte-by-byte reading suffices.
         let max_label_len = (content_size - 17) as usize;
         let mut byte = [0u8; 1];
         loop {
@@ -125,13 +124,27 @@ fn read_desc_info(
             if byte[0] == 0 {
                 break;
             }
+            // C2PA labels are ASCII (UUID-style identifiers + dotted
+            // namespaces). Reject non-ASCII so a malformed manifest can't
+            // silently mismatch the active-label comparison.
+            if !byte[0].is_ascii() {
+                return Err(ProcessorError::C2paVerificationFailed(
+                    "non-ASCII byte in JUMBF label".into(),
+                ));
+            }
             label.push(byte[0] as char);
         }
     }
 
-    // Skip remaining bytes (padding, salt hash, etc.)
-    let read_so_far =
-        16 + 1 + if label.is_empty() { 0 } else { label.len() + 1 } as u64;
+    // Bytes consumed inside the desc box body so far: 16 (uuid) + 1
+    // (toggles) + label bytes (only if a label was actually read — the
+    // trailing NUL counts).
+    let label_bytes: u64 = if label.is_empty() {
+        0
+    } else {
+        label.len() as u64 + 1
+    };
+    let read_so_far: u64 = 16 + 1 + label_bytes;
     if read_so_far < content_size {
         let skip = content_size - read_so_far;
         reader.seek(SeekFrom::Current(skip as i64)).map_err(|e| {
@@ -152,16 +165,18 @@ fn read_desc_info(
 pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, ProcessorError> {
     let mut reader = Cursor::new(jumbf_data);
 
-    // Read top-level superbox (c2pa store)
-    let top_header = read_header(&mut reader)?;
+    let top_header = read_header(&mut reader)?.ok_or_else(|| {
+        ProcessorError::C2paVerificationFailed("empty JUMBF input".into())
+    })?;
     if top_header.box_type != BOX_TYPE_JUMB {
         return Err(ProcessorError::C2paVerificationFailed(
             "Top-level is not a JUMBF superbox".to_string(),
         ));
     }
 
-    // Read top-level description box
-    let desc_header = read_header(&mut reader)?;
+    let desc_header = read_header(&mut reader)?.ok_or_else(|| {
+        ProcessorError::C2paVerificationFailed("missing top-level description box".into())
+    })?;
     if desc_header.box_type != BOX_TYPE_JUMD {
         return Err(ProcessorError::C2paVerificationFailed(
             "Description box not found".to_string(),
@@ -174,17 +189,17 @@ pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, Pro
 
     while reader.position() < top_end {
         let child_start = reader.position();
-        let child_header = read_header(&mut reader)?;
-        if child_header.box_type == 0 || child_header.size == 0 {
+        let Some(child_header) = read_header(&mut reader)? else {
             break;
-        }
+        };
 
         if child_header.box_type == BOX_TYPE_JUMB {
-            let desc_header = read_header(&mut reader)?;
-            if desc_header.box_type == BOX_TYPE_JUMD {
-                let desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
-                if !desc.label.is_empty() {
-                    labels.push(desc.label);
+            if let Some(desc_header) = read_header(&mut reader)? {
+                if desc_header.box_type == BOX_TYPE_JUMD {
+                    let desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
+                    if !desc.label.is_empty() {
+                        labels.push(desc.label);
+                    }
                 }
             }
         }
@@ -206,22 +221,24 @@ pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, Pro
 /// # Arguments
 /// * `jumbf_data` — Raw JUMBF bytes from `c2pa::jumbf_io::load_jumbf_from_memory`
 /// * `manifest_label` — Target manifest label (from `Reader::active_label()`)
-pub fn extract_signature_from_jumbf(
+pub(crate) fn extract_signature_from_jumbf(
     jumbf_data: &[u8],
     manifest_label: &str,
 ) -> Result<Vec<u8>, ProcessorError> {
     let mut reader = Cursor::new(jumbf_data);
 
-    // Read top-level superbox (c2pa store)
-    let top_header = read_header(&mut reader)?;
+    let top_header = read_header(&mut reader)?.ok_or_else(|| {
+        ProcessorError::C2paVerificationFailed("empty JUMBF input".into())
+    })?;
     if top_header.box_type != BOX_TYPE_JUMB {
         return Err(ProcessorError::C2paVerificationFailed(
             "Top-level is not a JUMBF superbox".to_string(),
         ));
     }
 
-    // Read description box
-    let desc_header = read_header(&mut reader)?;
+    let desc_header = read_header(&mut reader)?.ok_or_else(|| {
+        ProcessorError::C2paVerificationFailed("missing top-level description box".into())
+    })?;
     if desc_header.box_type != BOX_TYPE_JUMD {
         return Err(ProcessorError::C2paVerificationFailed(
             "Description box not found".to_string(),
@@ -229,32 +246,27 @@ pub fn extract_signature_from_jumbf(
     }
     let _top_desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
 
-    // Scan child superboxes to find the target manifest label
     let top_end = top_header.size;
     while reader.position() < top_end {
         let child_start = reader.position();
-        let child_header = read_header(&mut reader)?;
-        if child_header.box_type == 0 || child_header.size == 0 {
+        let Some(child_header) = read_header(&mut reader)? else {
             break;
-        }
+        };
 
         if child_header.box_type == BOX_TYPE_JUMB {
-            // Manifest superbox: read description box for label
-            let desc_header = read_header(&mut reader)?;
-            if desc_header.box_type == BOX_TYPE_JUMD {
-                let desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
-
-                if desc.label == manifest_label {
-                    // Found the target manifest — find c2pa.signature box inside
-                    return find_signature_in_manifest(
-                        &mut reader,
-                        child_start + child_header.size,
-                    );
+            if let Some(desc_header) = read_header(&mut reader)? {
+                if desc_header.box_type == BOX_TYPE_JUMD {
+                    let desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
+                    if desc.label == manifest_label {
+                        return find_signature_in_manifest(
+                            &mut reader,
+                            child_start + child_header.size,
+                        );
+                    }
                 }
             }
         }
 
-        // Skip remaining bytes of this box
         reader
             .seek(SeekFrom::Start(child_start + child_header.size))
             .map_err(|e| {
@@ -274,25 +286,21 @@ fn find_signature_in_manifest(
 ) -> Result<Vec<u8>, ProcessorError> {
     while reader.position() < manifest_end {
         let box_start = reader.position();
-        let header = read_header(reader)?;
-        if header.box_type == 0 || header.size == 0 {
+        let Some(header) = read_header(reader)? else {
             break;
-        }
+        };
 
         if header.box_type == BOX_TYPE_JUMB {
-            // Read description box to check UUID
-            let desc_header = read_header(reader)?;
-            if desc_header.box_type == BOX_TYPE_JUMD {
-                let desc = read_desc_info(reader, desc_header.size - HEADER_SIZE)?;
-
-                if desc.uuid == CAI_SIGNATURE_UUID {
-                    // Found c2pa.signature superbox — extract CBOR box
-                    return find_cbor_in_box(reader, box_start + header.size);
+            if let Some(desc_header) = read_header(reader)? {
+                if desc_header.box_type == BOX_TYPE_JUMD {
+                    let desc = read_desc_info(reader, desc_header.size - HEADER_SIZE)?;
+                    if desc.uuid == CAI_SIGNATURE_UUID {
+                        return find_cbor_in_box(reader, box_start + header.size);
+                    }
                 }
             }
         }
 
-        // Skip remaining bytes of this box
         reader
             .seek(SeekFrom::Start(box_start + header.size))
             .map_err(|e| {
@@ -312,14 +320,12 @@ fn find_cbor_in_box(
 ) -> Result<Vec<u8>, ProcessorError> {
     while reader.position() < box_end {
         let box_start = reader.position();
-        let header = read_header(reader)?;
-        if header.box_type == 0 || header.size == 0 {
+        let Some(header) = read_header(reader)? else {
             break;
-        }
+        };
 
         if header.box_type == BOX_TYPE_CBOR {
             let data_len = header.size - HEADER_SIZE;
-            // Prevent OOM from oversized CBOR data
             if data_len > MAX_SIGNATURE_SIZE {
                 return Err(ProcessorError::C2paVerificationFailed(format!(
                     "CBOR box size exceeds limit: {data_len} > {MAX_SIGNATURE_SIZE}"
@@ -332,7 +338,6 @@ fn find_cbor_in_box(
             return Ok(data);
         }
 
-        // Skip this box
         reader
             .seek(SeekFrom::Start(box_start + header.size))
             .map_err(|e| {

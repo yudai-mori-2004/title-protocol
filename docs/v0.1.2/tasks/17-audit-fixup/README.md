@@ -266,7 +266,7 @@ OSS 成熟度（H）:
 |---|---|---|
 | 17a 暗号+attestation | done | 約 40 |
 | 17b proxy+tee | done | 約 47 |
-| 17c gateway+core | pending | 約 42 |
+| 17c gateway+core | done | 約 42 |
 | 17d solana+sp1 | pending | 約 58 |
 | 17e コメント+デッドコード | pending | 約 97 |
 | 17f ドキュメント+仕様 | pending | 約 67 |
@@ -350,3 +350,43 @@ OSS 成熟度（H）:
 **検証**: `cargo test --workspace` 全グリーン(proxy 5/5 含む新規 chunked テスト、tee 101/101、gateway 41/41 + 8/8 e2e、attestation-aws-nitro 2/2、crypto 28/28、solana 31/31、core 48/48)。
 
 **⚠ 実機確認必須**: `deploy/aws/scripts/run-stack.sh` の `--privileged` 削除は EC2 上で `--device /dev/vsock` のみで title-proxy が起動するか次回再デプロイ時に確認すること。失敗時は `--privileged` を一旦戻す。
+
+### 17c 完了内訳
+
+**K4 gateway (`crates/gateway/`)**
+- K4-mf001 encrypted response transparency: `TeeClient::process` を `Result<ProcessOutcome, _>` (`Plaintext(ProcessResponse)` | `Encrypted(Vec<u8>)`) に変更。`HttpTeeClient::process` が `Content-Type` を見て分岐、`/process` ハンドラは `application/octet-stream` をバイト透過する `Response` を返す
+- K4-mf002 body limit: `/process` と `/extension/solana` に `DefaultBodyLimit::max(64 KiB)` をレイヤ適用
+- K4-mf003 middleware comment: layer ordering の説明を axum/tower semantics と実行順序の両方を明示する形に書き直し
+- K4-mf004 status mapping: TEE upstream の 503→`TeeUnavailable`、429→`RateLimited`、4xx→新規 `TeeRejected{status}`(透過)、その他→`TeeError`。`tee_err` で upstream body は warn ログのみに留めクライアントには露出しない
+- K4-mf005 auth UTF-8: `parse_auth_header` を `Missing` / `Bearer(_)` / `Malformed` を区別する enum に。malformed は `Unauthorized("Malformed Authorization header")` で 401、rate_limit は anonymous バケットに集約
+- K4-sf001 bucket GC: `RateLimiter::prune_idle(Duration)` を追加し、`server::run` で 5 分おきに `window × 10` を idle 閾値として実行
+- K4-sf002 Mutex poison: `buckets.lock()` を `unwrap_or_else(|e| e.into_inner())` で defensive リカバリ
+- K4-sf003 reqwest tuning: `connect_timeout(5s)` / `pool_max_idle_per_host(16)` / `tcp_keepalive(60s)` を `HttpTeeClient::new` に追加
+- K4-sf004 ticker interval: `spawn_health_check` を `tokio::time::interval` + `MissedTickBehavior::Delay` に。最初の即時 tick は skip
+- K4-sf005 fail-safe refresh: `check_and_refresh` の `keys()` 失敗時を `false`(無視)から `true`(強制 refresh)に変更し、stale キーの serving を防ぐ
+- K4-sf006 atomic cache swap: `refresh_tee_info` をローカル `TeeInfoCache` 組み立て → `*self.tee_cache.write() = new` に変更し、部分失敗で半端な cache が見える状態を解消
+- K4-sf007 `Default` 削除: `GatewayConfig::Default` を撤廃、production の誤起動経路を断つ
+- K4-sf008 hot loop: `spawn_health_check` で `interval_secs.max(1)` を強制
+- K4-nitpick-003: `ApiKeySet::contains` の長すぎる "constant-time" コメントを実態に合わせた短い形に書き直し
+
+**K8 core (`crates/core/`)**
+- K8-mf001 dead public API: `processor_outputs.rs` を削除(`ProvenanceGraphOutput`/`GraphNode`/`GraphEdge`/`ImagePdqOutput`/`VideoVpdqOutput`/`FrameHash`/`CertVerifyOutput`/`CertChainEntry` は使われていない予示型)。残す `C2paVerifyOutput`/`SignerInfo`/`C2paAction` は `c2pa_verify.rs` に同居させる
+- K8-mf002 dead error type: `error.rs` を削除(`CoreError` は使われていない)、`ProcessorError` に統一
+- K8-mf003 visibility: `extract_signature_from_jumbf` を `pub` → `pub(crate)` に
+- K8-mf004 serde flatten guard: `ProcessorOutput::ok` で `data.is_object()` を強制、非オブジェクトは `error()` に振り替えて wire 形式を保護
+- K8-sf003 read_so_far: `if-as` precedence の罠を明示的に `label_bytes` 変数で展開
+- K8-sf004 ASCII guard: `read_desc_info` のラベル byte 読み込みで `is_ascii()` をチェック、非 ASCII は `C2paVerificationFailed` で reject
+- K8-sf005 MAX_SIGNATURE_SIZE: 16 MiB → 256 KiB に縮小(現実的な COSE 署名 + 証明書チェーン上限)
+- K8-sf006 read_header: `Ok(BoxHeader { size:0, type:0 })` のセンチネルを廃止し `Result<Option<BoxHeader>>` に。truncated header はエラーで明示
+- K8-sf007 active_label: doc コメントに C2PA 2.1 §13.4 の出典を追加
+- K8-sf008 module visibility: `c2pa_verify`/`processor`/`request`/`response`/`jumbf` を `pub` → 私有モジュール+トップレベル `pub use` flat 再エクスポートに統一
+- K8-sf009 ProcessorError Clone: `#[derive(Clone)]` を本体側で宣言、テスト内の手書き impl を削除
+
+**先送り(17e 範囲)**
+- K8-mf005 c2pa Reader 重複: orchestrator まで巻き込む API 変更が必要なため別セッションで対応
+- K8-sf001 ProcessorRegistry::execute 並列化: 仕様 §3.1 と実装の整合は spec 側で再検討(17f)
+- K8-sf002 ProcessRequest 型レベル不変条件: orchestrator 側の pre-check(17b-3 で対応済み)で実用上は十分
+- K8-sf010 image dev-dep: テスト fixture 化は scope 大、17g build/test セッションへ
+- K8-nitpick-001..007: 17e で一括対応
+
+**検証**: `cargo test --workspace` 全グリーン(core 39/39 — dead code 削除で 48→39、gateway 43/43 + 8/8 e2e — prune_idle テスト追加で 41→43、その他は不変)。

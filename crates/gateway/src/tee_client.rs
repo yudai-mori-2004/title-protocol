@@ -17,6 +17,18 @@ use crate::{
     SolanaExtensionResponse, SolanaKeysResponse,
 };
 
+/// Outcome of relaying `POST /process` to the TEE. The Gateway is a thin
+/// pass-through (spec §2.5, §1.7) — encrypted requests come back as raw
+/// `nonce || ciphertext` bytes (spec §2.4), so we cannot assume JSON.
+#[derive(Debug, Clone)]
+pub enum ProcessOutcome {
+    /// Plaintext JSON `ProcessResponse` body (unencrypted request path).
+    Plaintext(ProcessResponse),
+    /// Sealed bytes (`application/octet-stream`) returned by the TEE for an
+    /// encrypted request — passed through to the client verbatim.
+    Encrypted(Vec<u8>),
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -54,8 +66,9 @@ pub trait TeeClient: Send + Sync {
     /// GET /processors on TEE.
     async fn processors(&self) -> Result<ProcessorsResponse, TeeClientError>;
 
-    /// POST /process on TEE.
-    async fn process(&self, req: &ProcessRequest) -> Result<ProcessResponse, TeeClientError>;
+    /// POST /process on TEE. Returns either a plaintext `ProcessResponse`
+    /// or, for encrypted requests, the raw sealed bytes the TEE produced.
+    async fn process(&self, req: &ProcessRequest) -> Result<ProcessOutcome, TeeClientError>;
 
     /// GET /solana-keys on TEE. Returns None if extension not enabled.
     async fn solana_keys(&self) -> Result<Option<SolanaKeysResponse>, TeeClientError>;
@@ -87,6 +100,9 @@ impl HttpTeeClient {
         let client = reqwest::Client::builder()
             .user_agent("title-gateway/0.1.2")
             .timeout(std::time::Duration::from_secs(300))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .pool_max_idle_per_host(16)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
             .build()
             .expect("Failed to build HTTP client");
         Self { endpoint, client }
@@ -155,8 +171,45 @@ impl TeeClient for HttpTeeClient {
         self.get("/processors").await
     }
 
-    async fn process(&self, req: &ProcessRequest) -> Result<ProcessResponse, TeeClientError> {
-        self.post("/process", req).await
+    async fn process(&self, req: &ProcessRequest) -> Result<ProcessOutcome, TeeClientError> {
+        let url = format!("{}/process", self.endpoint);
+        let resp = self
+            .client
+            .post(&url)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| TeeClientError::Unreachable(e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(TeeClientError::HttpError { status, body });
+        }
+
+        // §2.4: encrypted responses are `application/octet-stream`; pass them
+        // through verbatim instead of forcing JSON.
+        let is_octet_stream = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.starts_with("application/octet-stream"))
+            .unwrap_or(false);
+
+        if is_octet_stream {
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| TeeClientError::ParseError(e.to_string()))?
+                .to_vec();
+            Ok(ProcessOutcome::Encrypted(bytes))
+        } else {
+            let body: ProcessResponse = resp
+                .json()
+                .await
+                .map_err(|e| TeeClientError::ParseError(e.to_string()))?;
+            Ok(ProcessOutcome::Plaintext(body))
+        }
     }
 
     async fn solana_keys(&self) -> Result<Option<SolanaKeysResponse>, TeeClientError> {

@@ -93,17 +93,26 @@ pub enum ProcessorStatus {
 }
 
 impl ProcessorOutput {
-    /// 成功時のProcessorOutputを構築する。
-    /// 仕様書 §3.1
+    /// Build a successful `ProcessorOutput`. Spec §3.1.
+    ///
+    /// `data` must be a JSON object — `#[serde(flatten)]` is only valid on
+    /// map-shaped inner values. A non-object falls through to an `error`
+    /// output so a processor returning a stray array or scalar produces a
+    /// well-formed response instead of malformed JSON.
     pub fn ok(data: serde_json::Value) -> Self {
+        if !data.is_object() {
+            return Self::error(format!(
+                "processor returned non-object data: {data}"
+            ));
+        }
         Self {
             status: ProcessorStatus::Ok,
             data,
         }
     }
 
-    /// エラー時のProcessorOutputを構築する。
-    /// 仕様書 §3.1 — エラー情報を含むが、他processorの実行には影響しない。
+    /// Error variant — recorded inline so the rest of the response stays
+    /// well-formed. Spec §3.1 (one processor failing doesn't affect others).
     pub fn error(message: impl Into<String>) -> Self {
         Self {
             status: ProcessorStatus::Error,

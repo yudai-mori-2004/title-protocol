@@ -45,37 +45,30 @@ pub struct GatewayConfig {
     pub health_check_interval_secs: u64,
 }
 
-impl Default for GatewayConfig {
-    fn default() -> Self {
-        Self {
-            bind_addr: "0.0.0.0:3000".to_string(),
-            tee_client: Box::new(crate::tee_client::HttpTeeClient::new(
-                "http://localhost:4000".to_string(),
-            )),
-            api_keys: vec![],
-            rate_limit_max: 100,
-            rate_limit_window_secs: 60,
-            health_check_interval_secs: 10,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
-/// Build the Gateway Axum router.
-/// Spec §2.5
-///
-/// Six endpoints with API key auth + rate limiting middleware.
+/// Build the Gateway Axum router. Spec §2.5.
 pub fn router(state: Arc<GatewayState>) -> Router {
+    use axum::extract::DefaultBodyLimit;
+
+    // ProcessRequest / SolanaExtensionRequest are pure metadata JSON; cap
+    // both POST bodies at 64 KiB so a malicious client can't exhaust the
+    // Gateway by streaming 100 MB JSON envelopes.
+    let post_limit = DefaultBodyLimit::max(64 * 1024);
+
     Router::new()
         .route("/keys", axum::routing::get(endpoints::handle_keys))
         .route(
             "/processors",
             axum::routing::get(endpoints::handle_processors),
         )
-        .route("/process", axum::routing::post(endpoints::handle_process))
+        .route(
+            "/process",
+            axum::routing::post(endpoints::handle_process).layer(post_limit.clone()),
+        )
         .route("/health", axum::routing::get(endpoints::handle_health))
         .route(
             "/solana-keys",
@@ -83,10 +76,14 @@ pub fn router(state: Arc<GatewayState>) -> Router {
         )
         .route(
             "/extension/solana",
-            axum::routing::post(endpoints::handle_solana_extension),
+            axum::routing::post(endpoints::handle_solana_extension).layer(post_limit),
         )
-        // Layer order: outermost runs first. We want rate limiting to gate
-        // even unauthenticated requests, so it sits *outside* the auth layer.
+        // axum/tower: layers added LATER wrap EARLIER ones (the last
+        // `.layer` call is the outermost middleware). The order below
+        // therefore executes as:
+        //   request → rate_limit → auth → handler
+        // so the anonymous bucket throttles unauthenticated traffic
+        // *before* the auth layer 401s it.
         .layer(middleware::from_fn_with_state(state.clone(), api_key_auth))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -121,6 +118,27 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error>
     // Background health checker
     state::spawn_health_check(state.clone(), config.health_check_interval_secs);
 
+    // Background GC for the per-identity rate-limit buckets. Runs every
+    // 5 minutes and drops buckets that have been full and untouched for
+    // 10× the rate-limit window — long enough that the identity has
+    // clearly stopped sending traffic.
+    {
+        let state = state.clone();
+        let window_secs = config.rate_limit_window_secs.max(1);
+        let idle_threshold = std::time::Duration::from_secs(window_secs.saturating_mul(10));
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+            ticker.tick().await; // skip the immediate first tick
+            loop {
+                ticker.tick().await;
+                let pruned = state.rate_limiter.prune_idle(idle_threshold);
+                if pruned > 0 {
+                    tracing::debug!(pruned, "rate-limit GC: removed idle buckets");
+                }
+            }
+        });
+    }
+
     let app = router(state);
 
     tracing::info!(addr = %config.bind_addr, "Gateway starting");
@@ -137,7 +155,7 @@ pub async fn run(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error>
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::tee_client::TeeClientError;
+    use crate::tee_client::{ProcessOutcome, TeeClientError};
     use crate::{
         HealthResponse, KeysResponse, ProcessorsResponse, SolanaExtensionRequest,
         SolanaExtensionResponse, SolanaKeysResponse,
@@ -192,6 +210,7 @@ pub(crate) mod tests {
         pub(crate) fn with_solana(self) -> Self {
             *self.solana_keys_response.lock().unwrap() = Some(SolanaKeysResponse {
                 solana_pubkey: "MockSolanaPubkey".into(),
+                registration_attestation_b64: String::new(),
             });
             *self.solana_ext_response.lock().unwrap() = Some(SolanaExtensionResponse {
                 partial_tx: "mock-partial-tx".into(),
@@ -243,7 +262,7 @@ pub(crate) mod tests {
         async fn process(
             &self,
             _req: &ProcessRequest,
-        ) -> Result<ProcessResponse, TeeClientError> {
+        ) -> Result<ProcessOutcome, TeeClientError> {
             if *self.should_fail.lock().unwrap() {
                 return Err(TeeClientError::Unreachable("mock failure".into()));
             }
@@ -251,6 +270,7 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap()
                 .clone()
+                .map(ProcessOutcome::Plaintext)
                 .ok_or_else(|| TeeClientError::Unreachable("no mock".into()))
         }
 

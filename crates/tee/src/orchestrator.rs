@@ -661,7 +661,7 @@ mod tests {
         let c2pa_result = &response.verifiable.results["c2pa-verify"];
         assert_eq!(
             c2pa_result.status,
-            title_core::response::ProcessorStatus::Ok
+            title_core::ProcessorStatus::Ok
         );
 
         // Verify attestation is present (Base64-encoded mock attestation)
@@ -712,7 +712,7 @@ mod tests {
         );
         assert_eq!(
             response.verifiable.results["c2pa-verify"].status,
-            title_core::response::ProcessorStatus::Ok
+            title_core::ProcessorStatus::Ok
         );
     }
 
@@ -799,12 +799,12 @@ mod tests {
         // c2pa-verify should succeed
         assert_eq!(
             response.verifiable.results["c2pa-verify"].status,
-            title_core::response::ProcessorStatus::Ok
+            title_core::ProcessorStatus::Ok
         );
         // Unknown processor should have error status
         assert_eq!(
             response.verifiable.results["nonexistent-proc"].status,
-            title_core::response::ProcessorStatus::Error
+            title_core::ProcessorStatus::Error
         );
     }
 
@@ -1106,7 +1106,7 @@ mod tests {
         let c2pa_result = &response.verifiable.results["c2pa-verify"];
         assert_eq!(
             c2pa_result.status,
-            title_core::response::ProcessorStatus::Ok
+            title_core::ProcessorStatus::Ok
         );
     }
 

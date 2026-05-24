@@ -15,13 +15,15 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use title_core::{ProcessRequest, ProcessResponse};
+use title_core::ProcessRequest;
 
 use crate::error::GatewayError;
 use crate::state::GatewayState;
-use crate::tee_client::TeeClientError;
+use crate::tee_client::{ProcessOutcome, TeeClientError};
 use crate::{
     HealthResponse, KeysResponse, ProcessorsResponse, SolanaExtensionRequest,
     SolanaExtensionResponse, SolanaKeysResponse,
@@ -35,7 +37,15 @@ fn tee_err(e: TeeClientError) -> GatewayError {
     match e {
         TeeClientError::Unreachable(msg) => GatewayError::TeeUnavailable(msg),
         TeeClientError::HttpError { status, body } => {
-            GatewayError::TeeError(format!("HTTP {status}: {body}"))
+            // Log the upstream body for debugging but don't leak it to the
+            // caller — clients see only the status code class.
+            tracing::warn!(status, body = %body, "TEE returned HTTP error");
+            match status {
+                503 => GatewayError::TeeUnavailable(format!("TEE upstream returned HTTP {status}")),
+                429 => GatewayError::RateLimited,
+                400..=499 => GatewayError::TeeRejected { status },
+                _ => GatewayError::TeeError(format!("TEE upstream returned HTTP {status}")),
+            }
         }
         TeeClientError::ParseError(msg) => GatewayError::TeeError(msg),
     }
@@ -81,28 +91,29 @@ pub async fn handle_processors(
 // POST /process (§2.5)
 // ---------------------------------------------------------------------------
 
-/// POST /process -- Relay attribute extraction request to TEE.
-/// Spec §2.5, §5.3
+/// POST /process — Relay attribute extraction request to TEE.
+/// Spec §2.5, §5.3.
 ///
-/// The Gateway authenticates the client, then forwards the ProcessRequest
-/// to the TEE and returns the ProcessResponse. If the TEE is unavailable,
-/// returns 503.
+/// Plaintext requests get a JSON `ProcessResponse`; encrypted requests
+/// (spec §2.4) get `application/octet-stream` with the sealed bytes
+/// forwarded verbatim.
 pub async fn handle_process(
     State(state): State<Arc<GatewayState>>,
     Json(request): Json<ProcessRequest>,
-) -> Result<Json<ProcessResponse>, GatewayError> {
+) -> Result<Response, GatewayError> {
     if !state.is_tee_available() {
-        return Err(GatewayError::TeeUnavailable(
-            "TEE is not available".into(),
-        ));
+        return Err(GatewayError::TeeUnavailable("TEE is not available".into()));
     }
 
-    state
-        .tee_client
-        .process(&request)
-        .await
-        .map(Json)
-        .map_err(tee_err)
+    match state.tee_client.process(&request).await.map_err(tee_err)? {
+        ProcessOutcome::Plaintext(body) => Ok(Json(body).into_response()),
+        ProcessOutcome::Encrypted(bytes) => Ok((
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/octet-stream")],
+            bytes,
+        )
+            .into_response()),
+    }
 }
 
 // ---------------------------------------------------------------------------

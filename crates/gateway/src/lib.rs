@@ -104,20 +104,29 @@ pub struct HealthResponse {
 // ---------------------------------------------------------------------------
 
 /// GET /solana-keys レスポンス。
-/// 仕様書 §2.5
+/// 仕様書 §2.5, §6.2
 ///
 /// Solana Extension用の公開鍵情報（Extension有効時のみ）。
+/// `registration_attestation_b64` は TEE 起動時に
+/// `user_data = SHA-256(solana_pubkey)` でバインドして取得した
+/// Attestation Document。Solana プログラムの `register_key` 命令に必要な
+/// SP1 Groth16 proof の入力として、運用者がオフホストの prover に渡す。
 ///
 /// # JSON例
 /// ```json
 /// {
-///   "solana_pubkey": "(Base58公開鍵)"
+///   "solana_pubkey": "(Base58公開鍵)",
+///   "registration_attestation_b64": "(Base64エンコード、空文字の場合は未対応ランタイム)"
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SolanaKeysResponse {
     /// Solana Ed25519公開鍵（Base58エンコード）。
     pub solana_pubkey: String,
+    /// 起動時 Attestation Document（Base64）。Spec §6.2。
+    /// 未対応ランタイム（mock など）では空文字。
+    #[serde(default)]
+    pub registration_attestation_b64: String,
 }
 
 // ---------------------------------------------------------------------------

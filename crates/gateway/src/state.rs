@@ -73,29 +73,39 @@ impl GatewayState {
     }
 
     /// Refresh cached TEE info by querying all TEE endpoints.
-    /// Spec §5.3 -- Called on startup and when TEE restart is detected.
+    /// Spec §5.3 — called on startup and when TEE restart is detected.
+    ///
+    /// Builds a fresh `TeeInfoCache` locally and only swaps it into the
+    /// shared cache once all four upstream calls succeed. A partial failure
+    /// (e.g. `solana_keys` errors after `keys` succeeded) leaves the cache
+    /// untouched so clients never see a half-updated state.
     pub async fn refresh_tee_info(&self) -> Result<(), TeeClientError> {
         let health = self.tee_client.health().await?;
         let keys = self.tee_client.keys().await?;
         let processors = self.tee_client.processors().await?;
         let solana_keys = self.tee_client.solana_keys().await?;
 
-        let mut cache = self.tee_cache.write().await;
-        cache.keys = Some(keys);
-        cache.processors = Some(processors);
-        cache.tee_type = health.tee_type.clone();
-        cache.solana_keys = solana_keys;
+        let new_cache = TeeInfoCache {
+            keys: Some(keys),
+            processors: Some(processors),
+            tee_type: health.tee_type.clone(),
+            solana_keys,
+        };
 
+        *self.tee_cache.write().await = new_cache;
         self.tee_available.store(true, Ordering::Release);
         tracing::info!(tee_type = ?health.tee_type, "TEE info refreshed");
         Ok(())
     }
 
     /// Check TEE health and refresh cache if TEE restarted.
-    /// Spec §5.3 -- TEE restart detection + key refresh.
+    /// Spec §5.3 — TEE restart detection + key refresh.
     ///
-    /// Restart is detected by comparing cached keys with live keys.
-    /// TEE generates fresh keys on each boot, so a key change means restart.
+    /// Restart is detected by comparing cached keys with live keys: TEE
+    /// generates fresh keys on each boot, so a key change means restart.
+    /// If the keys probe itself errors out we treat it as `changed` and
+    /// force a full refresh — fail-safe is to re-fetch, not to silently
+    /// keep serving stale public keys.
     pub async fn check_and_refresh(&self) {
         match self.tee_client.health().await {
             Ok(_health) => {
@@ -106,7 +116,10 @@ impl GatewayState {
                         let cache = self.tee_cache.read().await;
                         cache.keys.as_ref() != Some(&live_keys)
                     }
-                    Err(_) => false,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "keys probe failed; forcing refresh");
+                        true
+                    }
                 };
 
                 if was_unavailable || keys_changed {
@@ -131,13 +144,24 @@ impl GatewayState {
 }
 
 /// Spawn a background task that periodically checks TEE health.
-/// Spec §5.3 -- TEE restart detection.
+/// Spec §5.3 — TEE restart detection.
+///
+/// `interval_secs` is clamped to at least 1 second to prevent a hot loop;
+/// `tokio::time::interval` is used so the check fires at fixed wall-clock
+/// intervals regardless of how long each `check_and_refresh` takes
+/// (instead of `sleep(interval)` which silently drifts).
 pub fn spawn_health_check(state: Arc<GatewayState>, interval_secs: u64) {
+    let interval_secs = interval_secs.max(1);
     tokio::spawn(async move {
-        let interval = tokio::time::Duration::from_secs(interval_secs);
+        let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // First tick fires immediately; we want a delay before the first
+        // check so the initial `refresh_tee_info` in `server::run` has time
+        // to settle. Consume it.
+        ticker.tick().await;
         loop {
+            ticker.tick().await;
             state.check_and_refresh().await;
-            tokio::time::sleep(interval).await;
         }
     });
 }

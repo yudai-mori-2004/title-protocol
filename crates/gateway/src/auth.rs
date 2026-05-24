@@ -17,13 +17,30 @@ use axum::response::Response;
 use crate::error::GatewayError;
 use crate::state::GatewayState;
 
-/// Extract API key from the Authorization header.
-fn extract_api_key(req: &Request) -> Option<String> {
-    req.headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|s| s.to_string())
+/// Result of probing the `Authorization` header for a Bearer token.
+pub(crate) enum AuthHeader {
+    /// No `Authorization` header on the request.
+    Missing,
+    /// Header present and parsed; contains the API key string.
+    Bearer(String),
+    /// Header present but not a valid `Bearer <utf-8>`.
+    Malformed,
+}
+
+/// Inspect the `Authorization` header without judging the key itself.
+/// Shared between the auth and rate-limit middleware so a malformed header
+/// gets the same answer in both places.
+pub(crate) fn parse_auth_header(req: &Request) -> AuthHeader {
+    let Some(header) = req.headers().get("authorization") else {
+        return AuthHeader::Missing;
+    };
+    let Ok(text) = header.to_str() else {
+        return AuthHeader::Malformed;
+    };
+    match text.strip_prefix("Bearer ") {
+        Some(token) if !token.is_empty() => AuthHeader::Bearer(token.to_string()),
+        _ => AuthHeader::Malformed,
+    }
 }
 
 /// API key authentication middleware.
@@ -49,8 +66,19 @@ pub async fn api_key_auth(
         return Ok(next.run(req).await);
     }
 
-    let key = extract_api_key(&req)
-        .ok_or_else(|| GatewayError::Unauthorized("Missing Authorization header".into()))?;
+    let key = match parse_auth_header(&req) {
+        AuthHeader::Bearer(key) => key,
+        AuthHeader::Missing => {
+            return Err(GatewayError::Unauthorized(
+                "Missing Authorization header".into(),
+            ));
+        }
+        AuthHeader::Malformed => {
+            return Err(GatewayError::Unauthorized(
+                "Malformed Authorization header".into(),
+            ));
+        }
+    };
 
     if !state.api_keys.contains(&key) {
         return Err(GatewayError::Unauthorized("Invalid API key".into()));
@@ -83,18 +111,11 @@ impl ApiKeySet {
         self.keys.is_empty()
     }
 
-    /// API key validation with constant-time per-entry comparison.
-    ///
-    /// Walks every configured key (never short-circuits on a match) and uses
-    /// a XOR-accumulator inner comparison. Length-mismatched entries still
-    /// consume a constant number of comparisons against a fixed zero buffer
-    /// so the total time depends on the configured set size and the longest
-    /// stored key length, not on which (if any) entry matched.
-    ///
-    /// Note: candidates whose length doesn't appear in the configured set
-    /// will leak that fact via overall execution time differences (no entry
-    /// performs a same-length compare). API keys are typically high-entropy
-    /// fixed-length tokens, making this leak negligible in practice.
+    /// Compare candidate against every configured key with a branchless
+    /// XOR accumulator. Length-mismatched entries are skipped, so total
+    /// runtime leaks the candidate's length (not which entry matched).
+    /// API keys are high-entropy fixed-length tokens, so this leak is
+    /// negligible. Never short-circuits on a match.
     pub fn contains(&self, candidate: &str) -> bool {
         let candidate_bytes = candidate.as_bytes();
         let mut matched: u8 = 0;
@@ -107,8 +128,6 @@ impl ApiKeySet {
             for (a, b) in stored_bytes.iter().zip(candidate_bytes.iter()) {
                 diff |= a ^ b;
             }
-            // `is_zero = 1` iff diff == 0. Computed branchlessly so we never
-            // short-circuit on the first match.
             let is_zero = ((diff as u16).wrapping_sub(1) >> 8) as u8 & 1;
             matched |= is_zero;
         }
@@ -137,28 +156,40 @@ mod tests {
     }
 
     #[test]
-    fn extract_bearer_token() {
+    fn parse_bearer_token() {
         let req = axum::http::Request::builder()
             .header("authorization", "Bearer test-key-123")
             .body(axum::body::Body::empty())
             .unwrap();
-        assert_eq!(extract_api_key(&req), Some("test-key-123".to_string()));
+        assert!(matches!(parse_auth_header(&req), AuthHeader::Bearer(ref s) if s == "test-key-123"));
     }
 
     #[test]
-    fn extract_missing_header() {
+    fn parse_missing_header() {
         let req = axum::http::Request::builder()
             .body(axum::body::Body::empty())
             .unwrap();
-        assert_eq!(extract_api_key(&req), None);
+        assert!(matches!(parse_auth_header(&req), AuthHeader::Missing));
     }
 
     #[test]
-    fn extract_wrong_scheme() {
+    fn parse_wrong_scheme() {
         let req = axum::http::Request::builder()
             .header("authorization", "Basic dXNlcjpwYXNz")
             .body(axum::body::Body::empty())
             .unwrap();
-        assert_eq!(extract_api_key(&req), None);
+        assert!(matches!(parse_auth_header(&req), AuthHeader::Malformed));
+    }
+
+    #[test]
+    fn parse_non_utf8_header() {
+        let req = axum::http::Request::builder()
+            .header(
+                "authorization",
+                axum::http::HeaderValue::from_bytes(&[0xff, 0xff]).unwrap(),
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(matches!(parse_auth_header(&req), AuthHeader::Malformed));
     }
 }

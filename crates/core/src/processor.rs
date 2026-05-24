@@ -57,7 +57,7 @@ pub trait Processor: Send + Sync {
 ///
 /// processorが処理に失敗した場合に返す。
 /// このエラーは他processorの実行に影響しない。
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ProcessorError {
     /// コンテンツ形式が非対応。
     #[error("Unsupported content type: {content_type}")]
@@ -170,21 +170,6 @@ mod tests {
             _content_type: &str,
         ) -> Result<serde_json::Value, ProcessorError> {
             self.result.clone()
-        }
-    }
-
-    impl Clone for ProcessorError {
-        fn clone(&self) -> Self {
-            match self {
-                Self::UnsupportedContentType { content_type } => {
-                    Self::UnsupportedContentType {
-                        content_type: content_type.clone(),
-                    }
-                }
-                Self::ParseFailed(s) => Self::ParseFailed(s.clone()),
-                Self::C2paVerificationFailed(s) => Self::C2paVerificationFailed(s.clone()),
-                Self::Internal(s) => Self::Internal(s.clone()),
-            }
         }
     }
 

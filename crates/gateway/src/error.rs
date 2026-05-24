@@ -9,17 +9,22 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-/// Gateway error.
-/// Spec §5.3
+/// Gateway error. Spec §5.3.
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
     /// TEE is not reachable or not ready (503).
     #[error("TEE unavailable: {0}")]
     TeeUnavailable(String),
 
-    /// TEE returned an error (502).
+    /// Gateway-side or transport failure when reaching the TEE (502).
     #[error("TEE error: {0}")]
     TeeError(String),
+
+    /// TEE accepted the relay but returned a client error itself (4xx).
+    /// The original status code is passed through so client retry logic
+    /// sees the same semantics as if it had called the TEE directly.
+    #[error("TEE rejected request (HTTP {status})")]
+    TeeRejected { status: u16 },
 
     /// Client authentication failed (401).
     #[error("Unauthorized: {0}")]
@@ -29,8 +34,8 @@ pub enum GatewayError {
     #[error("Rate limit exceeded")]
     RateLimited,
 
-    /// Requested resource not available -- e.g. Solana endpoints
-    /// when extension is not enabled (404).
+    /// Requested resource not available — e.g. Solana endpoints
+    /// when the extension is not enabled (404).
     #[error("Not found: {0}")]
     NotFound(String),
 }
@@ -40,6 +45,9 @@ impl IntoResponse for GatewayError {
         let status = match &self {
             GatewayError::TeeUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             GatewayError::TeeError(_) => StatusCode::BAD_GATEWAY,
+            GatewayError::TeeRejected { status } => {
+                StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
+            }
             GatewayError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             GatewayError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             GatewayError::NotFound(_) => StatusCode::NOT_FOUND,

@@ -22,12 +22,6 @@ use crate::signing_key::SolanaSigningKey;
 pub const SPL_ACCOUNT_COMPRESSION_V2_ID: Pubkey =
     pubkey!("mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW");
 
-/// Compatibility shim — prefer [`SPL_ACCOUNT_COMPRESSION_V2_ID`] directly.
-#[inline]
-pub fn spl_account_compression_v2_id() -> Pubkey {
-    SPL_ACCOUNT_COMPRESSION_V2_ID
-}
-
 /// Derive Bubblegum tree_config PDA. Seeds: `[merkle_tree]`.
 pub fn derive_tree_config(merkle_tree: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[merkle_tree.as_ref()], &mpl_bubblegum::ID)
@@ -37,7 +31,7 @@ pub fn derive_tree_config(merkle_tree: &Pubkey) -> (Pubkey, u8) {
 /// into an MPL Core collection. Seeds: `[b"mpl_core_cpi_signer"]`,
 /// program = Bubblegum. The seed is defined inside the Bubblegum program
 /// (not re-exported); keep this in sync if Bubblegum changes the convention.
-pub fn derive_mpl_core_cpi_signer() -> (Pubkey, u8) {
+pub(crate) fn derive_mpl_core_cpi_signer() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"mpl_core_cpi_signer"], &mpl_bubblegum::ID)
 }
 
@@ -95,7 +89,7 @@ pub fn build_create_tree_tx(
         tree_pubkey,
         lamports,
         space as u64,
-        &spl_account_compression_v2_id(),
+        &SPL_ACCOUNT_COMPRESSION_V2_ID,
     );
 
     let (tree_config, _) = derive_tree_config(tree_pubkey);

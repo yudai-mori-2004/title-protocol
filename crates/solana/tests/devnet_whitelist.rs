@@ -438,7 +438,7 @@ fn cnft_full_flow_devnet() {
     );
     assert_eq!(
         tree_account.owner,
-        cnft::spl_account_compression_v2_id(),
+        cnft::SPL_ACCOUNT_COMPRESSION_V2_ID,
         "Tree should be owned by spl-account-compression V2"
     );
 

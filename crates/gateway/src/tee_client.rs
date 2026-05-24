@@ -20,7 +20,7 @@ use crate::{
 /// Outcome of relaying `POST /process` to the TEE. The Gateway is a thin
 /// pass-through (spec §2.5, §1.7) — encrypted requests come back as raw
 /// `nonce || ciphertext` bytes (spec §2.4), so we cannot assume JSON.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ProcessOutcome {
     /// Plaintext JSON `ProcessResponse` body (unencrypted request path).
     Plaintext(ProcessResponse),

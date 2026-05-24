@@ -171,3 +171,23 @@ Round 1 で must-fix とした「外部参照ゼロかつ仕様の現フェー�
 新規発見は K5-nitpick-002 (`pubkey!` const 化) と K4-mf001 (`ProcessOutcome`) の副作用で生まれた小型 dead が中心で、いずれも `cargo build` の `dead_code` lint を有効化すれば自動検出可能なレベル。次フェーズで `#![deny(dead_code)]` を `crates/solana` 等から段階的に有効化し、`#[allow(dead_code)]` を意図的に付ける箇所だけ残す運用に移ると、N-1〜N-8 のような取りこぼしが構造的に防げる。
 
 監査終了。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| B-1/B-2/B-4/B-5/B-6/B-8/B-13/B-14/B-15/B-22/B-23/B-24/B-25/B-27/B-28/B-31 | fixed | Round 2 認定済み。 |
+| B-3/B-7/B-11/B-12/B-17/B-18/B-19/B-20/B-21/B-26/B-29/B-30/B-32 | wontfix(17e の defer/decision README で「SDK 化想定 / 並列化リファクタ / test 専用境界」として明文化済み。本 audit ラウンドで蒸し返す価値が薄い) | |
+| B-9 | partially-fixed(`orchestrator.rs` の独自 `MockRuntime` は test 内 `last_user_data` 観測のため `runtime::mock::MockRuntime` に統合できない設計。`StubRuntime` 分離で実装数 3 → 2 にした現状で妥当) | |
+| B-10 | partially-fixed(K5-sf003 で `has_public_key` を末尾チェックに昇格。dead から forward-compat slot に再分類済み) | |
+| B-16 | partially-fixed(`pubkey_hash` は production 利用に格上げ。残る `from_seed`/`verifying_key`/`pubkey_bytes` は SDK 公開 API の最小セットとして温存) | |
+| N-1 | fixed | `crates/solana/src/whitelist.rs::whitelist_program_id()` thin wrapper を削除。呼び出し箇所ゼロを確認済み。`WHITELIST_PROGRAM_ID` 定数を直接使う形に統一。 |
+| N-2 | fixed | `crates/solana/src/cnft.rs::spl_account_compression_v2_id()` thin wrapper を削除。`cnft.rs:92` 内部呼び出しと `devnet_whitelist.rs:441` の test 呼び出しを `SPL_ACCOUNT_COMPRESSION_V2_ID` 定数直接参照に置換。 |
+| N-3 | wontfix(`estimate_decoded_size` / `validate_decoded_size` / `DecodedSizeExceeded` は単体テスト網羅されており、image-pdq/video-vpdq processor 実装時に再活用予定。削除すると後で復元コストが嵩むため温存) | |
+| N-4 | fixed | `derive_mpl_core_cpi_signer` を `pub(crate)` に変更。SDK 公開 API surface を縮小。 |
+| N-5 | fixed | `ProcessOutcome` から `Clone` derive を削除。`Encrypted(Vec<u8>)` の無駄な heap clone コストを排除。`Debug` のみ維持。 |
+| N-6 | fixed | `MockAttestationVerifier` から `Default` derive を削除。呼び出しゼロ確認済み。`new()` のみで構築。 |
+| N-7 | wontfix(`AttestationError::MissingField` は `crates/attestation-aws-nitro/src/lib.rs:72` で実際に PCR0 取得失敗時に発火している。audit の grep が漏れていた) | |
+| N-8 | fixed | `crates/tee/src/runtime/mock.rs` から `impl Default for MockRuntime` を削除。呼び出しゼロ確認済み。 |

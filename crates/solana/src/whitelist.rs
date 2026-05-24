@@ -91,14 +91,6 @@ impl WhitelistEntry {
 pub const WHITELIST_PROGRAM_ID: Pubkey =
     pubkey!("43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs");
 
-/// Returns the whitelist program ID as a `Pubkey` value.
-///
-/// Prefer the [`WHITELIST_PROGRAM_ID`] constant directly when possible.
-#[inline]
-pub fn whitelist_program_id() -> Pubkey {
-    WHITELIST_PROGRAM_ID
-}
-
 /// Derive the whitelist PDA for a given signing public key.
 pub fn derive_whitelist_pda(signing_pubkey: &[u8; 32]) -> (Pubkey, u8) {
     Pubkey::find_program_address(

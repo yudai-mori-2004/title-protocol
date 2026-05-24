@@ -94,7 +94,7 @@ mod mock {
     /// Accepts attestations of the form `"mock-attestation:" || user_data`,
     /// returns a zero-measurement `VerifiedAttestation` whose `user_data`
     /// is the trailing bytes. Gated behind the `mock` feature.
-    #[derive(Debug, Default, Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     pub struct MockAttestationVerifier;
 
     impl MockAttestationVerifier {

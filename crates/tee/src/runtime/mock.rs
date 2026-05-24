@@ -27,12 +27,6 @@ impl MockRuntime {
     }
 }
 
-impl Default for MockRuntime {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl TeeRuntime for MockRuntime {
     fn tee_type(&self) -> &str {
         "mock"

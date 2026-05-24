@@ -99,7 +99,7 @@ async fn handle_keys(State(state): State<Arc<TeeAppState>>) -> impl IntoResponse
 /// Spec §2.5
 async fn handle_processors(State(state): State<Arc<TeeAppState>>) -> impl IntoResponse {
     Json(serde_json::json!({
-        "processor_ids": state.registry.processor_ids(),
+        "processors": state.registry.processor_ids(),
     }))
 }
 
@@ -347,7 +347,7 @@ mod tests {
         let app = router(state);
         let (status, json) = get(&app, "/processors").await;
         assert_eq!(status, StatusCode::OK);
-        let ids = json["processor_ids"].as_array().unwrap();
+        let ids = json["processors"].as_array().unwrap();
         assert!(ids.iter().any(|v| v.as_str() == Some("c2pa-verify")));
     }
 

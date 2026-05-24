@@ -29,18 +29,10 @@ pub enum GatewayError {
     #[error("Rate limit exceeded")]
     RateLimited,
 
-    /// Invalid request from client (400).
-    #[error("Bad request: {0}")]
-    BadRequest(String),
-
     /// Requested resource not available -- e.g. Solana endpoints
     /// when extension is not enabled (404).
     #[error("Not found: {0}")]
     NotFound(String),
-
-    /// Internal server error (500).
-    #[error("Internal error: {0}")]
-    Internal(String),
 }
 
 impl IntoResponse for GatewayError {
@@ -50,9 +42,7 @@ impl IntoResponse for GatewayError {
             GatewayError::TeeError(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             GatewayError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            GatewayError::BadRequest(_) => StatusCode::BAD_REQUEST,
             GatewayError::NotFound(_) => StatusCode::NOT_FOUND,
-            GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         let body = serde_json::json!({ "error": self.to_string() });
@@ -81,16 +71,8 @@ mod tests {
             ),
             (GatewayError::RateLimited, StatusCode::TOO_MANY_REQUESTS),
             (
-                GatewayError::BadRequest("bad".into()),
-                StatusCode::BAD_REQUEST,
-            ),
-            (
                 GatewayError::NotFound("no".into()),
                 StatusCode::NOT_FOUND,
-            ),
-            (
-                GatewayError::Internal("err".into()),
-                StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ];
 

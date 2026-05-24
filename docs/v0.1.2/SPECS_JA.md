@@ -150,6 +150,8 @@ Attestation Document（構成証明書）とは、TEEのハードウェアが自
 | user_data | TEE内のプログラムが任意に指定できるデータ領域 |
 | ベンダー証明書チェーン | ハードウェアベンダー（AWS等）のルート証明書に連鎖する署名 |
 
+測定値はTEE起動時に計算され、TEEの稼働中は変化しない。どのリクエストを処理しても同じ値であり、「何のプログラムが動いているか」を証明する。一方、user_dataはプログラムがAttestation Documentを要求するたびに任意の値を指定でき、「そのプログラムがその時点で何を出力したか」をバインドするために使う。
+
 Title Protocolは、このuser_dataフィールドに**処理結果のハッシュ**を埋め込む。
 
 これにより、Attestation Documentは以下の二つを同時に証明する。
@@ -349,6 +351,13 @@ Gatewayはリクエストをそのままにするか拒否するかだけであ�
 }
 ```
 
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `input_type` | String | Yes | `"single"` 固定 |
+| `content_url` | String | Yes | コンテンツの取得URL |
+| `processor_ids` | Array\<String\> | Yes | 実行するprocessorのID一覧 |
+| `encryption` | String | No | 暗号化スイート名（後述） |
+
 ### フラグメント
 
 ```json
@@ -364,6 +373,14 @@ Gatewayはリクエストをそのままにするか拒否するかだけであ�
 }
 ```
 
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `input_type` | String | Yes | `"fragmented"` 固定 |
+| `init_url` | String | Yes | 初期化セグメントのURL |
+| `fragment_urls` | Array\<String\> | Yes | メディアセグメントのURL一覧（順序保持） |
+| `processor_ids` | Array\<String\> | Yes | 実行するprocessorのID一覧 |
+| `encryption` | String | No | 暗号化スイート名（後述） |
+
 ### サイドカー
 
 ```json
@@ -374,6 +391,14 @@ Gatewayはリクエストをそのままにするか拒否するかだけであ�
   "processor_ids": ["c2pa-verify"]
 }
 ```
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `input_type` | String | Yes | `"sidecar"` 固定 |
+| `manifest_url` | String | Yes | C2PAマニフェスト（.c2pa）のURL |
+| `content_url` | String | Yes | コンテンツ本体のURL |
+| `processor_ids` | Array\<String\> | Yes | 実行するprocessorのID一覧 |
+| `encryption` | String | No | 暗号化スイート名（後述） |
 
 ### 暗号化あり
 
@@ -394,6 +419,8 @@ Gatewayはリクエストをそのままにするか拒否するかだけであ�
 
 TEEは、全processorの結果をまとめた処理結果と、その処理結果のハッシュを埋め込んだAttestation Documentを返す。
 
+**Response:**
+
 ```json
 {
   "signature_hash": "sha256:abcdef1234...",
@@ -413,11 +440,13 @@ TEEは、全processorの結果をまとめた処理結果と、その処理結�
 }
 ```
 
-`signature_hash`はc2pa-verifyが算出するActive Manifestの署名のSHA-256ハッシュであり、全レスポンスに含まれる。これにより処理結果が特定のコンテンツにバインドされる。
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `signature_hash` | String | Active ManifestのC2PA署名のSHA-256ハッシュ。`"sha256:"` プレフィクス付き。処理結果を特定のコンテンツにバインドする |
+| `results` | Object | processor IDをキー、各processorの出力を値とするマップ。内部構造はprocessorごとに異なる（セクション3参照） |
+| `attestation` | String | Attestation DocumentのバイナリをBase64エンコードしたもの |
 
-`results`の内部構造はprocessorごとに異なる。各processorが何を出力するかは、セクション3で定義する。
-
-検証者は、レスポンス全体（`signature_hash` + `results`）をJCS（JSON Canonicalization Scheme, RFC 8785）で正規化した上でハッシュを計算し、Attestation Document内の`user_data`と照合することで、結果の完全性を確認できる。
+検証者は、レスポンスの `signature_hash` + `results` をJCS（JSON Canonicalization Scheme, RFC 8785）で正規化した上でSHA-256ハッシュを計算し、Attestation Document内の`user_data`と照合することで、結果の完全性を確認できる。
 
 暗号化モードでは、上記のJSONがresponse_keyで暗号化された状態で返却される（セクション2.4参照）。クライアントは復号後に同じJSON構造を得る。
 
@@ -544,6 +573,8 @@ Gatewayは以下のエンドポイントを公開する。
 
 TEEが現在保持している暗号化用公開鍵の一覧を返す。
 
+**Response:**
+
 ```json
 {
   "keys": {
@@ -554,11 +585,19 @@ TEEが現在保持している暗号化用公開鍵の一覧を返す。
 }
 ```
 
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `keys` | Object | スイート名をキー、Base64エンコードされた公開鍵を値とするマップ |
+
 TEE再起動時に鍵は更新される。クライアントは暗号化の直前にこのエンドポイントを呼び出し、最新の鍵を取得する。
+
+---
 
 ### GET /processors
 
 対応しているprocessorの一覧を返す。
+
+**Response:**
 
 ```json
 {
@@ -566,17 +605,51 @@ TEE再起動時に鍵は更新される。クライアントは暗号化の直�
 }
 ```
 
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `processors` | Array\<String\> | 対応しているprocessor IDの一覧 |
+
+---
+
 ### POST /process
 
-属性抽出リクエストを受け付け、TEEに中継する。リクエスト・レスポンスの形式はセクション2.2、2.3で定義した通り。
+属性抽出リクエストを受け付け、TEEに中継する。
+
+**Request:** セクション2.2で定義したリクエスト形式。
+
+**Response:** セクション2.3で定義したレスポンス形式。
+
+Gatewayはリクエストとレスポンスをそのまま中継する。内容の改変は行わない。
+
+---
 
 ### GET /health
 
 TEEの稼働状態を返す。
 
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "tee_type": "aws-nitro"
+}
+```
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `status` | String | Yes | `"ok"`: リクエスト受付可能。`"unavailable"`: TEEが利用不可 |
+| `tee_type` | String | No | TEE実行環境の種別。`"aws-nitro"`, `"amd-sev"`, `"mock"` 等 |
+
+認証なしでアクセス可能。
+
+---
+
 ### GET /solana-keys
 
-Solana Extension用の公開鍵情報を返す（Solana Extension有効時のみ）。
+Solana Extension用の公開鍵情報を返す。Solana Extensionが無効の場合は404を返す。
+
+**Response:**
 
 ```json
 {
@@ -584,9 +657,19 @@ Solana Extension用の公開鍵情報を返す（Solana Extension有効時のみ
 }
 ```
 
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `solana_pubkey` | String | TEEが保持するSolana用Ed25519公開鍵（Base58エンコード） |
+
+---
+
 ### POST /extension/solana
 
-Solana Extensionリクエストを受け付け、TEEに中継する。詳細はセクション6.2で定義する。
+Solana Extensionリクエストを受け付け、TEEに中継する。Solana Extensionが無効の場合は404を返す。
+
+**Request:** セクション6.2で定義したリクエスト形式。
+
+**Response:** セクション6.2で定義したレスポンス形式。
 
 # 3. Processor
 
@@ -1136,6 +1219,14 @@ TEEの内部で行われるAttestation Documentの検証がこの仕組みの核
 }
 ```
 
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `offchain_data_url` | String | Yes | コア処理結果（処理結果 + Attestation Document）のオフチェーンデータURL |
+| `payer` | String | Yes | Fee payerかつleaf_ownerのSolana公開鍵（Base58エンコード） |
+| `merkle_tree` | String | Yes | cNFT発行先のMerkle Treeアドレス（Base58エンコード） |
+| `recent_blockhash` | String | Yes | クライアントが直前に取得したBlockhash（Base58エンコード） |
+| `collection` | String | No | コレクションアドレス（Base58エンコード）。開発者が選択するもので、信頼モデルの一部ではない |
+
 #### レスポンス形式
 
 ```json
@@ -1143,6 +1234,10 @@ TEEの内部で行われるAttestation Documentの検証がこの仕組みの核
   "partial_tx": "Base64エンコードされた部分署名済みトランザクション"
 }
 ```
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `partial_tx` | String | TEEの署名鍵で部分署名済みのトランザクション（Base64エンコード）。クライアントが最終署名してブロードキャストする |
 
 クライアントは返却されたトランザクションに自身のウォレットで最終署名を行い、Solanaにブロードキャストする。Blockhashの有効期限（約60〜90秒）内にブロードキャストを完了しなかった場合、トランザクションは無効となり、新しいBlockhashで再リクエストが必要になる。
 

@@ -85,8 +85,20 @@ impl ApiKeySet {
         self.keys.is_empty()
     }
 
-    pub fn contains(&self, key: &str) -> bool {
-        self.keys.contains(key)
+    /// Constant-time API key validation to prevent timing attacks.
+    pub fn contains(&self, candidate: &str) -> bool {
+        let candidate_bytes = candidate.as_bytes();
+        self.keys.iter().any(|stored| {
+            let stored_bytes = stored.as_bytes();
+            if stored_bytes.len() != candidate_bytes.len() {
+                return false;
+            }
+            let mut diff = 0u8;
+            for (a, b) in stored_bytes.iter().zip(candidate_bytes.iter()) {
+                diff |= a ^ b;
+            }
+            diff == 0
+        })
     }
 }
 

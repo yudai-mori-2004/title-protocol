@@ -93,16 +93,23 @@ impl GatewayState {
 
     /// Check TEE health and refresh cache if TEE restarted.
     /// Spec §5.3 -- TEE restart detection + key refresh.
+    ///
+    /// Restart is detected by comparing cached keys with live keys.
+    /// TEE generates fresh keys on each boot, so a key change means restart.
     pub async fn check_and_refresh(&self) {
         match self.tee_client.health().await {
-            Ok(health) => {
+            Ok(_health) => {
                 let was_unavailable = !self.tee_available.load(Ordering::Acquire);
-                let tee_type_changed = {
-                    let cache = self.tee_cache.read().await;
-                    cache.tee_type.as_deref() != health.tee_type.as_deref()
+
+                let keys_changed = match self.tee_client.keys().await {
+                    Ok(live_keys) => {
+                        let cache = self.tee_cache.read().await;
+                        cache.keys.as_ref() != Some(&live_keys)
+                    }
+                    Err(_) => false,
                 };
 
-                if was_unavailable || tee_type_changed {
+                if was_unavailable || keys_changed {
                     tracing::info!("TEE restart detected, refreshing info");
                     if let Err(e) = self.refresh_tee_info().await {
                         tracing::error!(error = %e, "Failed to refresh TEE info");

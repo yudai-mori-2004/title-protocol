@@ -87,7 +87,9 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | §5.3 | Gateway: client auth + rate limiting | [x] | crates/gateway/src/auth.rs (ApiKeySet + Bearer token middleware) + crates/gateway/src/rate_limit.rs (token bucket per API key, 4 tests) + crates/gateway/src/server.rs (middleware layer, 5 auth tests + 1 rate limit test) | 10 |
 | §5.3 | Gateway: TEE info relay | [x] | crates/gateway/src/state.rs (TeeInfoCache with RwLock, refresh_tee_info) + crates/gateway/src/endpoints.rs (cached responses for /keys, /processors, /health, /solana-keys) | 10 |
 | §5.3 | Gateway: request proxy | [x] | crates/gateway/src/tee_client.rs (TeeClient trait + HttpTeeClient) + crates/gateway/src/endpoints.rs (handle_process, handle_solana_extension: relay to TEE) | 10 |
-| §5.3 | Gateway: TEE restart detection + key refresh | [x] | crates/gateway/src/state.rs (check_and_refresh: polls TEE health, detects tee_type change or recovery, refreshes cache; spawn_health_check background task, 2 tests) | 10 |
+| §5.3 | Gateway: TEE restart detection + key refresh | [x] | crates/gateway/src/state.rs (check_and_refresh: polls TEE health, detects key change or recovery, refreshes cache; spawn_health_check background task, 2 tests) | 10, 14 |
+| §5.3 | Gateway: binary + startup sequence | [x] | crates/gateway/src/main.rs (env config → HttpTeeClient → GatewayConfig → server::run; TEE_ENDPOINT, API_KEYS env vars) + crates/gateway/Cargo.toml ([[bin]]) | 14 |
+| §5.3 | Gateway ↔ TEE HTTP integration (HttpTeeClient) | [x] | crates/gateway/src/tee_client.rs (HttpTeeClient: reqwest-based, 6 endpoints) + crates/gateway/tests/e2e.rs (8 E2E tests: health, keys, processors, solana-keys, process signed/unsigned, API key auth, TEE restart detection) | 10, 14 |
 | §5.4 | Reproducible build (Dockerfile, Cargo.lock, toolchain pinning) | [ ] | | |
 
 ### 6. Extension (§6)

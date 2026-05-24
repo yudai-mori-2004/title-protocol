@@ -7520,15 +7520,22 @@ version = "0.1.2"
 dependencies = [
  "async-trait",
  "axum",
+ "c2pa",
  "http-body-util",
+ "image",
+ "rand 0.8.6",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "title-core",
+ "title-crypto",
+ "title-solana",
+ "title-tee",
  "tokio",
  "tower",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

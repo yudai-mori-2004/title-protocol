@@ -7,19 +7,30 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[[bin]]
+name = "title-gateway"
+path = "src/main.rs"
+
 [dependencies]
 title-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 axum = "0.8"
-tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros", "net", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tracing = "0.1"
+tracing-subscriber = "0.3"
 async-trait = "0.1"
 
 [dev-dependencies]
 serde_json = { workspace = true }
+c2pa = { workspace = true }
+image = { workspace = true }
+title-tee = { path = "../tee" }
+title-crypto = { workspace = true }
+title-solana = { workspace = true }
+rand = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

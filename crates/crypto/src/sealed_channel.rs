@@ -29,12 +29,7 @@ fn suite_aad(suite_id: u8, encap_key_len: usize) -> [u8; 3] {
 }
 
 /// Result of TEE-side decryption.
-///
-/// `suite` is the encryption suite parsed from the wire header; it is
-/// guaranteed to equal the `expected_suite` passed to `open_request` (the
-/// mismatch case is rejected before this struct is constructed).
 pub struct OpenedRequest {
-    pub suite: EncryptionSuite,
     pub plaintext: Vec<u8>,
     pub response_channel: ResponseChannel,
 }
@@ -78,6 +73,17 @@ pub fn seal_for(
 ) -> Result<(Vec<u8>, ResponseChannel), CryptoError> {
     let encapsulator = create_encapsulator(suite, public_key)?;
     let (shared_secret, encap_key) = encapsulator.encapsulate()?;
+
+    // KEM 実装は suite ごとに固定長の encap_key を返すことが invariant
+    // (X25519=32B / P-256=65B / ML-KEM-768=1088B)。AAD と HKDF salt に
+    // 入る長さがズレるとレスポンスが復号できなくなるため、将来 KEM 実装
+    // を差し替えた時にここで局所化させる。
+    debug_assert_eq!(
+        encap_key.len(),
+        crate::kem::encap_key_len(suite),
+        "Encapsulator::encapsulate returned wrong encap_key length"
+    );
+
     let (request_key, response_key) = hkdf::derive_keys(&shared_secret, &encap_key)?;
 
     let mut nonce = [0u8; NONCE_SIZE];
@@ -121,7 +127,6 @@ pub fn open_request(
     let plaintext = aead::decrypt(&request_key, parsed.nonce, parsed.ciphertext, &aad)?;
 
     Ok(OpenedRequest {
-        suite: parsed.suite,
         plaintext,
         response_channel: ResponseChannel {
             response_key,

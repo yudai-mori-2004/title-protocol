@@ -42,10 +42,13 @@ impl MlKem768Encapsulator {
 
 impl Encapsulator for MlKem768Encapsulator {
     fn encapsulate(&self) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
-        // Read 32 bytes from OsRng and feed them to encapsulate_deterministic
-        // (rather than the rng-taking `Encapsulate::encapsulate`) so this
-        // path is infallible: the deterministic variant returns
-        // `(Ciphertext, SharedKey)` directly without an error case.
+        // OsRng から 32 バイトの seed を読み、`encapsulate_deterministic` に
+        // 渡す。ml-kem 0.3.x では `Encapsulate::encapsulate_with_rng` も内部で
+        // 同じ deterministic パスを通るため両者は等価だが、ここで具象メソッド
+        // を選んだ理由は (1) trait dispatch を経由しないことで将来の trait API
+        // 変更 (ml-kem 0.4 では `RngCore` 要件が変わる見込み) に対する破壊面を
+        // 狭くする、(2) seed バイトの経路を 1 箇所に集約し TEE 内 RNG の制御点
+        // を明示する、の 2 点。
         let mut m = ml_kem::B32::default();
         rand::rngs::OsRng.fill_bytes(&mut m);
         let (ct, ss) = self.ek.encapsulate_deterministic(&m);

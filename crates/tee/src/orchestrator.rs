@@ -11,12 +11,11 @@
 //! 2. Fetch content from URL(s) based on input type (with memory tracking)
 //! 3. Decrypt the fetched payload when `request.encryption` is set (§2.4)
 //! 4. Compute `signature_hash` (§1.3 -- mandatory for all requests)
-//! 5. Ensure `c2pa-verify` is in the processor list (§1.3 -- implicitly required)
-//! 6. Execute processors via `ProcessorRegistry` (§3.1)
-//! 7. Assemble results into `VerifiableResponse` (§2.3)
-//! 8. JCS-canonicalize and SHA-256 hash (§1.5, §2.3)
-//! 9. Get Attestation Document with hash as `user_data` (§1.2)
-//! 10. Build `ProcessResponse` (§2.3)
+//! 5. For encrypted requests, verify the inner `signature_hash` matches (§2.4)
+//! 6. Ensure `c2pa-verify` is in the processor list (§1.3 -- implicitly required)
+//! 7. Execute processors via `ProcessorRegistry` (§3.1)
+//! 8. Assemble + JCS-canonicalize + SHA-256 (§1.5, §2.3), wrap in attestation (§1.2)
+//! 9. For encrypted requests, seal the response with the negotiated key (§2.4)
 //!
 //! ## Sidecar handling
 //!
@@ -245,10 +244,10 @@ pub fn process_request(
         results,
     };
 
-    // Step 8-10: JCS hash, Attestation Document, ProcessResponse.
+    // Step 8: JCS hash + Attestation Document + assembled ProcessResponse.
     let response = build_attested_response(verifiable, runtime)?;
 
-    // Step 11: Seal the response if this was an encrypted request, else
+    // Step 9: Seal the response if this was an encrypted request, else
     // return the plaintext JSON response unchanged.
     match response_channel {
         None => Ok(ProcessOutcome::Plaintext(response)),

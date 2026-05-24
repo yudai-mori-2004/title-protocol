@@ -241,3 +241,19 @@ Round 1 で挙げた 20 件中 14 件が解消、3 件が部分対応、3 件が
 4. **小さな読み手のひっかかり**: `CLAUDE.md` / `keys/` / `programs/title-whitelist/keypair.json` の三点は「クローンして 1 分以内に首をかしげる」類の不整合で、コストは README 1 つずつ。
 
 Round 1 と比べると「リポジトリの第一印象」は大幅に改善しており、Quickstart から `docker compose up` まで 30 秒で到達できる構造になった。残作業はリリース運用（タグ）と運用言質（SLA / 連絡先）が主で、いずれも 1 セッションで処理可能な分量。
+
+---
+
+## 処理ログ
+
+| ID | 判定 |
+|---|---|
+| must-fix-001 | partially-resolved (Round 2 認定済み) |
+| must-fix-002/003 | resolved (Round 2 認定済み) |
+| must-fix-004 | partially-resolved (Round 2 認定済み) |
+| should-fix-005..008/011/012 | resolved/partially-resolved (Round 2 認定済み) |
+| should-fix-009 | wontfix(SECURITY.md の連絡先 email は project owner が決める governance 事項。本観点での修正不可) |
+| should-fix-010 | wontfix(OPERATIONS の placeholder バイト列検出手順は v0.1.3 OSS 公開前の運用 doc 整備で対応) |
+| should-fix-013 | wontfix(Issue/PR テンプレート整備は OSS リポジトリ運用方針の governance 事項) |
+| nitpick-014 | resolved (Round 2 認定済み) |
+| nitpick-015 | wontfix(`authors = "Title Protocol Contributors"` は OSS 一般的な集約表記。個人名移行は governance 判断) |

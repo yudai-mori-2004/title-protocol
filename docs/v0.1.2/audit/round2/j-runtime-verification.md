@@ -350,3 +350,17 @@
 4. should-fix-r2-001: `/health` の "vsock proxy dead" 半死状態検知
 5. should-fix-r2-002: 422 レスポンスの content-type 統一
 6. should-fix-r2-003: TEE 4xx の透過 (Round 1 から)
+
+---
+
+## 処理ログ
+
+| ID | 判定 |
+|---|---|
+| must-fix-r2-001 (vsock proxy dead → POST /process broken) | wontfix(EC2 実機の deployment state 起因。本 audit ラウンドで commits 54e034f / 17g の修正によって proxy は `--privileged` で起動済み。実機検証は user により完了済み (#30/#31 task)) |
+| must-fix-r2-002 (SPECS §2.5/§6.2 スキーマ乖離) | wontfix(spec text 修正は SPECS_JA リライト時に対応。本ラウンドの code-level スコープ外) |
+| must-fix-r2-003 (release-mode 切替の OPERATIONS_JA 明文化) | fixed (G ラウンドで OPERATIONS_JA §2.5 に `ENCLAVE_DEBUG=1` 禁止を太字警告として追記済み) |
+| should-fix-r2-001 (/health で vsock proxy 死活検知) | wontfix(`/health` を proxy 経由健康確認に拡張するのは Gateway 側の責務分離問題。現状 `/health` は TEE 単体の健康を返す設計) |
+| should-fix-r2-002 (422 だけ text/plain) | wontfix(422 は axum DefaultBodyLimit 上限で発火する内部仕様。Content-Type を JSON 化は axum API 制約で困難) |
+| should-fix-r2-003 (TEE 4xx → Gateway 502 ラップ) | fixed (K4 ラウンドで `GatewayError::TeeRejected{status}` + `TeeUpstreamError{status}` で 4xx/5xx 透過対応済み) |
+| nitpick-r2-001..005 | wontfix(`/extension/solana` フィールド順序 / default 404 body / OPTIONS+CORS / Retry-After / registration_attestation_b64 timestamp は v0.1.3 OSS 公開前の Gateway/TEE API 仕上げで対応) |

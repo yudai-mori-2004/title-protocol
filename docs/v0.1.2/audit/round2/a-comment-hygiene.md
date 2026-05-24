@@ -171,3 +171,18 @@
 ## 全体所感
 
 「ない列挙」「ported-from の内輪話」「現状/将来 表現」「ASCII 装飾」の4大癖のうち、前2つは概ね一掃された一方、後2つ（ASCII の `// --- ---` 区切り118箇所、`Spec §X` の field 単位機械添付、`Phase 1 / Future:` 表現、`Step N:` 番号付け）は実質手付かずで、`tee/src/main.rs` では Step 番号衝突（3, 3, 6, 6）と trait doc / impl の矛盾（attestation/lib.rs の verify trait）という新規退行が顕在化している。
+
+---
+
+## 処理ログ
+
+Round 1 で挙げた 65 件のうち、K3/K4/K5/K8 で個別対応した項目は当該観点ログを参照。本観点固有の Round 2 新規発見への対応:
+
+| ID | 判定 |
+|---|---|
+| new-must-fix-001 | wontfix(K3 のステップ番号再整列で `main.rs` の Step ラベル衝突は構造的に変更。本リテラル番号衝突は v0.1.3 で `main.rs` の step doc 統一に合わせ整理) |
+| new-must-fix-002 | wontfix(`must-fix-009 / should-fix-009` の doc/impl 矛盾は C ラウンドで `SignerInfo::issuer: Option<String>` への変更で実質解消。本観点で再対応不要) |
+| new-should-fix-001 | fixed | `orchestrator.rs` の `// Step 8-10:` 集合コメントと `// Step 11:` を、K3 ラウンドのモジュール doc 修正に合わせて `// Step 8:` (JCS hash + attestation) と `// Step 9:` (seal) に書き換え。doc とコード本体の番号体系を再整列。 |
+| new-should-fix-002..004 | wontfix(`axum/tower layer comment` / `MAX_OFFCHAIN_DATA_BYTES rationale` / `server.rs:81-85 docstring` は意図的な学習者向けコメント。本観点で削除する価値が低い) |
+| new-nitpick-001/002 | wontfix(CHANGELOG 構造・docstring JSON 例キー順は OSS 公開前の doc 仕上げで対応) |
+| must-fix / should-fix / nitpick (詳細) | 個別観点 (K3/K4/K5/K8) ログで処理済み、または OSS 公開前の doc 仕上げフェーズで一括対応 |

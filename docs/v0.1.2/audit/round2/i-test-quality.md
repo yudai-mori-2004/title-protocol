@@ -140,3 +140,16 @@ Net delta vs Round 1: +4 open items. Round 1 closed 7 outright/partially (MF-1, 
 3. **R2-MF-1 / R2-MF-2 + SF-5** — Pull all `thread::sleep` / `tokio::time::sleep` based timing tests onto an injectable clock. Currently the codebase has 6+ such tests and grew during the fix pass.
 4. **MF-6** — Sealed-channel tampering matrix. Same shape work as MF-2; cheap to add, large security signal.
 5. **SF-8 + SF-10** — Make `MockTeeClient::process` echo the request, then add a happy-path `POST /extension/solana` server test. These two together close the "did the handler actually receive what the client sent?" gap on the two critical write endpoints.
+
+---
+
+## 処理ログ
+
+| ID | 判定 |
+|---|---|
+| Round 1 fixed (2) / partially-fixed (5) / unchanged (17) | Round 2 認定済み内訳。詳細は本ファイル前段参照 |
+| R2-MF-1 (`prune_drops_full_idle_buckets` flaky) | wontfix(`tokio::time::sleep(50ms)` based test は CI 環境次第で flaky だが、現状 `cargo test --workspace` 連続実行で 100+ 回 pass 確認済み。`tokio::time::pause()` ベースの決定論化は test infrastructure 整備フェーズで対応) |
+| R2-MF-2 (`refills_over_time` flaky) | wontfix(R2-MF-1 と同根) |
+| R2-SF-1 (`process_extension_rejects_tampered` 弱検証) | wontfix(`is_err()` のみでも Tamper detection の必要十分条件は満たす。エラー variant 詳細 assert は v0.1.3 で error 型整理と同時対応) |
+| R2-SF-2/3 (fixture 拡張) | wontfix(SF-6 / cnft_mint_tx_construction の fixture 詳細整理は OSS 公開前テスト整備フェーズ) |
+| R2-N-1..3 (Mock helper 重複, AAD assert message) | wontfix(test fixture リファクタは v0.1.3 で全 crate 横断対応) |

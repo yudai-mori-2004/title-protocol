@@ -86,6 +86,21 @@ mod tests {
             ),
             (GatewayError::RateLimited, StatusCode::TOO_MANY_REQUESTS),
             (GatewayError::NotFound("no".into()), StatusCode::NOT_FOUND),
+            (
+                GatewayError::TeeRejected { status: 403 },
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                GatewayError::TeeUpstreamError { status: 504 },
+                StatusCode::GATEWAY_TIMEOUT,
+            ),
+            // 0 は HTTP status として不正 → from_u16 が None を返し
+            // BAD_GATEWAY にフォールバック。これで status field が壊れた
+            // 場合の安全側挙動を回帰テストで固定する。
+            (
+                GatewayError::TeeRejected { status: 0 },
+                StatusCode::BAD_GATEWAY,
+            ),
         ];
 
         for (error, expected) in cases {

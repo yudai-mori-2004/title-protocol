@@ -127,8 +127,13 @@ pub async fn handle_process(
 /// Always responds (even without auth). Returns cached TEE type if available,
 /// or probes TEE directly.
 pub async fn handle_health(State(state): State<Arc<GatewayState>>) -> Json<HealthResponse> {
-    let cache = state.tee_cache.read().await;
-    let tee_type = cache.tee_type.clone();
+    // /health は LB の readiness probe や Gateway 自身の health checker から
+    // 高頻度で叩かれる。read ガードは最短スコープで落として `refresh_tee_info`
+    // の write を待たせない。
+    let tee_type = {
+        let cache = state.tee_cache.read().await;
+        cache.tee_type.clone()
+    };
     let status = if state.is_tee_available() {
         "ok".to_string()
     } else {
@@ -174,6 +179,9 @@ pub async fn handle_solana_extension(
         return Err(GatewayError::TeeUnavailable("TEE is not available".into()));
     }
 
+    // tokio::sync::RwLock の read ガードを下の `.await` 越しに持ち越すと
+    // `refresh_tee_info` の writer がこのリクエスト完了まで待たされる。
+    // 明示スコープで guard を確実に drop してから upstream に呼びに行く。
     {
         let cache = state.tee_cache.read().await;
         if cache.solana_keys.is_none() {

@@ -174,6 +174,9 @@ pub(crate) mod tests {
         /// When set, `process()` returns these raw bytes as the encrypted
         /// outcome instead of using `process_response`.
         pub process_encrypted_response: Mutex<Option<Vec<u8>>>,
+        /// When set, `process()` returns `TeeClientError::HttpError` with
+        /// this (status, body) pair so tests can verify 4xx/5xx 透過。
+        pub process_http_error: Mutex<Option<(u16, String)>>,
         pub solana_keys_response: Mutex<Option<SolanaKeysResponse>>,
         pub solana_ext_response: Mutex<Option<SolanaExtensionResponse>>,
         pub should_fail: Mutex<bool>,
@@ -204,6 +207,7 @@ pub(crate) mod tests {
                     attestation: "mock-attestation".into(),
                 })),
                 process_encrypted_response: Mutex::new(None),
+                process_http_error: Mutex::new(None),
                 solana_keys_response: Mutex::new(None),
                 solana_ext_response: Mutex::new(None),
                 should_fail: Mutex::new(false),
@@ -265,6 +269,9 @@ pub(crate) mod tests {
         async fn process(&self, _req: &ProcessRequest) -> Result<ProcessOutcome, TeeClientError> {
             if *self.should_fail.lock().unwrap() {
                 return Err(TeeClientError::Unreachable("mock failure".into()));
+            }
+            if let Some((status, body)) = self.process_http_error.lock().unwrap().clone() {
+                return Err(TeeClientError::HttpError { status, body });
             }
             if let Some(bytes) = self.process_encrypted_response.lock().unwrap().clone() {
                 return Ok(ProcessOutcome::Encrypted(bytes));
@@ -508,6 +515,57 @@ pub(crate) mod tests {
         assert_eq!(ct, "application/octet-stream");
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), sealed.as_slice());
+    }
+
+    /// Round 3 K4 new-should-fix-001 — 4xx/5xx 透過の回帰防止。
+    /// TEE が返した HTTP status (`429`, `503`, `400`, `504`) が
+    /// Gateway response にそのまま反映されることを確認する。
+    async fn assert_process_status_propagates(tee_status: u16, expected: StatusCode) {
+        let mock = MockTeeClient::new();
+        *mock.process_http_error.lock().unwrap() = Some((tee_status, format!("tee said {tee_status}")));
+        let state = test_state(mock);
+        state.refresh_tee_info().await.unwrap();
+        let app = router(state);
+
+        let req_body = serde_json::json!({
+            "input_type": "single",
+            "content_url": "https://example.com/photo.jpg",
+            "processor_ids": ["c2pa-verify"],
+        });
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/process")
+                    .header("content-type", "application/json")
+                    .body(Body::from(req_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), expected, "TEE {tee_status} should propagate");
+    }
+
+    #[tokio::test]
+    async fn process_propagates_tee_429_as_rate_limited() {
+        assert_process_status_propagates(429, StatusCode::TOO_MANY_REQUESTS).await;
+    }
+
+    #[tokio::test]
+    async fn process_propagates_tee_503_as_unavailable() {
+        assert_process_status_propagates(503, StatusCode::SERVICE_UNAVAILABLE).await;
+    }
+
+    #[tokio::test]
+    async fn process_propagates_tee_400_unchanged() {
+        assert_process_status_propagates(400, StatusCode::BAD_REQUEST).await;
+    }
+
+    #[tokio::test]
+    async fn process_propagates_tee_504_unchanged() {
+        assert_process_status_propagates(504, StatusCode::GATEWAY_TIMEOUT).await;
     }
 
     #[tokio::test]

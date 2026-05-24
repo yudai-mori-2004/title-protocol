@@ -29,12 +29,13 @@ docs/
 ## Data Flow
 
 ```
-SPECS (what to build) -> COVERAGE (what was built) -> tasks (how to build + learnings)
+SPECS (what to build) -> COVERAGE (what was built) -> tasks (how to build + learnings) -> OPERATIONS (how to run)
 ```
 
 - **SPECS**: Human-written technical specification. Defines protocol design, data structures, and security model
 - **COVERAGE**: Implementation status for each spec section. Bridges specification and code
 - **tasks**: AI development tasks derived from unimplemented COVERAGE items. Includes work-in-progress notes
+- **OPERATIONS**: Runtime guide for operators — deploy, key registration, troubleshooting, roadmap
 
 ## Versioning
 

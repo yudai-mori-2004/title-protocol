@@ -88,5 +88,8 @@
 | Q SPECS_JA self | done (must:9, should:13, nitpick:7) |
 | R Solana/Anchor specifics | done (must:4, should:11, nitpick:6) |
 | S v0.1.0→v0.1.2 regression | done (must:3, should:7, nitpick:4) |
-| I | pending |
-| J | pending |
+
+Round 2 / Round 3 の追加監査結果は別ディレクトリにある:
+
+- Round 2: [`round2/README.md`](./round2/README.md)
+- Round 3: [`round3/README.md`](./round3/README.md)

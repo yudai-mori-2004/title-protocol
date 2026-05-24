@@ -53,6 +53,7 @@ docs/                   -- Versioned documentation (SPECS -> COVERAGE -> tasks)
     tasks/              -- Per-session task definitions
 deploy/aws/             -- Terraform + Dockerfiles for AWS Nitro deployment
 docker/                 -- Mock-runtime Dockerfile + smoke test
+keys/                   -- Local Solana keypairs (gitignored; see keys/README.md)
 ```
 
 The earlier `v0.1.0` source tree is **not** kept in-tree; consult the

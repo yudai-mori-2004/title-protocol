@@ -24,6 +24,8 @@ The following components are in scope for security reports:
 | Cryptography | Encryption suites and key management | Key derivation flaws, nonce reuse, weak randomness |
 | Solana Extension | On-chain integration | ZK proof bypass, whitelist manipulation, unauthorized minting |
 
+Build and test instructions for the Solana program and SP1 guest are in [CONTRIBUTING.md](CONTRIBUTING.md#solana-program-build).
+
 ### Out of Scope
 
 - `legacy/` -- Archived code, not deployed

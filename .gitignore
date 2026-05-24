@@ -17,16 +17,14 @@ dist/
 *.swp
 *.swo
 
-# AI assistant config (not part of the project)
-CLAUDE.md
-
 # Environment
 .env
 .env.*
 !.env.example
 
-# Keys
-keys/
+# Keys (README は allowlist して取り扱いガイドだけ tracked にする)
+keys/*
+!keys/README.md
 *.pem
 keypair.json
 

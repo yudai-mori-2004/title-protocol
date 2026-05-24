@@ -20,8 +20,11 @@ docker compose up --build -d   # TEE (mock runtime) + Gateway
 ./docker/smoke-test.sh         # 5 endpoints, ~10s
 ```
 
-For an AWS Nitro Enclave deployment, see
-[`deploy/aws/README.md`](deploy/aws/README.md).
+> **NOTE:** This Quickstart starts the TEE with a **mock runtime** — it returns
+> a fake Attestation Document that says "DO-NOT-APPROVE" and is unsafe for any
+> production use. Hardware-backed (AWS Nitro Enclave) deployment is the only
+> path that produces real, verifiable attestations; see
+> [`deploy/aws/README.md`](deploy/aws/README.md).
 
 ---
 

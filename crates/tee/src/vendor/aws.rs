@@ -200,7 +200,6 @@ mod tests {
     #[test]
     fn tee_type_matches_attestation_vendor_tag() {
         let rt = fake_runtime(vec![]);
-        // Single source of truth for the "aws-nitro" identifier.
         assert_eq!(rt.tee_type(), title_attestation_aws_nitro::VENDOR);
     }
 

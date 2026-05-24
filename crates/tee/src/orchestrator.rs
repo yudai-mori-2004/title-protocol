@@ -364,28 +364,16 @@ fn compute_jcs_hash(verifiable: &VerifiableResponse) -> Result<Vec<u8>, Orchestr
     Ok(hasher.finalize().to_vec())
 }
 
-/// Build the final ProcessResponse with Attestation Document.
-/// Spec §1.2, §2.3
-///
-/// 1. JCS-canonicalize the VerifiableResponse
-/// 2. SHA-256 hash
-/// 3. Get Attestation Document with hash as user_data
-/// 4. Base64-encode the Attestation Document
-/// 5. Assemble ProcessResponse
+/// JCS-hash の VerifiableResponse を user_data として TEE に Attestation
+/// Document を要求し、ProcessResponse に組み上げる。仕様 §1.2 / §2.3。
 fn build_attested_response(
     verifiable: VerifiableResponse,
     runtime: &dyn TeeRuntime,
 ) -> Result<ProcessResponse, OrchestratorError> {
-    // Step 7: JCS canonicalize and hash
     let jcs_hash = compute_jcs_hash(&verifiable)?;
-
-    // Step 8: Get Attestation Document
-    // Spec §1.2 / §2.3 -- user_data = SHA-256(b"title:core" || JCS(verifiable))
     let attestation_doc = runtime
         .get_attestation_document(&jcs_hash)
         .map_err(|e| OrchestratorError::AttestationFailed(e.to_string()))?;
-
-    // Step 9: Base64-encode Attestation Document
     let attestation = base64::engine::general_purpose::STANDARD.encode(&attestation_doc);
 
     Ok(ProcessResponse {

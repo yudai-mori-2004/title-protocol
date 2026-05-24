@@ -54,9 +54,6 @@ through the proxy; every inbound request comes from the socat bridge.
 | `jq` | For parsing JSON in scripts |
 | Solana CLI (optional) | Only needed for the on-chain `register_key` follow-up |
 
-You will **not** need: Solana CLI on EC2, Rust on EC2, the AWS SDK locally —
-all of that is handled by the scripts.
-
 ---
 
 ## Cost note

@@ -65,8 +65,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Box::new(title_attestation_aws_nitro::AwsNitroVerifier::new()),
             )
         }
-        // cfg-gated pushes can't collapse into a vec![..] literal — each
-        // entry depends on a different feature flag.
         #[allow(unused_mut, clippy::vec_init_then_push)]
         other => {
             let mut supported: Vec<&str> = Vec::new();

@@ -134,23 +134,9 @@ impl Processor for C2paVerifyProcessor {
     }
 }
 
-/// Computes the signature_hash for C2PA-signed content.
-/// Spec §1.3 — signature_hash = SHA-256(Active Manifest's COSE signature)
-///
-/// Returns the hash in `"sha256:hex..."` format.
-///
-/// This function is used by:
-/// - The TEE orchestration layer (Task 04) to populate `ProcessResponse.signature_hash`
-/// - Verification of encrypted payloads (spec §2.4 step 8)
-///
-/// # Arguments
-/// * `content` — C2PA-signed content bytes
-/// * `content_type` — MIME type of the content
-///
-/// # Determinism
-/// The same content always produces the same signature_hash, regardless
-/// of who computes it. This property is essential for the protocol's
-/// verification model (spec §1.5).
+/// 仕様 §1.3 — `signature_hash = SHA-256(Active Manifest's COSE signature)`
+/// を計算し `"sha256:hex..."` 形式で返す。`content` / `content_type` は
+/// C2PA 署名付きコンテンツとその MIME タイプ。
 pub fn compute_signature_hash(
     content: &[u8],
     content_type: &str,

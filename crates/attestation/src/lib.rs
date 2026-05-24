@@ -100,10 +100,8 @@ mod mock {
     impl MockAttestationVerifier {
         pub const VENDOR: &'static str = "mock";
         pub const PREFIX: &'static [u8] = b"mock-attestation:";
-        /// Measurement reported by the mock — distinctive ASCII banner so
-        /// it never collides with a debug-mode AWS Nitro PCR0 (all zeros).
-        /// 48 bytes to match the PCR0 wire size. An admin who pastes this
-        /// into `add_approved_measurement` is obviously approving the mock.
+        /// Mock 用 48 バイト measurement。値自体が `DO-NOT-APPROVE` を含む
+        /// 自己説明的 ASCII banner。
         pub const MEASUREMENT: [u8; 48] = *b"TITLE-PROTOCOL-MOCK-MEASUREMENT-DO-NOT-APPROVE!!";
 
         // `.default()` 呼出ゼロの dead surface を再追加しないため

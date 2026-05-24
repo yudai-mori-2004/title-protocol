@@ -6,15 +6,17 @@
 //!
 //! Implements the full pipeline from `ProcessRequest` to `ProcessResponse`:
 //!
+//! 0. Pre-flight validation (reject encryption × non-`Single` input early)
 //! 1. Admit request (§4.1 -- ResourcePool admission check)
 //! 2. Fetch content from URL(s) based on input type (with memory tracking)
-//! 3. Compute `signature_hash` (§1.3 -- mandatory for all requests)
-//! 4. Ensure `c2pa-verify` is in the processor list (§1.3 -- implicitly required)
-//! 5. Execute processors via `ProcessorRegistry` (§3.1)
-//! 6. Assemble results into `VerifiableResponse` (§2.3)
-//! 7. JCS-canonicalize and SHA-256 hash (§1.5, §2.3)
-//! 8. Get Attestation Document with hash as `user_data` (§1.2)
-//! 9. Build `ProcessResponse` (§2.3)
+//! 3. Decrypt the fetched payload when `request.encryption` is set (§2.4)
+//! 4. Compute `signature_hash` (§1.3 -- mandatory for all requests)
+//! 5. Ensure `c2pa-verify` is in the processor list (§1.3 -- implicitly required)
+//! 6. Execute processors via `ProcessorRegistry` (§3.1)
+//! 7. Assemble results into `VerifiableResponse` (§2.3)
+//! 8. JCS-canonicalize and SHA-256 hash (§1.5, §2.3)
+//! 9. Get Attestation Document with hash as `user_data` (§1.2)
+//! 10. Build `ProcessResponse` (§2.3)
 //!
 //! ## Sidecar handling
 //!
@@ -86,13 +88,14 @@ pub enum OrchestratorError {
     #[error("JSON serialization error: {0}")]
     JsonError(#[from] serde_json::Error),
 
-    /// Encryption is requested but for an input type that does not (yet)
-    /// support encrypted payloads. Spec §2.4 currently defines the encrypted
-    /// wire format only for `input_type: "single"`.
+    /// Encryption is requested but for an input type whose encrypted form is
+    /// not implemented. Spec §2.4 defines the encrypted wire payload only
+    /// for `input_type: "single"`; `fragmented` / `sidecar` encryption is
+    /// a future-protocol concern, not a current capability gap.
     #[error(
-        "encryption is only supported for input_type=\"single\" in this protocol version"
+        "encrypted requests require input_type=\"single\" (fragmented/sidecar encryption is not implemented)"
     )]
-    EncryptionUnsupportedForInputType,
+    EncryptionRequiresSingleInput,
 
     /// Decryption (KEM / HKDF / AES-GCM) of the fetched payload failed.
     #[error("payload decryption failed: {0}")]
@@ -173,7 +176,7 @@ pub fn process_request(
     if request.encryption.is_some()
         && !matches!(request.input, InputData::Single { .. })
     {
-        return Err(OrchestratorError::EncryptionUnsupportedForInputType);
+        return Err(OrchestratorError::EncryptionRequiresSingleInput);
     }
 
     // Step 1: Admit request. Spec §4.1.
@@ -257,7 +260,6 @@ pub fn process_request(
             Ok(ProcessOutcome::Encrypted(wire))
         }
     }
-    // Ticket is dropped here, releasing all reserved memory.
 }
 
 /// Decrypt a single-file encrypted payload and surface its inner content.
@@ -283,7 +285,7 @@ fn decrypt_single_payload(
 > {
     let content_url = match input {
         InputData::Single { content_url } => content_url.as_str(),
-        _ => return Err(OrchestratorError::EncryptionUnsupportedForInputType),
+        _ => return Err(OrchestratorError::EncryptionRequiresSingleInput),
     };
 
     let opened = open_request(key_bundle, suite, &fetched.content_bytes).map_err(|e| match e {
@@ -1195,7 +1197,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            OrchestratorError::EncryptionUnsupportedForInputType
+            OrchestratorError::EncryptionRequiresSingleInput
         ));
     }
 }

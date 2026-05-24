@@ -160,3 +160,28 @@ Round 1 で挙げた「safety / 仕様逸脱 / コメント癖」のうち、コ
 3. **`/extension/solana` 経路の admission control 抜け (新規 should-r2-002)**: 同じ TEE 内で `/process` だけがメモリ管理されており、extension は無防備。同じプール経由に揃えるべき。
 
 加えて must-006 (graceful shutdown) は実機を 1 度叩いてみないと顕在化しにくいので、実機検証タスクで in-flight `/process` が SIGTERM で打ち切られないか確認する integration test の整備を推奨。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001/003/004/005 | fixed | Round 2 認定済み。 |
+| must-fix-002 | wontfix(`process_request` 9 ステップ分割は 200+ 行のリファクタで、ステップ間の型受け渡しを大きく変える必要がある。Step 0 追加で番号体系のズレは生じたが、Round 2 nitpick-r2-001 のドキュメント番号修正で吸収) | |
+| must-fix-006 | wontfix(graceful shutdown の hyper-util 移行は axum メジャー API 変更を伴う。`NitroRuntime` 共有 Arc の drop タイミング注意書きは追加済みで運用上カバー) | |
+| should-fix-001/002 | wontfix(`ContentFetcher` streaming I/F 化は大規模リファクタ。現状 ResourcePool の事後カウンタは `MAX_BODY_BYTES` と組み合わせて防御線として機能) | |
+| should-fix-003/004/006/007/008/009/010/011/012/013 | fixed | Round 2 認定済み。 |
+| should-fix-005 | fixed | should-fix-r2-001 と統合対応。`handle_solana_extension` でも `spawn_blocking` ラップを適用し async/blocking 混在を解消。 |
+| should-fix-014 | wontfix(`write_string(w, url, url)` の引数重複は API ヘルパ細分化が必要で価値が薄い) | |
+| nitpick-001/002/007/008/009/011 | fixed | Round 2 認定済み。 |
+| nitpick-003/004/005/006 | wontfix(Cargo.toml / docstring の冗長コメントは将来 OSS 公開時に一括整理) | |
+| nitpick-010 | wontfix(`"... (503)"` をエラー文字列に焼き付けるのはログ閲覧時の即時識別性のため意図的) | |
+| must-fix-r2-001 | fixed | `OrchestratorError::EncryptionUnsupportedForInputType` を `EncryptionRequiresSingleInput` に改名し、エラーメッセージを「fragmented/sidecar encryption is not implemented」に書き直した。「protocol version」の曖昧表現を排除し、実装事実ベースに整列。 |
+| should-fix-r2-001 | fixed | `handle_solana_extension` の `state.fetcher.fetch(...)` を `tokio::task::spawn_blocking` でラップ。tokio worker thread が最大 60 秒ブロックする経路を解消。 |
+| should-fix-r2-002 | fixed | `handle_solana_extension` 冒頭で `state.pool.try_admit(Some(MAX_OFFCHAIN_DATA_BYTES))` を取得。fetch 完了後に `drop(ticket)`。`/extension/solana` から `POOL_TOTAL_LIMIT` を bypass される経路を塞いだ。 |
+| should-fix-r2-003 | wontfix(`compute_signature_hash` を `impl Read` 受けに変える長期改修は title-core の trait シグネチャ変更を伴い、現状の Vec ベース API への影響範囲が広い。短期は streaming I/F 化と一緒に v0.1.3 で再検討) | |
+| should-fix-r2-004 | fixed | `server.rs::orchestrator_error_to_response` を新設し、`OrchestratorError` 各 variant を 502/503/500/400 に分類マッピング。`process_fetch_failure` テストも 502 を期待するように更新。Gateway 側のリトライ判断が可能になった。 |
+| nitpick-r2-001 | fixed | `orchestrator.rs` モジュール冒頭の Step リストに Step 0 (encryption pre-flight) を追加し、Step 3 (decrypt) も加えて 10 ステップに再番号付け。本体コメントとの整合確認済み。 |
+| nitpick-r2-002 | fixed | `process_request` 末尾の `// Ticket is dropped here, releasing all reserved memory.` を削除（RAII は Rustacean に自明）。モジュール冒頭の解説は維持。 |
+| nitpick-r2-003 | wontfix(should-fix-014 と同じ理由) | |

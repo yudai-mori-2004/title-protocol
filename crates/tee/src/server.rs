@@ -173,15 +173,40 @@ async fn handle_process(
             )
                 .into_response())
         }
-        Err(orchestrator::OrchestratorError::AdmissionRejected) => Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({ "error": "Service busy, try again later" })),
-        )),
-        Err(e) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )),
+        Err(e) => Err(orchestrator_error_to_response(e)),
     }
+}
+
+/// Map orchestrator errors to HTTP status codes. Gateway-side retry logic
+/// keys off these codes, so the buckets matter:
+/// - 5xx: TEE / upstream failure, client may retry.
+/// - 502: the upstream URL the client provided is unreachable / malformed.
+/// - 503: admission control rejected the request, retry later.
+/// - 4xx: client supplied something the TEE cannot accept; do not retry.
+fn orchestrator_error_to_response(
+    e: orchestrator::OrchestratorError,
+) -> (StatusCode, Json<serde_json::Value>) {
+    use orchestrator::OrchestratorError as O;
+    let status = match &e {
+        O::AdmissionRejected => StatusCode::SERVICE_UNAVAILABLE,
+        O::FetchFailed(_) => StatusCode::BAD_GATEWAY,
+        O::AttestationFailed(_)
+        | O::JcsFailed(_)
+        | O::JsonError(_)
+        | O::ResponseSealFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        O::EncryptionRequiresSingleInput
+        | O::EncryptionSuiteMismatch { .. }
+        | O::PayloadMetadataInvalid(_)
+        | O::SignatureHashMismatch
+        | O::DecryptionFailed(_)
+        | O::SignatureHashFailed(_) => StatusCode::BAD_REQUEST,
+    };
+    let body = if status == StatusCode::SERVICE_UNAVAILABLE {
+        Json(serde_json::json!({ "error": "Service busy, try again later" }))
+    } else {
+        Json(serde_json::json!({ "error": e.to_string() }))
+    };
+    (status, body)
 }
 
 /// GET /solana-keys — Solana Extension public key + registration attestation.
@@ -239,17 +264,38 @@ async fn handle_solana_extension(
 
     // Fetch off-chain data. A `ProcessResponse` is metadata + hashes only
     // (no media bytes) — 1 MiB is well past anything realistic and stops
-    // a malicious URL from flooding the JSON parser.
+    // a malicious URL from flooding the JSON parser. Run under the same
+    // ResourcePool admission control as /process so the extension path
+    // cannot be used to bypass the TEE memory budget.
     const MAX_OFFCHAIN_DATA_BYTES: usize = 1024 * 1024;
-    let offchain_resp = state
-        .fetcher
-        .fetch(&body.offchain_data_url)
-        .map_err(|e| {
+    let ticket = state
+        .pool
+        .try_admit(Some(MAX_OFFCHAIN_DATA_BYTES as u64))
+        .ok_or_else(|| {
             (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": format!("Offchain data fetch failed: {e}") })),
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": "Service busy, try again later" })),
             )
         })?;
+
+    let offchain_resp = tokio::task::spawn_blocking({
+        let state = Arc::clone(&state);
+        let url = body.offchain_data_url.clone();
+        move || state.fetcher.fetch(&url)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("fetch task panicked: {e}") })),
+        )
+    })?
+    .map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Offchain data fetch failed: {e}") })),
+        )
+    })?;
 
     if offchain_resp.body.len() > MAX_OFFCHAIN_DATA_BYTES {
         return Err((
@@ -262,6 +308,7 @@ async fn handle_solana_extension(
             })),
         ));
     }
+    drop(ticket);
 
     let offchain_data: title_core::ProcessResponse =
         serde_json::from_slice(&offchain_resp.body).map_err(|e| {
@@ -523,7 +570,9 @@ mod tests {
         });
 
         let (status, _json) = post_json(&app, "/process", body).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Upstream fetch failure surfaces as 502 BAD_GATEWAY — the TEE
+        // itself is healthy; the client-supplied URL is not reachable.
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
     }
 
     // ---- POST /extension/solana (parameter validation) ----

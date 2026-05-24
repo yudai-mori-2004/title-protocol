@@ -11,7 +11,8 @@
 //!
 //! Public values committed by this guest, in commit order:
 //!
-//!   instance_id       : Borsh String (u32 length prefix + UTF-8 bytes)
+//!   instance_id_len   : u32 LE
+//!   instance_id       : instance_id_len bytes (UTF-8)
 //!   timestamp_ms      : u64 LE
 //!   measurement_len   : u32 LE
 //!   measurement       : measurement_len bytes (AWS Nitro PCR0 = 48 bytes)
@@ -19,6 +20,12 @@
 //!   user_data_hash    : 32 bytes (only if has_user_data == 1)
 //!   has_public_key    : u8 (0 or 1)
 //!   public_key_hash   : 32 bytes (only if has_public_key == 1)
+//!
+//! NOTE: `instance_id` の長さプレフィックスは必ず `commit(&len_u32)` +
+//! `commit_slice(bytes)` の手動書き出しで u32 LE にする。`commit(&String)`
+//! を使うと sp1-lib 内部の bincode-fixint シリアライザが u64 LE 長前置
+//! (8 バイト) を書き出してしまい、on-chain `parse_public_values` (u32 LE
+//! 前提) と 4 バイトずれて register_key が永久に失敗する。
 //!
 //! `instance_id` is the vendor-neutral name for the device-identifier field;
 //! AWS Nitro carries it inside `AttestationDocument::module_id`. Other vendors
@@ -53,13 +60,17 @@ pub fn main() {
 
     // Full cabundle chain. SP1 guests have no wall clock — verify
     // certificate validity against the document's own timestamp.
-    let _ = report
+    report
         .authenticate(doc.timestamp / 1000)
         .expect("Attestation Document verification failed");
 
     // `doc.module_id` is AWS Nitro's wire name; commit it under the
     // vendor-neutral `instance_id` slot in the public-values envelope.
-    sp1_zkvm::io::commit(&doc.module_id);
+    // 長さは u32 LE で明示する (commit(&String) を使うと bincode-fixint が
+    // u64 LE 長前置を出してしまい on-chain parser とずれる)。
+    let id_bytes = doc.module_id.as_bytes();
+    sp1_zkvm::io::commit(&(id_bytes.len() as u32));
+    sp1_zkvm::io::commit_slice(id_bytes);
     sp1_zkvm::io::commit(&doc.timestamp);
 
     let measurement = doc.pcrs.get(&0).expect("PCR0 missing");

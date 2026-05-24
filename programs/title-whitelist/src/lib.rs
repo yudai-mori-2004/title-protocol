@@ -333,7 +333,8 @@ struct ParsedPublicValues<'a> {
 /// Parse the SP1 public values.
 ///
 /// Layout (matches what every Title Protocol attestation guest emits):
-///   instance_id      : Borsh String (u32 length + UTF-8 bytes)
+///   instance_id_len  : u32 LE
+///   instance_id      : instance_id_len bytes (UTF-8)
 ///   timestamp_ms     : u64 LE
 ///   measurement_len  : u32 LE
 ///   measurement      : measurement_len bytes
@@ -341,10 +342,16 @@ struct ParsedPublicValues<'a> {
 ///   user_data_hash   : 32 bytes (only if has_user_data == 1)
 ///   has_public_key   : u8
 ///   public_key_hash  : 32 bytes (only if has_public_key == 1)
+///
+/// 長さは u32 LE で固定する。SP1 guest 側は `commit(&String)` を使うと
+/// 内部の bincode-fixint シリアライザが u64 LE 長前置を出してしまい、
+/// ここの u32 読み出しとずれる。guest では `commit(&len_u32)` +
+/// `commit_slice(bytes)` の手動書き出しで揃えること
+/// (`sp1-guests/attestation-aws-nitro/program/src/main.rs` を参照)。
 fn parse_public_values(data: &[u8]) -> Result<ParsedPublicValues<'_>> {
     let mut offset = 0;
 
-    // instance_id: String (u32 len + bytes) — skipped, length-validated only.
+    // instance_id: u32 LE length + UTF-8 bytes — skipped, length-validated only.
     require!(data.len() >= offset + 4, WhitelistError::InvalidPublicValues);
     let id_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
     offset += 4;

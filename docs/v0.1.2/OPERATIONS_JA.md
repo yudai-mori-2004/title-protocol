@@ -142,6 +142,17 @@ cargo run --bin vkey
 
 ### 2.5 TEE バイナリのビルドと measurement 取得
 
+> ⚠️ **本番運用では `ENCLAVE_DEBUG=1` を絶対に設定しないこと。**
+> debug-mode で起動した enclave は NSM が PCR0/PCR1/PCR2 をすべて 0
+> で返すため、本物の measurement との照合が不可能になる。誤って
+> `[0u8; 48]` を `add_approved_measurement` 経由で登録した場合、誰でも
+> 自前 AWS アカウントで debug-mode enclave を立てて on-chain 承認を
+> 取れる状態になる（mock runtime と同値の信頼レベルに転落する）。
+> `deploy/aws/scripts/run-stack.sh` は `ENCLAVE_DEBUG=1` のとき
+> stderr に `WARNING: ENCLAVE_DEBUG=1 — Attestation Documents from this
+> enclave will have zeroed PCRs.` を出すが、見落とし防止のため
+> 本番ホストでは環境変数自体を残さない運用を推奨する。
+
 > ⚠️ **この章は AWS Nitro EC2 上での実機検証後に内容を追記する**（プレースホルダー）。
 >
 > 現時点で確定している段取りは以下:

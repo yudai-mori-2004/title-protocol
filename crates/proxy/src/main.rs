@@ -4,7 +4,9 @@
 //!
 //! ## Listeners
 //! - `vendor-aws` (default, Linux only): vsock CID_ANY on `PROXY_LISTEN_PORT`
-//!   (default 8000).
+//!   (default 8000). The only legitimate inbound peer is an enclave
+//!   (CID ≥ 16); accept-time ACL rejects loopback (CID 1) and host (CID 2)
+//!   to limit blast radius if a sibling host process opens a vsock socket.
 //! - otherwise: TCP `127.0.0.1:8000` (dev mode).
 
 mod handler;
@@ -30,22 +32,39 @@ async fn main() -> anyhow::Result<()> {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<vsock::VsockStream>(32);
 
+    // Minimum CID accepted from peers. AWS Nitro assigns enclave CIDs
+    // starting at 16; values 0–2 are reserved (hypervisor / local loopback /
+    // host). Rejecting < 3 means a co-tenant host process cannot connect
+    // to this proxy via vsock loopback.
+    const MIN_ACCEPTED_CID: u32 = 3;
+
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            match stream {
-                Ok(s) => match tx.try_send(s) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+        loop {
+            match listener.accept() {
+                Ok((s, peer)) => {
+                    let peer_cid = peer.cid();
+                    if peer_cid < MIN_ACCEPTED_CID {
                         tracing::warn!(
-                            queued = 32,
-                            "vsock accept backpressure; dropping incoming connection"
+                            peer_cid,
+                            "rejecting vsock connection from reserved CID"
                         );
+                        continue;
                     }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        tracing::info!("channel closed; vsock accept loop exiting");
-                        break;
+                    match tx.try_send(s) {
+                        Ok(()) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            tracing::warn!(
+                                queued = 32,
+                                peer_cid,
+                                "vsock accept backpressure; dropping incoming connection"
+                            );
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            tracing::info!("channel closed; vsock accept loop exiting");
+                            break;
+                        }
                     }
-                },
+                }
                 Err(e) => tracing::error!(error = %e, "vsock accept error"),
             }
         }

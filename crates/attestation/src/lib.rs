@@ -99,9 +99,11 @@ mod mock {
     impl MockAttestationVerifier {
         pub const VENDOR: &'static str = "mock";
         pub const PREFIX: &'static [u8] = b"mock-attestation:";
-        /// Measurement reported by the mock — always 48 zero bytes so the
-        /// shape matches AWS Nitro's PCR0 size.
-        pub const MEASUREMENT: [u8; 48] = [0u8; 48];
+        /// Measurement reported by the mock — distinctive ASCII banner so
+        /// it never collides with a debug-mode AWS Nitro PCR0 (all zeros).
+        /// 48 bytes to match the PCR0 wire size. An admin who pastes this
+        /// into `add_approved_measurement` is obviously approving the mock.
+        pub const MEASUREMENT: [u8; 48] = *b"TITLE-PROTOCOL-MOCK-MEASUREMENT-DO-NOT-APPROVE!!";
 
         pub fn new() -> Self {
             Self

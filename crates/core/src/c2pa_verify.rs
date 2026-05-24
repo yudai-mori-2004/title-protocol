@@ -58,7 +58,12 @@ pub struct C2paVerifyOutput {
 /// Issuer and certificate serial of the C2PA signing identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignerInfo {
-    pub issuer: String,
+    /// The signing certificate's issuer DN. `None` means the C2PA library
+    /// could not extract one — surfaced as a missing field rather than a
+    /// `"unknown"` string so downstream trust logic doesn't mistake it for
+    /// a real issuer named "unknown".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cert_serial: Option<String>,
 }
@@ -253,10 +258,7 @@ fn verify_and_extract(
     // Extract signer info from SignatureInfo
     // Spec §3.2: signer.issuer + signer.cert_serial
     let signer = manifest.signature_info().map(|sig_info| SignerInfo {
-        issuer: sig_info
-            .issuer
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string()),
+        issuer: sig_info.issuer.clone(),
         cert_serial: sig_info.cert_serial_number.clone(),
     });
 

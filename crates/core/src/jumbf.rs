@@ -37,6 +37,28 @@ struct BoxHeader {
     size: u64,
 }
 
+/// Compute the content size (`box_size - HEADER_SIZE`) with a checked
+/// subtraction. JUMBF box `size` is attacker-controlled (from arbitrary
+/// `.c2pa` input), so an underflow must surface as a verification error
+/// rather than panicking.
+fn content_size(box_size: u64) -> Result<u64, ProcessorError> {
+    box_size.checked_sub(HEADER_SIZE).ok_or_else(|| {
+        ProcessorError::C2paVerificationFailed(format!(
+            "JUMBF box size {box_size} smaller than {HEADER_SIZE}-byte header"
+        ))
+    })
+}
+
+/// Compute the absolute end offset of a box. Same defensive reason —
+/// `box_start + box_size` from attacker-controlled inputs can overflow.
+fn box_end(box_start: u64, box_size: u64) -> Result<u64, ProcessorError> {
+    box_start.checked_add(box_size).ok_or_else(|| {
+        ProcessorError::C2paVerificationFailed(format!(
+            "JUMBF box end offset overflow: start={box_start}, size={box_size}"
+        ))
+    })
+}
+
 /// Description box parsed content.
 struct DescInfo {
     uuid: [u8; 16],
@@ -173,7 +195,7 @@ pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, Pro
             "Description box not found".to_string(),
         ));
     }
-    let _top_desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
+    let _top_desc = read_desc_info(&mut reader, content_size(desc_header.size)?)?;
 
     let mut labels = Vec::new();
     let top_end = top_header.size;
@@ -187,7 +209,7 @@ pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, Pro
         if child_header.box_type == BOX_TYPE_JUMB {
             if let Some(desc_header) = read_header(&mut reader)? {
                 if desc_header.box_type == BOX_TYPE_JUMD {
-                    let desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
+                    let desc = read_desc_info(&mut reader, content_size(desc_header.size)?)?;
                     if !desc.label.is_empty() {
                         labels.push(desc.label);
                     }
@@ -196,7 +218,7 @@ pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, Pro
         }
 
         reader
-            .seek(SeekFrom::Start(child_start + child_header.size))
+            .seek(SeekFrom::Start(box_end(child_start, child_header.size)?))
             .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Seek error: {e}")))?;
     }
 
@@ -232,7 +254,7 @@ pub(crate) fn extract_signature_from_jumbf(
             "Description box not found".to_string(),
         ));
     }
-    let _top_desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
+    let _top_desc = read_desc_info(&mut reader, content_size(desc_header.size)?)?;
 
     let top_end = top_header.size;
     while reader.position() < top_end {
@@ -244,11 +266,11 @@ pub(crate) fn extract_signature_from_jumbf(
         if child_header.box_type == BOX_TYPE_JUMB {
             if let Some(desc_header) = read_header(&mut reader)? {
                 if desc_header.box_type == BOX_TYPE_JUMD {
-                    let desc = read_desc_info(&mut reader, desc_header.size - HEADER_SIZE)?;
+                    let desc = read_desc_info(&mut reader, content_size(desc_header.size)?)?;
                     if desc.label == manifest_label {
                         return find_signature_in_manifest(
                             &mut reader,
-                            child_start + child_header.size,
+                            box_end(child_start, child_header.size)?,
                         );
                     }
                 }
@@ -256,7 +278,7 @@ pub(crate) fn extract_signature_from_jumbf(
         }
 
         reader
-            .seek(SeekFrom::Start(child_start + child_header.size))
+            .seek(SeekFrom::Start(box_end(child_start, child_header.size)?))
             .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Seek error: {e}")))?;
     }
 
@@ -279,16 +301,16 @@ fn find_signature_in_manifest(
         if header.box_type == BOX_TYPE_JUMB {
             if let Some(desc_header) = read_header(reader)? {
                 if desc_header.box_type == BOX_TYPE_JUMD {
-                    let desc = read_desc_info(reader, desc_header.size - HEADER_SIZE)?;
+                    let desc = read_desc_info(reader, content_size(desc_header.size)?)?;
                     if desc.uuid == CAI_SIGNATURE_UUID {
-                        return find_cbor_in_box(reader, box_start + header.size);
+                        return find_cbor_in_box(reader, box_end(box_start, header.size)?);
                     }
                 }
             }
         }
 
         reader
-            .seek(SeekFrom::Start(box_start + header.size))
+            .seek(SeekFrom::Start(box_end(box_start, header.size)?))
             .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Seek error: {e}")))?;
     }
 
@@ -298,15 +320,15 @@ fn find_signature_in_manifest(
 }
 
 /// Extracts the first CBOR box data from within a superbox.
-fn find_cbor_in_box(reader: &mut Cursor<&[u8]>, box_end: u64) -> Result<Vec<u8>, ProcessorError> {
-    while reader.position() < box_end {
+fn find_cbor_in_box(reader: &mut Cursor<&[u8]>, scan_end: u64) -> Result<Vec<u8>, ProcessorError> {
+    while reader.position() < scan_end {
         let box_start = reader.position();
         let Some(header) = read_header(reader)? else {
             break;
         };
 
         if header.box_type == BOX_TYPE_CBOR {
-            let data_len = header.size - HEADER_SIZE;
+            let data_len = content_size(header.size)?;
             if data_len > MAX_SIGNATURE_SIZE {
                 return Err(ProcessorError::C2paVerificationFailed(format!(
                     "CBOR box size exceeds limit: {data_len} > {MAX_SIGNATURE_SIZE}"
@@ -320,7 +342,7 @@ fn find_cbor_in_box(reader: &mut Cursor<&[u8]>, box_end: u64) -> Result<Vec<u8>,
         }
 
         reader
-            .seek(SeekFrom::Start(box_start + header.size))
+            .seek(SeekFrom::Start(box_end(box_start, header.size)?))
             .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Seek error: {e}")))?;
     }
 

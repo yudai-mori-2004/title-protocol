@@ -149,7 +149,20 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
         }
         shutdown_write(w).await
     } else {
-        let body_bytes = response.bytes().await.unwrap_or_default().to_vec();
+        let body_bytes = match response.bytes().await {
+            Ok(b) => b.to_vec(),
+            Err(e) => {
+                tracing::error!(
+                    err = format!("{e:#}"),
+                    upstream_host = %upstream_host,
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    "upstream body read failed",
+                );
+                let msg = format!("Proxy body read failed: {e}").into_bytes();
+                write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+                return shutdown_write(w).await;
+            }
+        };
         if body_bytes.len() as u64 > MAX_RESPONSE_BYTES {
             tracing::warn!(body_len = body_bytes.len(), max = MAX_RESPONSE_BYTES, upstream_host = %upstream_host, "response too large");
             let msg = format!("response too large: {} > {MAX_RESPONSE_BYTES}", body_bytes.len()).into_bytes();

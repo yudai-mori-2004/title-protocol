@@ -122,7 +122,7 @@ impl HttpTeeClient {
 
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = read_error_body(resp).await;
             return Err(TeeClientError::HttpError { status, body });
         }
 
@@ -147,13 +147,23 @@ impl HttpTeeClient {
 
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = read_error_body(resp).await;
             return Err(TeeClientError::HttpError { status, body });
         }
 
         resp.json()
             .await
             .map_err(|e| TeeClientError::ParseError(e.to_string()))
+    }
+}
+
+/// Read an error response body as a String, recording the read failure
+/// inline instead of returning an empty body that would silently look
+/// like "TEE answered with no message".
+async fn read_error_body(resp: reqwest::Response) -> String {
+    match resp.text().await {
+        Ok(s) => s,
+        Err(e) => format!("<body read failed: {e}>"),
     }
 }
 
@@ -183,7 +193,7 @@ impl TeeClient for HttpTeeClient {
 
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = read_error_body(resp).await;
             return Err(TeeClientError::HttpError { status, body });
         }
 

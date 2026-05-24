@@ -158,3 +158,33 @@ Round 1 で挙げた 30 件のうち 9 件 (30%) が実際に修正された。�
 新規発見 (5 件: must 1, should 2, nitpick 2) はすべて Round 1 で見つけた既存パターンの**漏れ**や**修正の波及不足**であり、本格的な regression は確認されなかった。新規追加コード (gateway `process` ハンドラ、chunked proxy framing) は概ね Round 1 の指摘を意識して書かれており、品質低下は見られない。
 
 **未修正の must-fix 6 件と should-fix 9 件は、特に OSS 公開前に必ず対処すべき**。中でも must-fix-001 (TEE OsRng) と must-fix-009 (unknown issuer) は単独でセキュリティバグとして致命的なため、本観点としては「v0.1.2 OSS 公開 No-Go」判定を維持する。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001 | wontfix(Nitro `/dev/urandom` は NSM seeded で `OsRng` 経由でも cryptographic 差異なし。G ラウンド M-2 と同根決定) | |
+| must-fix-002 / 005 / 006 / 010 | fixed | Round 2 認定済み。 |
+| must-fix-003 | fixed | `crates/proxy/src/handler.rs` non-GET/POST body 経路の `response.bytes().unwrap_or_default()` を `match { Ok(b)/Err(e) }` に書き換え。upstream body 読み取り失敗は `write_error(PROXY_ERROR_STATUS, ...)` で TEE に明示通知。 |
+| must-fix-004 | partially-fixed(`written > len` truncate は対応済み、`written < len` は TEE 側 `read_exact` の `UnexpectedEof` で表面化するため fail-close は機能。explicit error frame 追加は wire spec の二重拡張を伴うため見送り) | |
+| must-fix-007 | fixed | `deploy/aws/scripts/run-stack.sh` TEE 起動待ちに `TEE_READY=0/1` flag を導入。60s 経過後も `/health` が応答しない場合は `exit 1` で gateway 起動前に fail。トラブルシュート用の `nitro-cli console` ヒントもエラーメッセージに含めた。 |
+| must-fix-008 | fixed | socat 起動直後に `$!` で PID を捕捉し、`kill -0` で生存確認。即死している場合は socat.log を案内して `exit 1`。 |
+| must-fix-009 | fixed | `crates/core/src/c2pa_verify.rs::SignerInfo::issuer` を `String` から `Option<String>` に変更。`"unknown"` の sentinel 文字列が `validation: "valid"` と共に Attestation に封入される構造的バグを解消。`#[serde(skip_serializing_if)]` でフィールドの欠落として表現。 |
+| must-fix-011 | wontfix(`programs/title-whitelist` の `parse_public_values` 内 `unwrap()` は事前の `require!` 長さチェックで到達不能。`try_into` への置き換えは program 再 deploy を要し、defense-in-depth の価値とコストが見合わず) | |
+| should-fix-001 | wontfix(env var typo silent fallback は運用上の慣習。`default` 行動が明示的に文書化されていれば実害なし) | |
+| should-fix-002 | fixed | new-must-fix-001 と統合対応。 |
+| should-fix-003/004/005 | wontfix(error 型潰しの thiserror 構造化は API 安定化フェーズ (v0.1.3 SDK 整備) で対応) | |
+| should-fix-006 | wontfix(sidecar manifest/content の hard binding は SPECS_JA §0.1 の規定で client 責務として整理済み。TEE 側で再検証する設計変更は本 audit 範囲を超える) | |
+| should-fix-007 | wontfix(`MalformedAttestation` variant 追加は `crates/solana` のエラー分類整理と統合フェーズで対応) | |
+| should-fix-008 / 009 / 011 | fixed | Round 2 認定済み。 |
+| should-fix-010 | fixed | `crates/core/src/jumbf.rs` に `content_size()` (`checked_sub`) と `box_end()` (`checked_add`) ヘルパを新設し、`size - HEADER_SIZE` / `child_start + child_header.size` の 9 箇所をすべて checked 演算経由に書き換え。攻撃者制御 JUMBF 入力での panic/overflow を fail-close。 |
+| should-fix-012 | wontfix(`build_payload` の `expect("cannot fail")` は serde_json の Map serialization で型システム上失敗しない経路。documented invariant) | |
+| nitpick-001..004/006/007 | wontfix(エラーメッセージ細部整理は OSS 公開前の文言統一フェーズで一括対応) | |
+| nitpick-005 | fixed | Round 2 認定済み。 |
+| new-must-fix-001 | fixed | `crates/gateway/src/tee_client.rs` に `read_error_body()` ヘルパを抽出し、4 箇所の `resp.text().await.unwrap_or_default()` を `<body read failed: e>` 形式の明示エラー文字列付き読み取りに置き換え。 |
+| new-should-fix-001 | fixed | K6 must-fix-006 (CHUNKED_TRUNCATED) で統合対応済み。 |
+| new-should-fix-002 | wontfix(`shutdown_write` の `_ = w.shutdown().await` は connection cleanup の best-effort で、socket クローズ失敗はログ価値ゼロ。本観点での tracing 追加は visual noise) | |
+| new-nitpick-001 | wontfix(`RealNsm::drop` の fd invariant 維持は `Option<OwnedFd>` 化を伴い、現状の `nsm_exit()` API への適合コストが見合わず) | |
+| new-nitpick-002 | wontfix(`server.rs::tests::test_state` 内の `OsRng` 使用は test fixture で production 経路と隔離済み。ファイル冒頭コメントは v0.1.3 リファクタで対応) | |

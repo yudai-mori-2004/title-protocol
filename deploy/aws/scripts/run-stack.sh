@@ -77,15 +77,28 @@ echo "    enclave CID: \$ENCLAVE_CID"
 echo "==> Starting host -> Enclave bridge (TCP 127.0.0.1:4000 -> vsock:\$ENCLAVE_CID:4000)"
 nohup sudo socat TCP-LISTEN:4000,reuseaddr,fork VSOCK-CONNECT:\$ENCLAVE_CID:4000 \
   > "\$REMOTE_DIR/socat.log" 2>&1 &
+SOCAT_PID=\$!
+sleep 1
+if ! sudo kill -0 \$SOCAT_PID 2>/dev/null; then
+  echo "ERROR: socat exited immediately (see \$REMOTE_DIR/socat.log)" >&2
+  exit 1
+fi
 
 echo "==> Waiting for TEE HTTP to come up..."
+TEE_READY=0
 for i in {1..60}; do
   if curl -sf http://127.0.0.1:4000/health > /dev/null 2>&1; then
     echo "    TEE ready (\${i}s)"
+    TEE_READY=1
     break
   fi
   sleep 1
 done
+if [[ "\$TEE_READY" != "1" ]]; then
+  echo "ERROR: TEE /health did not respond within 60s; aborting before gateway start." >&2
+  echo "  Check 'sudo nitro-cli console --enclave-id <id>' and \$REMOTE_DIR/socat.log." >&2
+  exit 1
+fi
 
 echo "==> Starting title-gateway (host network, port 3000)"
 sudo docker run -d --name title-gateway \

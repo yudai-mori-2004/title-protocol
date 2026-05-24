@@ -27,6 +27,7 @@ use title_tee::server::{self as tee_server, TeeAppState};
 // Test content fetcher
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct TestFetcher {
     responses: HashMap<String, (Vec<u8>, Option<String>)>,
 }
@@ -72,7 +73,8 @@ fn build_tee_state(fetcher: TestFetcher) -> Arc<TeeAppState> {
         solana_key: SolanaSigningKey::generate(&mut rand::rngs::OsRng),
         registry,
         pool: Arc::new(ResourcePool::with_single_limit(1_000_000_000)),
-        fetcher: Box::new(fetcher),
+        fetcher: Box::new(fetcher.clone()),
+        extension_fetcher: Box::new(fetcher),
         attestation_verifier: Box::new(title_attestation::MockAttestationVerifier::new()),
         expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT
             .to_vec()

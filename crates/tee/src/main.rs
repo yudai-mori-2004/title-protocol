@@ -159,19 +159,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // Built via spawn_blocking because reqwest::blocking::Client constructs
     // its own tokio runtime, which panics if done inside an async context.
+    // `/extension/solana` 用の fetcher は body cap を絞って構築する。
+    // offchain data は ProcessResponse JSON (metadata + hashes) で実体は
+    // 数 KiB〜数百 KiB に収まるため、100 MiB の枠を与える必要はない。
+    // K3 must-fix-r3-001 参照。
+    const EXTENSION_MAX_BODY_BYTES: usize = 1024 * 1024;
+
     let proxy_addr = std::env::var("PROXY_ADDR").unwrap_or_else(|_| "direct".to_string());
-    let fetcher: Box<dyn ContentFetcher> = if proxy_addr == "direct" {
-        tracing::info!("Content fetcher: direct (reqwest)");
-        let f = tokio::task::spawn_blocking(HttpContentFetcher::new)
+    let (fetcher, extension_fetcher): (Box<dyn ContentFetcher>, Box<dyn ContentFetcher>) =
+        if proxy_addr == "direct" {
+            tracing::info!("Content fetcher: direct (reqwest)");
+            let main_fetcher = tokio::task::spawn_blocking(HttpContentFetcher::new)
+                .await
+                .expect("Failed to build HTTP content fetcher");
+            let ext_fetcher = tokio::task::spawn_blocking(|| {
+                HttpContentFetcher::with_max_body_bytes(EXTENSION_MAX_BODY_BYTES)
+            })
             .await
-            .expect("Failed to build HTTP content fetcher");
-        Box::new(f)
-    } else {
-        tracing::info!(addr = %proxy_addr, "Content fetcher: proxy-mediated");
-        let endpoint = ProxyEndpoint::parse(&proxy_addr)
-            .map_err(|e| format!("Invalid PROXY_ADDR={proxy_addr}: {e}"))?;
-        Box::new(ProxyContentFetcher::new(endpoint))
-    };
+            .expect("Failed to build extension HTTP content fetcher");
+            (Box::new(main_fetcher), Box::new(ext_fetcher))
+        } else {
+            tracing::info!(addr = %proxy_addr, "Content fetcher: proxy-mediated");
+            let endpoint = ProxyEndpoint::parse(&proxy_addr)
+                .map_err(|e| format!("Invalid PROXY_ADDR={proxy_addr}: {e}"))?;
+            (
+                Box::new(ProxyContentFetcher::new(endpoint.clone())),
+                Box::new(ProxyContentFetcher::with_max_body_bytes(
+                    endpoint,
+                    EXTENSION_MAX_BODY_BYTES,
+                )),
+            )
+        };
 
     // Build application state
     let state = Arc::new(TeeAppState {
@@ -181,6 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         registry,
         pool,
         fetcher,
+        extension_fetcher,
         attestation_verifier,
         expected_measurement,
         registration_attestation,

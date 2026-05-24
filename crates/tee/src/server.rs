@@ -54,8 +54,14 @@ pub struct TeeAppState {
     /// Memory management pool.
     /// Spec §4.1
     pub pool: Arc<ResourcePool>,
-    /// HTTP content fetcher for external storage.
+    /// HTTP content fetcher for external storage (`/process` 用、`max_body_bytes
+    /// = 100 MiB`)。
     pub fetcher: Box<dyn ContentFetcher>,
+    /// `/extension/solana` 専用の fetcher。offchain data は metadata + hash の
+    /// JSON だけで実体は数 KiB 〜 数百 KiB に収まる想定なので、fetcher 自体の
+    /// `max_body_bytes` を `MAX_OFFCHAIN_DATA_BYTES = 1 MiB` に絞っておく。
+    /// これにより 100 MiB のレスポンスでメモリを取られる経路を物理的に塞ぐ。
+    pub extension_fetcher: Box<dyn ContentFetcher>,
     /// Vendor-specific Attestation Document verifier (Spec §6.2).
     /// Mock runtime pairs with `MockAttestationVerifier`; Nitro pairs with
     /// `AwsNitroVerifier`. Used by the Solana Extension to authenticate
@@ -245,6 +251,20 @@ async fn handle_solana_extension(
     State(state): State<Arc<TeeAppState>>,
     Json(body): Json<SolanaExtensionBody>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // システム時計の取得は fail-fast。後段 (attestation verify) で必須なので、
+    // admission ticket や fetch を走らせる前に弾く。
+    let now_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("System clock unavailable: {e}")
+                })),
+            )
+        })?;
+
     let ext_request = ExtensionRequest::from_strings(
         &body.offchain_data_url,
         body.collection.as_deref(),
@@ -259,13 +279,17 @@ async fn handle_solana_extension(
         )
     })?;
 
-    // Fetch off-chain data. A `ProcessResponse` is metadata + hashes only
-    // (no media bytes) — 1 MiB is well past anything realistic and stops
-    // a malicious URL from flooding the JSON parser. Run under the same
-    // ResourcePool admission control as /process so the extension path
-    // cannot be used to bypass the TEE memory budget.
+    // Offchain data の物理サイズ強制を 2 層構成にする:
+    //   (a) admission ticket で MAX_OFFCHAIN_DATA_BYTES を即時 extend し、
+    //       pool.used に積む。これにより N 並列リクエストは admission_limit
+    //       までで頭打ちになる (同時に乗せられる総 RAM が物理的に制限される)。
+    //   (b) `extension_fetcher` 自身の `max_body_bytes` も
+    //       MAX_OFFCHAIN_DATA_BYTES に絞ってあるので、fetcher がストリーミング
+    //       中に超過バイトを reject する。post-fetch チェックの「100 MiB まで
+    //       RAM に乗ったあと弾く」という従来の弱点が塞がれる。
+    // 仕様 §4.1 / §4.2 の memory budget を `/extension/solana` も同じ枠で守る。
     const MAX_OFFCHAIN_DATA_BYTES: usize = 1024 * 1024;
-    let ticket = state
+    let mut ticket = state
         .pool
         .try_admit(Some(MAX_OFFCHAIN_DATA_BYTES as u64))
         .ok_or_else(|| {
@@ -274,11 +298,21 @@ async fn handle_solana_extension(
                 Json(serde_json::json!({ "error": "Service busy, try again later" })),
             )
         })?;
+    ticket
+        .extend(MAX_OFFCHAIN_DATA_BYTES)
+        .map_err(|e| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": format!("Extension reserve failed: {e}")
+                })),
+            )
+        })?;
 
     let offchain_resp = tokio::task::spawn_blocking({
         let state = Arc::clone(&state);
         let url = body.offchain_data_url.clone();
-        move || state.fetcher.fetch(&url)
+        move || state.extension_fetcher.fetch(&url)
     })
     .await
     .map_err(|e| {
@@ -294,6 +328,8 @@ async fn handle_solana_extension(
         )
     })?;
 
+    // fetcher 内部の `max_body_bytes` で既に弾かれている想定だが、安全側の
+    // 確認として最終長さを再チェックする。
     if offchain_resp.body.len() > MAX_OFFCHAIN_DATA_BYTES {
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -312,23 +348,6 @@ async fn handle_solana_extension(
             (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": format!("Invalid offchain data: {e}") })),
-            )
-        })?;
-
-    // Process extension (verify attestation + build & sign TX).
-    // System clock failure here is fatal for this request: attestation
-    // verifiers use `now_unix_secs` as the upper bound for cert validity,
-    // so a silent 0 fallback would either accept everything or reject
-    // everything depending on chain timing. Return 500 to surface it.
-    let now_unix_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("System clock unavailable: {e}")
-                })),
             )
         })?;
 
@@ -368,6 +387,7 @@ mod tests {
     use std::collections::HashMap;
     use tower::ServiceExt;
 
+    #[derive(Clone)]
     struct MockFetcher {
         responses: HashMap<String, (Vec<u8>, Option<String>)>,
     }
@@ -413,7 +433,8 @@ mod tests {
             solana_key: SolanaSigningKey::generate(&mut rand::rngs::OsRng),
             registry,
             pool: Arc::new(ResourcePool::with_single_limit(1_000_000_000)),
-            fetcher: Box::new(fetcher),
+            fetcher: Box::new(fetcher.clone()),
+            extension_fetcher: Box::new(fetcher),
             attestation_verifier: Box::new(title_attestation::MockAttestationVerifier::new()),
             expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT
                 .to_vec()

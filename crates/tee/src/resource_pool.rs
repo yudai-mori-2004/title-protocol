@@ -145,7 +145,9 @@ impl ResourcePool {
 /// Spec §4.2
 ///
 /// A Ticket belongs to a single request thread and must not be shared
-/// across threads (it is `Send` but not `Sync` due to `Cell<Instant>`).
+/// across threads. `Send` (所有権の移動は OK、例えば `tokio::task::spawn_blocking`
+/// にクロージャごと move する) だが `!Sync` (内部の `Cell<Instant>` のため、
+/// `&Ticket` を別スレッドに同時に貸せない)。共有を試みると借用検査で弾かれる。
 pub struct Ticket {
     pool: Arc<ResourcePool>,
     reserved: AtomicUsize,
@@ -242,7 +244,7 @@ impl Ticket {
     /// Extend without timeout checks.
     /// For internal use where timeout enforcement is handled at a higher level,
     /// or in concurrent tests where timing is unpredictable.
-    pub fn extend_unchecked(&self, additional: usize) -> Result<(), TicketError> {
+    pub(crate) fn extend_unchecked(&self, additional: usize) -> Result<(), TicketError> {
         if additional == 0 {
             return Ok(());
         }

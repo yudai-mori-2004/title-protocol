@@ -29,8 +29,8 @@
 //!
 //! Each request gets a Ticket from the ResourcePool. Memory is tracked
 //! throughout the pipeline via Ticket.extend() calls in the content fetch
-//! layer. The Ticket is dropped at the end of the function, releasing all
-//! reserved memory.
+//! layer. RAII drop semantics and pool accounting details live with
+//! `ResourcePool` / `Ticket` in `resource_pool.rs`.
 
 use std::collections::HashMap;
 use std::sync::Arc;

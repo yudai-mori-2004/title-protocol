@@ -15,6 +15,14 @@ use title_core::EncryptedPayloadMetadata;
 
 use crate::CryptoError;
 
+/// Upper bound on the metadata JSON length, in bytes.
+///
+/// `parse_payload` is fed AES-GCM-decrypted plaintext so the value has
+/// already been authenticated by the tag — but capping length here keeps
+/// a malformed inner header from forcing the JSON parser to chew through
+/// gigabytes (defense in depth, not the primary protection).
+pub const MAX_METADATA_LEN: usize = 64 * 1024;
+
 /// Build a plaintext payload from metadata and content.
 /// Spec §2.4
 pub fn build_payload(metadata: &EncryptedPayloadMetadata, content: &[u8]) -> Vec<u8> {
@@ -44,7 +52,14 @@ pub fn parse_payload(data: &[u8]) -> Result<ParsedPayload<'_>, CryptoError> {
     }
 
     let meta_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    let meta_end = 4 + meta_len;
+    if meta_len > MAX_METADATA_LEN {
+        return Err(CryptoError::InvalidPayload(format!(
+            "metadata_len {meta_len} exceeds cap {MAX_METADATA_LEN}"
+        )));
+    }
+    let meta_end = 4usize
+        .checked_add(meta_len)
+        .ok_or_else(|| CryptoError::InvalidPayload("metadata_len overflow".into()))?;
 
     if data.len() < meta_end {
         return Err(CryptoError::InvalidPayload(format!(
@@ -99,5 +114,13 @@ mod tests {
     fn truncated_payload() {
         assert!(parse_payload(&[0, 0, 0]).is_err());
         assert!(parse_payload(&[0, 0, 0, 10]).is_err());
+    }
+
+    #[test]
+    fn metadata_len_above_cap_rejected() {
+        let oversized = (MAX_METADATA_LEN as u32 + 1).to_be_bytes();
+        let mut buf = Vec::from(oversized);
+        buf.resize(4 + MAX_METADATA_LEN + 1, 0);
+        assert!(parse_payload(&buf).is_err());
     }
 }

@@ -42,6 +42,10 @@ impl MlKem768Encapsulator {
 
 impl Encapsulator for MlKem768Encapsulator {
     fn encapsulate(&self) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+        // Read 32 bytes from OsRng and feed them to encapsulate_deterministic
+        // (rather than the rng-taking `Encapsulate::encapsulate`) so this
+        // path is infallible: the deterministic variant returns
+        // `(Ciphertext, SharedKey)` directly without an error case.
         let mut m = ml_kem::B32::default();
         rand::rngs::OsRng.fill_bytes(&mut m);
         let (ct, ss) = self.ek.encapsulate_deterministic(&m);

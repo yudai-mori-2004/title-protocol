@@ -286,19 +286,15 @@ fn decrypt_single_payload(
         _ => return Err(OrchestratorError::EncryptionUnsupportedForInputType),
     };
 
-    let opened = open_request(key_bundle, &fetched.content_bytes)
-        .map_err(|e| OrchestratorError::DecryptionFailed(format!("{e:?}")))?;
-
-    // Reject mismatches between the suite the client declared on the JSON
-    // request and the suite embedded in the wire payload header. Without
-    // this check the declared field would be ignored, leaving the API
-    // semantics confusingly loose.
-    if opened.suite != suite {
-        return Err(OrchestratorError::EncryptionSuiteMismatch {
-            declared: suite,
-            wire: opened.suite,
-        });
-    }
+    let opened = open_request(key_bundle, suite, &fetched.content_bytes).map_err(|e| match e {
+        title_crypto::CryptoError::EncryptionSuiteMismatch { wire, .. } => {
+            OrchestratorError::EncryptionSuiteMismatch {
+                declared: suite,
+                wire: EncryptionSuite::from_suite_id(wire).unwrap_or(suite),
+            }
+        }
+        _ => OrchestratorError::DecryptionFailed(format!("{e:?}")),
+    })?;
 
     let parsed = payload::parse_payload(&opened.plaintext)
         .map_err(|e| OrchestratorError::PayloadMetadataInvalid(format!("{e:?}")))?;

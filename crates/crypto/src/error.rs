@@ -28,4 +28,7 @@ pub enum CryptoError {
 
     #[error("Invalid payload format: {0}")]
     InvalidPayload(String),
+
+    #[error("Encryption suite mismatch: declared 0x{declared:02x}, wire 0x{wire:02x}")]
+    EncryptionSuiteMismatch { declared: u8, wire: u8 },
 }

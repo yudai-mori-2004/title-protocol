@@ -7,6 +7,16 @@
 //! HKDF-SHA256 derives two independent 32-byte keys from a shared secret:
 //! - request_key  (info = "title-request-key",  salt = encap_key)
 //! - response_key (info = "title-response-key", salt = encap_key)
+//!
+//! ## Why `salt = encap_key`
+//!
+//! Folding `encap_key` into the salt makes the derived keys depend on the
+//! ephemeral public material on the wire, not just the shared secret. The
+//! AEAD AAD only covers the constant-size suite header (suite_id +
+//! encap_key_len); the much larger `encap_key` bytes ride into the key
+//! schedule through this salt. A tampered `encap_key` therefore breaks
+//! decryption the same way a wrong AAD would, without forcing the AEAD
+//! to authenticate kilobytes of header (ML-KEM-768 encap_key = 1088 B).
 
 use hkdf::Hkdf;
 use sha2::Sha256;

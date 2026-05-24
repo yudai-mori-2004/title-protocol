@@ -184,3 +184,33 @@ ML-KEM-768 については `from_seed` が 64 バイトシードを要求する�
 3. **Round 1 should-fix-004**: `payload.rs` の `meta_len` に 64 KiB cap と `checked_add`。defense-in-depth として依然有効。
 4. **Round 1 should-fix-006**: X25519 low-order point の all-zero shared_secret 検査。Nitro 実機での攻撃面は限定的だが、ライブラリとして公開するなら入れるべき。
 5. nitpick 群は時間の空いた時にまとめて処理。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001 | fixed | Round 2 認定済み。 |
+| must-fix-002 | fixed | `sealed_channel::suite_aad()` で `[suite_id, encap_key_len_be[0], encap_key_len_be[1]]` (3 バイト) を AAD として bind するように拡張。encap_key 本体は引き続き `hkdf.rs` の salt 経由で鍵スケジュールに含める設計を `hkdf.rs` に文書化。 |
+| must-fix-003 | partially-fixed(encapsulate_deterministic 経由は infallible 化が目的の意図的選択。コメントで明文化済み。`Encapsulate::encapsulate(rng)` への切替は failure path を増やすため見送り) | `ml_kem768.rs` に rationale を 4 行コメントで追加。 |
+| must-fix-004 | fixed | Round 2 認定済み。 |
+| should-fix-001 | wontfix(型レベル one-shot 強制は type-state パターンが必要で API 破壊が広範。実害ゼロ) | |
+| should-fix-002 | fixed | `hkdf.rs` のモジュール docstring に「salt=encap_key を選んだ理由」の節を追加。AAD が小サイズで済む設計上の必然性を明記。 |
+| should-fix-003 | wontfix(`wire.rs` の 2 段化は構文チェックと意味チェックを分離するリファクタで、現状の 1 段で十分。退行リスクのほうが高い) | |
+| should-fix-004 | fixed | `payload.rs` に `MAX_METADATA_LEN = 64 KiB` 上限と `checked_add` を追加。回帰テスト `metadata_len_above_cap_rejected` を追加。 |
+| should-fix-005 | fixed | `open_request(key_bundle, expected_suite, wire)` の 3 引数 API に変更。`orchestrator.rs` の手書き突合 10 行を削除し、`CryptoError::EncryptionSuiteMismatch` に集約。回帰テスト `declared_suite_mismatch_rejected` を追加。 |
+| should-fix-006 | fixed | `x25519.rs` に `reject_zero_shared_secret()` を追加。encapsulate/decapsulate 双方で all-zero shared_secret (low-order point 攻撃) を InvalidWireFormat で reject。テスト `low_order_point_rejected` を追加。 |
+| nitpick-001 | wontfix(`lib.rs` モジュール一覧の重複は Rust の慣例。`pub mod` + `pub use` で内部 vs 公開 API を分けているため冗長ではない) | |
+| nitpick-002 | wontfix(`HkdfError(String)` を構造化エラーに変更する価値が薄い。`hkdf` クレートの内部エラーは透過させるのが妥当) | |
+| nitpick-003 | wontfix(`Nonce` type alias の位置はモジュール内 use と並ぶのが自然) | |
+| nitpick-004 | wontfix(nonce 長エラーが `InvalidWireFormat` 配下なのは「wire 由来の不正値」という意味で整合) | |
+| nitpick-005 | wontfix(`key_bundle.rs` の spec 参照は §1.4/§2.4 の境界を明示するために必要) | |
+| nitpick-006 | fixed | Round 2 認定済み。 |
+| new-must-fix-001 | fixed | must-fix-002 と統合対応。AAD に encap_key_len を含めた上で、encap_key 本体を HKDF salt で間接 bind する設計を `hkdf.rs` の docstring に明記。 |
+| new-should-fix-001 | wontfix(`aead.rs` は GCM の薄いラッパで空 AAD は GCM 規格上正当。実呼び出し元 `sealed_channel` は常に 3 バイト AAD を渡すため経路上空にならない) | |
+| new-should-fix-002 | fixed | must-fix-003 と統合対応。`ml_kem768.rs:encapsulate` に 4 行 rationale を追加。 |
+| new-should-fix-003 | fixed | should-fix-005 と統合対応。 |
+| new-should-fix-004 | fixed | should-fix-004 と統合対応。`MAX_METADATA_LEN` 上限 + AAD 検証後である defense-in-depth の位置付けを doc コメントに追加。 |
+| new-nitpick-001 | fixed | `sealed_channel::suite_aad()` ヘルパーで AAD 構築を 1 箇所に集約。4 箇所の重複を解消。 |
+| new-nitpick-002 | wontfix(`aead.rs` のテストは GCM API の roundtrip 性質を確認するもので、現実の `[suite_id]` 値とは独立に意味がある) | |

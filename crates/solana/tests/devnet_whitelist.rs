@@ -255,15 +255,11 @@ fn revoke_key_rejects_nonexistent_pda() {
 fn revoke_key_rejects_non_admin() {
     let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
 
-    // Use operator key instead of admin (authority)
-    let key_path = format!(
-        "{}/legacy/v0.1.0/keys/operator.json",
-        env!("CARGO_MANIFEST_DIR").replace("/crates/solana", "")
-    );
-    let key_data = std::fs::read_to_string(&key_path)
-        .unwrap_or_else(|_| panic!("Operator key not found at {key_path}"));
-    let bytes: Vec<u8> = serde_json::from_str(&key_data).unwrap();
-    let non_admin = Keypair::from_bytes(&bytes).unwrap();
+    // Use a freshly generated keypair — any non-admin signer drives the
+    // Unauthorized rejection. No on-chain SOL balance is required because
+    // the tx is expected to fail at the admin constraint, before fee
+    // settlement matters.
+    let non_admin = Keypair::new();
 
     let signing_pubkey = [88u8; 32];
 

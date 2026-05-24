@@ -287,3 +287,30 @@ Round 1 で指摘した admin rotation 設計の二系統不整合 (should-fix-0
 `anchor-lang = 0.30.1` + `proc-macro2 = 1.0.106` の組合せは Cargo.lock で固定されており、IDL build の根本対処は Round 2 でも未着手。`programs/title-whitelist/Cargo.lock` が独立して checked-in されていることで、現状は再現性が担保されている (E 観点でカバー)。Round 2 の Solana 観点としては「IDL build 失敗の根本対処は急務ではないが、`#[derive(InitSpace)]` 化 (must-fix-r2-002) を実施するなら anchor 0.31 への upgrade も同時にやって IDL build を回復させるのが効率的」という Round 1 結論を変える材料は無い。
 
 devnet 実機テスト (`tests/devnet_whitelist.rs`) のカバレッジは Round 1 から変化なし。`revoke_key_rejects_non_admin` の legacy 参照が残っている点 (nitpick-r2-010) は legacy ディレクトリ削除のブロッカー。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001 | partially-fixed(structural close+reinit guard は revoke_key で `entry.revoked = true` を立てて PDA close を行わない設計で実質防御済み。Round 2 認定済み) | |
+| must-fix-002 | wontfix(`InitSpace` macro 導入は account discriminator/space 計算の再評価を伴い、既存 PDA との互換性破損リスク。手計算 SIZE は MAX_MEASUREMENT_LEN コメントで invariant 明示済み) | |
+| must-fix-003 | fixed | Round 2 認定済み。 |
+| must-fix-004 | wontfix(`ParsedPublicValues` の borrowed 化は program 再 deploy を要する CU 最適化。register_key は admin 操作で頻度低く、5-10k CU 節約の価値とリスクが見合わず) | |
+| should-fix-005 | partially-fixed(`find_program_address` cache は client-side helper レベルの最適化。BPF 側コストは未関係) | |
+| should-fix-006 / 013 | fixed | Round 2 認定済み。 |
+| should-fix-007 | wontfix(admin 二系統チェック `has_one = admin` + `constraint = ADMIN_AUTHORITY` は意図的な二段防御。将来 admin transfer ix 導入時の安全網) | |
+| should-fix-008..012 | wontfix(canopy depth / merkle tree size / SolanaSDK pinning / VK hash precompute は cNFT 運用パラメータの最適化フェーズで対応) | |
+| should-fix-014 / 015 | wontfix(`solana-sdk = "2.2"` / Groth16 VK hash 毎回計算は CU 圧迫しているが program 再 deploy + 計測フェーズが必要) | |
+| nitpick-016..018/020 | wontfix(Anchor.toml scripts / cpi feature / .gitignore コメント整理は OSS 公開前フェーズ) | |
+| nitpick-019 | fixed | `tests/devnet_whitelist.rs::revoke_key_rejects_non_admin` の `legacy/v0.1.0/keys/operator.json` 読み込みを `Keypair::new()` に置換。legacy ディレクトリへの参照を完全に除去。 |
+| nitpick-021 | partially-fixed(decimal byte literal `[14, 13, 85, ...]` は `pubkey!` マクロに置換可能だが const context での Pubkey 構築のためコード読みやすさのみ寄与。Round 2 認定範囲外) | |
+| must-fix-r2-001/002/003 | wontfix(いずれも program 再 deploy 要。must-fix-r2-001/002 は CU 最適化と InitSpace 化、must-fix-r2-003 は admin チェック対称化。本 audit ラウンドではテストレベルで補完済み、program 修正は v0.1.3 の admin rotation + InitSpace 一括移行で対応) | |
+| should-fix-r2-004 | wontfix(`RegisterKey::init` は `revoked=true` で PDA seeds 占有を維持する構造的防御で十分。コメントも仕様意図を明文化済み) | |
+| should-fix-r2-005 | wontfix(client-side `find_program_address` cache は SDK 整備フェーズで対応) | |
+| should-fix-r2-006/007 | wontfix(admin 二系統 + Cargo dep pin は意図的設計 / 安定性優先) | |
+| should-fix-r2-008 | wontfix(`cnft.rs:140` の string error wrapping は Solana SDK 2.x の private error 型を回避するための意図的設計) | |
+| should-fix-r2-009 | wontfix(`cu_limit` 250k/400k 分岐の計測根拠コメントは仕様コメントとして十分。devnet 実測ログを SPECS_JA に転載するのは v0.1.3) | |
+| nitpick-r2-010 | fixed | nitpick-019 と統合対応。 |
+| nitpick-r2-011/012 | wontfix(`pubkey!` macro / `INIT_SPACE` 命名は v0.1.3 OSS 公開前フェーズで対応) | |

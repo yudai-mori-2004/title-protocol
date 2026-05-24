@@ -14,18 +14,22 @@ COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/crypto/Cargo.toml crates/crypto/Cargo.toml
 COPY crates/tee/Cargo.toml crates/tee/Cargo.toml
 COPY crates/gateway/Cargo.toml crates/gateway/Cargo.toml
+COPY crates/proxy/Cargo.toml crates/proxy/Cargo.toml
 COPY crates/solana/Cargo.toml crates/solana/Cargo.toml
 
-# Stub sources — lets cargo resolve and cache all dependencies
+# Stub sources — lets cargo resolve and cache all dependencies. Every
+# workspace member needs a manifest + stub to keep cargo happy at the
+# dep-cache pass, even crates this image won't actually build.
 RUN mkdir -p crates/attestation/src && echo "" > crates/attestation/src/lib.rs \
  && mkdir -p crates/attestation-aws-nitro/src && echo "" > crates/attestation-aws-nitro/src/lib.rs \
  && mkdir -p crates/core/src && echo "" > crates/core/src/lib.rs \
  && mkdir -p crates/crypto/src && echo "" > crates/crypto/src/lib.rs \
  && mkdir -p crates/tee/src && echo "fn main() {}" > crates/tee/src/main.rs && echo "" > crates/tee/src/lib.rs \
  && mkdir -p crates/gateway/src && echo "fn main() {}" > crates/gateway/src/main.rs && echo "" > crates/gateway/src/lib.rs \
+ && mkdir -p crates/proxy/src && echo "fn main() {}" > crates/proxy/src/main.rs \
  && mkdir -p crates/solana/src && echo "" > crates/solana/src/lib.rs
 
-RUN cargo build --release --bin title-gateway 2>&1 || true
+RUN cargo build --release --bin title-gateway
 
 # Real source
 COPY crates/ crates/

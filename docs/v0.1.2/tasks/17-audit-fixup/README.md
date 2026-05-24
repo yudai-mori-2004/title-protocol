@@ -267,7 +267,7 @@ OSS 成熟度（H）:
 | 17a 暗号+attestation | done | 約 40 |
 | 17b proxy+tee | done | 約 47 |
 | 17c gateway+core | done | 約 42 |
-| 17d solana+sp1 | pending | 約 58 |
+| 17d solana+sp1 | done | 約 58 |
 | 17e コメント+デッドコード | pending | 約 97 |
 | 17f ドキュメント+仕様 | pending | 約 67 |
 | 17g ビルド+テスト+OSS | pending | 約 67 |
@@ -390,3 +390,63 @@ OSS 成熟度（H）:
 - K8-nitpick-001..007: 17e で一括対応
 
 **検証**: `cargo test --workspace` 全グリーン(core 39/39 — dead code 削除で 48→39、gateway 43/43 + 8/8 e2e — prune_idle テスト追加で 41→43、その他は不変)。
+
+### 17d 完了内訳
+
+**K7 SP1 guest + host (`sp1-guests/attestation-aws-nitro/`)**
+- K7-01 doc 整合: guest doc コメントで `module_id` → `instance_id`(vendor-neutral)に統一、実コードの commit 内容(AWS Nitro の `doc.module_id` を vendor-neutral スロットに入れる)を 1 行注記で説明。on-chain parser 側コメントと整合
+- K7-02 出力ファイル名: `prove.rs` で `Path::with_extension` を `format!` ベースに置換。`nitro.v1.bin` 等の複合拡張子で意味的部分が失われない
+- K7-03 進捗ログ: `sp1_sdk::utils::setup_logger()` を `prove.rs::main` 冒頭で呼び、`info!` レベルの SP1 進捗バーが表示されるように
+- K7-04 メモリ見積もり: `long_about` を「~90 minutes, ~30 GiB peak, r5.4xlarge 以上推奨」に書き換え
+- K7-07 doc サイズ上限: `prove.rs` に `MAX_DOC_BYTES = 16 KiB` ガードを `fs::read` 直後に追加。guest 側にも同じ assert を入れて zkVM cycle 爆発を防止
+- K7-08 vkey metadata: `vkey.rs` で stderr に guest CARGO_PKG_VERSION + Unix エポック秒を出力、stdout は hex のまま(機械可読維持)
+- K7-10 doc: `program/src/main.rs` の「once per TEE instance」を「runs once when a signer key is registered on-chain」に
+- K7-11 `_cert_chain`: `let _ = report.authenticate(...).expect(...);` の戻り値捨て idiom に変更
+- K7-06 cert prefix: `trusted_certs_prefix_len` 引数自体は 17a で削除済み。`authenticate()` がパラメータを取らないので physical guard が成立
+
+**先送り(後フォローアップ)**
+- K7-05 dry-run: `--dry-run` フラグでの `execute()` early-failure
+- K7-09 ProverHandle: vkey + prove を共有 setup で 1 回化
+- K7-12 SP1 SDK pin: `=6.2.x` への strict pin(現在は `"6.2"` で minor 範囲)。SP1 SDK 6.3+ がリリースされると vkey 不一致リスクあり
+
+**K5 client (`crates/solana/`)**
+- K5-mf001 mirror struct Borsh 整合: `StoredMeasurement { bytes: [u8; 64], len: u8 }` を client にも導入、`WhitelistEntry.measurement` を `Vec<u8>` から `StoredMeasurement` に置換。SIZE 計算式も on-chain layout 1:1 に
+- K5-nitpick-002 / R-006 pubkey! const: `whitelist_program_id` / `spl_account_compression_v2_id` を `solana_sdk::pubkey!` 経由の `pub const` に書き換え、関数は thin wrapper に
+- K5-sf005 mint TX compute budget: `build_and_sign_mint_tx` 冒頭に `ComputeBudgetInstruction::set_compute_unit_limit(400_000 or 250_000)` を追加(collection 有無で分岐)
+- K5-sf008 OffchainData 削除: 使われていない dead struct を撤廃
+- K5-sf009 WhitelistInstruction 削除: serde JSON enum で wire 互換性のない dead code、Anchor IDL or 直接 ix builder で代替予定なので一旦削除
+- K5-sf013 sign_transaction: `for` ループを `iter().take(num_signers).position(...)` に書き換え、意図が明示的に
+- K5-nitpick-003 hash_suffix: `signature_hash.strip_prefix("sha256:").unwrap_or(...)` の安全な切り出しに
+- K5-nitpick-007 hex_encode 自作削除: `hex` crate を `[dependencies]` に昇格して `hex::encode(bytes)` に統一
+- mpl-bubblegum pin tighten: `"2.0"`(2.x 全部) → `"~2.1"`(2.1.x 限定)で `MetadataArgsV2` の field shape 変更を回避
+
+**先送り(scope 外 / 17e)**
+- K5-mf002 KEY_EXPIRY_SECONDS 共有: client crate が program crate を `no-entrypoint` 依存できる構造改修が必要、後フォローアップ
+- K5-sf004 process_extension whitelist check: TEE 起動時 register 状態を internal state に持つ大規模変更、scope 外
+- K5-sf006 rent_exempt RPC: client/テスト側の test runner 整備、後フォローアップ
+- K5-sf007 PDA bump cache + R-005 OnceLock: 性能最適化、必須でない
+- K5-sf010..012 + K5-nitpick-001/004..006: devnet テスト品質改善、17e/17g
+- R-014 solana-sdk version pinning: workspace 全体の依存整理、17g
+
+**K5/R program (`programs/title-whitelist/`)** — ⚠ devnet 再デプロイが必要
+- K5-mf003 admin double check + R-007 admin rotation note: `Update*` accounts に `constraint = admin.key() == ADMIN_AUTHORITY` を併記、`ADMIN_AUTHORITY` の doc に Phase 2 migration plan を明記、未使用 `admin_authority()` 関数を削除
+- K5-mf004 proof length strict: `proof.len() > 4` → `proof.len() == 4 + 256` の厳密チェック + 新規 `InvalidProofLength` error variant
+- K5-sf002 register_key 順序入替: cheap → expensive で並べ替え(vkey allowlist → parse → measurement allowlist → bind check → Groth16 verify)、不正入力での 250k CU 浪費を防止
+- K5-sf003 parse_public_values 末尾検証: `has_public_key` + (optional) `public_key_hash` を読み切り、`require!(data.len() == offset, ...)` で末尾余剰バイトを reject。`has_public_key` の canonical 0/1 validation も追加
+- R-021 pubkey! const: `ADMIN_AUTHORITY: [u8; 32]` → `Pubkey::new_from_array(...)` の `pub const Pubkey` に。`admin.key() == ADMIN_AUTHORITY` の直接比較に統一、`admin_authority()` 関数を削除
+
+**先送り(影響大 or scope 外)**
+- K5-sf001 revoke 未登録 PDA: 現状 Anchor `AccountNotInitialized (3012)` で機能的には正しく拒否される、文言改善のみ defer
+- R-001 register init guard: `WhitelistRegistryHead` PDA 追加が必要、構造的設計変更で scope 外
+- R-002 `#[derive(InitSpace)]`: Anchor 0.30 → 0.31 移行と組み合わせると効率良いので、別タスク
+- R-004 `Vec<u8>` → slice 化: `ParsedPublicValues` ライフタイム化、効率改善だが現状動作に影響なし、defer
+- R-009 revoke instruction seeds: CU 削減リファクタ、defer
+- R-015 vk hash build-time precompute: build.rs 追加、defer
+
+**devnet 再デプロイ必要事項**(ユーザー判断)
+- Solana program ID `43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs` は不変、`anchor upgrade --program-id 43y8E... --provider.cluster devnet` で in-place アップグレード
+- Admin keypair: `keys/admin.json`(`wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna`)
+- 既存の ApprovedVkeys / ApprovedMeasurements / WhitelistEntry PDA はアカウントレイアウトに後方互換あるため再 init 不要
+- 再デプロイ後、devnet テスト `cargo test --test devnet_whitelist` で `register_key` フローが新しい順序+strict proof length チェックを通過することを確認
+
+**検証**: `cargo test --workspace` 全グリーン(solana 31/31、proxy 5、tee 101、gateway 43 + 8 e2e、core 39、attestation-aws-nitro 2、crypto 28)。SP1 host + guest も `cargo check` 通過。program は `cargo check --no-default-features` で warning 19 件(Anchor cfg ノイズ、機能影響なし)、error 0 件。

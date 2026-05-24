@@ -30,12 +30,18 @@ pub const KEY_EXPIRY_SECONDS: i64 = 90 * 24 * 60 * 60;
 /// Extracted from sp1-verifier 6.2.2 vk-artifacts/groth16_vk.bin.
 pub const GROTH16_VK_BYTES: &[u8] = include_bytes!("../vk/groth16_vk_v6.2.bin");
 
-/// Admin authority pubkey: wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna
-/// Phase 1: single wallet. Future: multi-sig / DAO migration.
-pub const ADMIN_AUTHORITY: [u8; 32] = [
+/// Admin authority pubkey: wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna.
+///
+/// Phase 1: single wallet. Future: multi-sig / DAO migration plan:
+///   A) replace this with an on-chain `admin_authority` PDA owned by a
+///      Squads-style multisig program, and
+///   B) add `transfer_admin(new_admin)` ix gated by the current admin
+///      signature so rotation no longer requires a program upgrade.
+/// Until that lands, rotation requires `anchor upgrade` by the deploy key.
+pub const ADMIN_AUTHORITY: Pubkey = Pubkey::new_from_array([
     14, 13, 85, 28, 133, 146, 12, 228, 183, 160, 156, 77, 30, 213, 163, 160,
     181, 106, 231, 149, 205, 50, 104, 222, 122, 121, 156, 214, 103, 125, 184, 3,
-];
+]);
 
 #[program]
 pub mod title_whitelist {
@@ -179,19 +185,21 @@ pub mod title_whitelist {
         proof: Vec<u8>,
         public_values: Vec<u8>,
     ) -> Result<()> {
-        // Step 1: vkey allowlist check
+        // Order the checks so a malformed/spoofed input fails before we
+        // burn the ~250K CU that the Groth16 pairing costs. Spec §6.2 lets
+        // the four substantive checks run in any order; this just keeps
+        // them DoS-resistant.
+
+        // Step 1: vkey allowlist (cheap eq lookup).
         require!(
             ctx.accounts.approved_vkeys.vkeys.contains(&sp1_vkey_hash),
             WhitelistError::VkeyNotApproved
         );
 
-        // Step 2: SP1 Groth16 proof verification
-        verify_sp1_groth16(&sp1_vkey_hash, &proof, &public_values)?;
-
-        // Step 3: Parse public values (vendor-neutral, length-prefixed measurement)
+        // Step 2: parse public values up front.
         let parsed = parse_public_values(&public_values)?;
 
-        // Step 4: Measurement allowlist check
+        // Step 3: measurement allowlist (cheap eq).
         let candidate = StoredMeasurement::from_slice(&parsed.measurement);
         require!(
             ctx.accounts
@@ -202,15 +210,17 @@ pub mod title_whitelist {
             WhitelistError::MeasurementNotApproved
         );
 
-        // Step 5: signing_pubkey ↔ user_data_hash binding
+        // Step 4: signing_pubkey ↔ user_data_hash binding (two SHA-256s).
         require!(parsed.has_user_data, WhitelistError::MissingUserData);
-
         let user_data = Sha256::digest(signing_pubkey);
         let expected_hash = Sha256::digest(user_data);
         require!(
             parsed.user_data_hash == expected_hash.as_slice(),
             WhitelistError::UserDataMismatch
         );
+
+        // Step 5: Groth16 verify — the expensive step, last.
+        verify_sp1_groth16(&sp1_vkey_hash, &proof, &public_values)?;
 
         // Step 6: Create PDA
         let clock = Clock::get()?;
@@ -269,14 +279,19 @@ fn verify_sp1_groth16(
     proof: &[u8],
     public_values: &[u8],
 ) -> Result<()> {
-    require!(!proof.is_empty(), WhitelistError::EmptyProof);
     require!(
         !public_values.is_empty(),
         WhitelistError::EmptyPublicValues
     );
 
-    // SP1 prepends 4 bytes of SHA-256(groth16_vk) to the proof for VK binding.
-    require!(proof.len() > 4, WhitelistError::EmptyProof);
+    // SP1 prepends 4 bytes of SHA-256(groth16_vk) to the proof; the
+    // remainder is the Groth16 proof (256 bytes: pi_a 64 + pi_b 128 +
+    // pi_c 64). Verify the length up front so `verify_proof_raw` cannot
+    // hit a bounded-array slice panic on a truncated input.
+    require!(
+        proof.len() == 4 + 256,
+        WhitelistError::InvalidProofLength
+    );
     let groth16_vk_hash: [u8; 4] = Sha256::digest(GROTH16_VK_BYTES)[..4]
         .try_into()
         .unwrap();
@@ -381,7 +396,31 @@ fn parse_public_values(data: &[u8]) -> Result<ParsedPublicValues> {
             WhitelistError::InvalidPublicValues
         );
         user_data_hash = data[offset..offset + 32].to_vec();
+        offset += 32;
     }
+
+    // has_public_key + (optional) public_key_hash. We don't use these
+    // values, but parse them so trailing garbage in the public_values
+    // buffer is detected.
+    require!(
+        data.len() >= offset + 1,
+        WhitelistError::InvalidPublicValues
+    );
+    require!(data[offset] <= 1, WhitelistError::InvalidPublicValues);
+    let has_public_key = data[offset] == 1;
+    offset += 1;
+    if has_public_key {
+        require!(
+            data.len() >= offset + 32,
+            WhitelistError::InvalidPublicValues
+        );
+        offset += 32;
+    }
+
+    // The guest is supposed to commit exactly the public-values envelope
+    // documented in `sp1-guests/.../program/src/main.rs`. Anything past
+    // the end means the layout changed without the parser catching up.
+    require!(data.len() == offset, WhitelistError::InvalidPublicValues);
 
     Ok(ParsedPublicValues {
         measurement,
@@ -540,13 +579,18 @@ pub struct InitializeApprovedVkeys<'info> {
     pub approved_vkeys: Account<'info, ApprovedVkeys>,
     #[account(
         mut,
-        constraint = admin.key() == admin_authority() @ WhitelistError::Unauthorized
+        constraint = admin.key() == ADMIN_AUTHORITY @ WhitelistError::Unauthorized
     )]
     pub admin: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
 /// AddApprovedVkey / RemoveApprovedVkey instruction accounts.
+///
+/// Two admin checks in series: `has_one = admin` proves the signer matches
+/// the PDA-recorded admin, plus the explicit `constraint = ADMIN_AUTHORITY`
+/// keeps the program-level invariant alive even if a future migration ever
+/// reassigns `approved_vkeys.admin`.
 #[derive(Accounts)]
 pub struct UpdateApprovedVkeys<'info> {
     #[account(
@@ -556,6 +600,9 @@ pub struct UpdateApprovedVkeys<'info> {
         has_one = admin @ WhitelistError::Unauthorized
     )]
     pub approved_vkeys: Account<'info, ApprovedVkeys>,
+    #[account(
+        constraint = admin.key() == ADMIN_AUTHORITY @ WhitelistError::Unauthorized
+    )]
     pub admin: Signer<'info>,
 }
 
@@ -572,13 +619,14 @@ pub struct InitializeApprovedMeasurements<'info> {
     pub approved_measurements: Account<'info, ApprovedMeasurements>,
     #[account(
         mut,
-        constraint = admin.key() == admin_authority() @ WhitelistError::Unauthorized
+        constraint = admin.key() == ADMIN_AUTHORITY @ WhitelistError::Unauthorized
     )]
     pub admin: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
 /// AddApprovedMeasurement / RemoveApprovedMeasurement instruction accounts.
+/// See `UpdateApprovedVkeys` for the two-layer admin check rationale.
 #[derive(Accounts)]
 pub struct UpdateApprovedMeasurements<'info> {
     #[account(
@@ -588,6 +636,9 @@ pub struct UpdateApprovedMeasurements<'info> {
         has_one = admin @ WhitelistError::Unauthorized
     )]
     pub approved_measurements: Account<'info, ApprovedMeasurements>,
+    #[account(
+        constraint = admin.key() == ADMIN_AUTHORITY @ WhitelistError::Unauthorized
+    )]
     pub admin: Signer<'info>,
 }
 
@@ -632,13 +683,9 @@ pub struct RevokeKey<'info> {
     )]
     pub whitelist_entry: Account<'info, WhitelistEntry>,
     #[account(
-        constraint = admin.key() == admin_authority() @ WhitelistError::Unauthorized
+        constraint = admin.key() == ADMIN_AUTHORITY @ WhitelistError::Unauthorized
     )]
     pub admin: Signer<'info>,
-}
-
-fn admin_authority() -> Pubkey {
-    Pubkey::new_from_array(ADMIN_AUTHORITY)
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +742,8 @@ pub struct MeasurementRevoked {
 pub enum WhitelistError {
     #[msg("SP1 proof is empty")]
     EmptyProof,
+    #[msg("SP1 proof has unexpected length (expected 4 + 256 bytes)")]
+    InvalidProofLength,
     #[msg("Public values are empty")]
     EmptyPublicValues,
     #[msg("SP1 Groth16 proof verification failed")]

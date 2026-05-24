@@ -25,15 +25,6 @@ use title_core::ProcessResponse;
 use crate::cnft;
 use crate::signing_key::SolanaSigningKey;
 
-/// Offchain data fetched from the URL provided in the extension request.
-/// This is the core processing result stored by the client.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct OffchainData {
-    /// The core processing result (signature_hash + processor results).
-    #[serde(flatten)]
-    pub response: ProcessResponse,
-}
-
 /// Errors from Solana Extension processing.
 #[derive(Debug, thiserror::Error)]
 pub enum ExtensionError {
@@ -154,22 +145,13 @@ pub fn verify_attestation_binding(
     if let Some(expected) = expected_measurement {
         if verified.measurement != expected {
             return Err(ExtensionError::MeasurementMismatch {
-                expected: hex_encode(expected),
-                actual: hex_encode(&verified.measurement),
+                expected: hex::encode(expected),
+                actual: hex::encode(&verified.measurement),
             });
         }
     }
 
     Ok(verified)
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        use std::fmt::Write;
-        let _ = write!(s, "{:02x}", b);
-    }
-    s
 }
 
 /// Process a Solana Extension request end-to-end.

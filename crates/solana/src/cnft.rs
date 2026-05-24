@@ -12,30 +12,35 @@ use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     hash::Hash,
     message::{self, AddressLookupTableAccount, VersionedMessage},
+    pubkey,
     pubkey::Pubkey,
     signature::Signature,
     system_instruction,
     transaction::VersionedTransaction,
 };
 use crate::signing_key::SolanaSigningKey;
-use std::str::FromStr;
 
-/// Derive Bubblegum tree_config PDA.
-/// Seeds: `[merkle_tree.key()]`, program = Bubblegum
+/// SPL Account Compression V2 program ID — backs Bubblegum V2 Merkle trees.
+pub const SPL_ACCOUNT_COMPRESSION_V2_ID: Pubkey =
+    pubkey!("mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW");
+
+/// Compatibility shim — prefer [`SPL_ACCOUNT_COMPRESSION_V2_ID`] directly.
+#[inline]
+pub fn spl_account_compression_v2_id() -> Pubkey {
+    SPL_ACCOUNT_COMPRESSION_V2_ID
+}
+
+/// Derive Bubblegum tree_config PDA. Seeds: `[merkle_tree]`.
 pub fn derive_tree_config(merkle_tree: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[merkle_tree.as_ref()], &mpl_bubblegum::ID)
 }
 
-/// Derive MPL Core CPI Signer PDA.
-/// Seeds: `[b"mpl_core_cpi_signer"]`, program = Bubblegum
+/// Derive the MPL Core CPI Signer PDA used by Bubblegum V2 when minting
+/// into an MPL Core collection. Seeds: `[b"mpl_core_cpi_signer"]`,
+/// program = Bubblegum. The seed is defined inside the Bubblegum program
+/// (not re-exported); keep this in sync if Bubblegum changes the convention.
 pub fn derive_mpl_core_cpi_signer() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"mpl_core_cpi_signer"], &mpl_bubblegum::ID)
-}
-
-/// SPL Account Compression V2 program ID.
-/// Used by Bubblegum V2 for Merkle tree storage.
-pub fn spl_account_compression_v2_id() -> Pubkey {
-    Pubkey::from_str("mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW").unwrap()
 }
 
 /// Calculate the data size for a ConcurrentMerkleTree account.
@@ -158,12 +163,14 @@ pub fn build_mint_v2_ix(
 ) -> solana_sdk::instruction::Instruction {
     let (tree_config, _) = derive_tree_config(tree_pubkey);
 
-    let hash_suffix = if signature_hash.len() > 7 {
-        &signature_hash[7..signature_hash.len().min(15)]
-    } else {
-        signature_hash
-    };
-    let name = format!("Title #{hash_suffix}");
+    // signature_hash is `sha256:<hex>` (Spec §1.5); take a short slice of
+    // the hex tail for a human-readable display name. `strip_prefix` is
+    // safe for either form; `min(8)` caps the suffix length.
+    let hex = signature_hash
+        .strip_prefix("sha256:")
+        .unwrap_or(signature_hash);
+    let short = &hex[..hex.len().min(8)];
+    let name = format!("Title #{short}");
 
     let metadata = MetadataArgsV2 {
         name,
@@ -228,7 +235,18 @@ pub fn build_and_sign_mint_tx(
         payer,
     );
 
-    let mut tx = build_v0_tx(&[ix], payer, recent_blockhash, &[])?;
+    // MintV2 + MPL Core CPI runs over the 200K default; reserve enough
+    // headroom for the collection path. cNFT mints without a collection
+    // would survive on the default but a single budget keeps both shapes
+    // uniformly fast.
+    let cu_limit = if core_collection.is_some() {
+        400_000
+    } else {
+        250_000
+    };
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(cu_limit);
+
+    let mut tx = build_v0_tx(&[cu_ix, ix], payer, recent_blockhash, &[])?;
     signing_key.sign_transaction(&mut tx)?;
 
     Ok(tx)

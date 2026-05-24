@@ -2,7 +2,7 @@
 
 //! # SP1 Guest: AWS Nitro Attestation Document Verifier
 //!
-//! Spec §6.2 — Solana Extension preparation (once per TEE instance).
+//! Spec §6.2 — runs once when a signer key is registered on-chain.
 //!
 //! Runs inside the SP1 zkVM and proves:
 //!  1. The COSE_Sign1 signature on the Attestation Document is valid
@@ -11,7 +11,7 @@
 //!
 //! Public values committed by this guest, in commit order:
 //!
-//!   module_id         : Borsh String (u32 length prefix + UTF-8 bytes)
+//!   instance_id       : Borsh String (u32 length prefix + UTF-8 bytes)
 //!   timestamp_ms      : u64 LE
 //!   measurement_len   : u32 LE
 //!   measurement       : measurement_len bytes (AWS Nitro PCR0 = 48 bytes)
@@ -20,14 +20,13 @@
 //!   has_public_key    : u8 (0 or 1)
 //!   public_key_hash   : 32 bytes (only if has_public_key == 1)
 //!
+//! `instance_id` is the vendor-neutral name for the device-identifier field;
+//! AWS Nitro carries it inside `AttestationDocument::module_id`. Other vendors
+//! emit the same envelope from their own equivalent.
+//!
 //! `measurement_len` is length-prefixed (instead of hard-coded 48) so the
 //! on-chain parser is shared across vendors. Per-vendor guests still emit
 //! the same overall envelope; only the embedded measurement length differs.
-//!
-//! `trusted_certs_prefix_len` is intentionally NOT a guest input — it is
-//! hard-coded to 0 (verify the full cabundle chain). Allowing the prover
-//! to skip leading certs would let an attacker bypass chain verification
-//! by claiming the entire chain is "already trusted".
 
 #![no_main]
 sp1_zkvm::entrypoint!(main);
@@ -35,27 +34,32 @@ sp1_zkvm::entrypoint!(main);
 use sha2::{Digest, Sha256};
 use title_attestation_aws_nitro::AttestationReport;
 
-pub fn main() {
-    // The COSE_Sign1-encoded Attestation Document bytes.
-    let doc_bytes: Vec<u8> = sp1_zkvm::io::read_vec();
+/// Hard cap on the COSE_Sign1 document size. Real AWS Nitro documents are
+/// well under 8 KiB; a much larger input is either operator error or an
+/// attempt to burn cycles inside the zkVM.
+const MAX_DOC_BYTES: usize = 16 * 1024;
 
-    // Phase 1: parse the COSE_Sign1 envelope.
+pub fn main() {
+    let doc_bytes: Vec<u8> = sp1_zkvm::io::read_vec();
+    assert!(
+        doc_bytes.len() <= MAX_DOC_BYTES,
+        "attestation document too large"
+    );
+
     let report = AttestationReport::parse(&doc_bytes).expect("COSE_Sign1 parse failed");
     let doc = report.doc();
 
-    // Phase 2: full cert chain + COSE signature verification.
-    // The chain root is pinned by AWS_NITRO_ROOT_CA_SHA256 inside the verifier.
-    // SP1 guests have no wall clock — pass the document's own timestamp so
-    // certificate validity is checked against the moment of attestation.
-    let _cert_chain = report
+    // Full cabundle chain. SP1 guests have no wall clock — verify
+    // certificate validity against the document's own timestamp.
+    let _ = report
         .authenticate(doc.timestamp / 1000)
         .expect("Attestation Document verification failed");
 
-    // Phase 3: commit verified fields as public values.
+    // `doc.module_id` is AWS Nitro's wire name; commit it under the
+    // vendor-neutral `instance_id` slot in the public-values envelope.
     sp1_zkvm::io::commit(&doc.module_id);
     sp1_zkvm::io::commit(&doc.timestamp);
 
-    // Length-prefixed measurement so the on-chain parser is vendor-agnostic.
     let measurement = doc.pcrs.get(&0).expect("PCR0 missing");
     let measurement_bytes: &[u8] = measurement.as_ref();
     sp1_zkvm::io::commit(&(measurement_bytes.len() as u32));

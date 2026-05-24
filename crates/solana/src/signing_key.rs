@@ -78,14 +78,13 @@ impl SolanaSigningKey {
         let num_signers = tx.message.header().num_required_signatures as usize;
         let static_keys = tx.message.static_account_keys();
 
-        for i in 0..num_signers {
-            if i < static_keys.len() && static_keys[i] == pubkey {
-                tx.signatures[i] = solana_sdk::signature::Signature::from(sig_bytes);
-                return Ok(());
-            }
-        }
-
-        Err(SigningKeyError::PubkeyNotInSigners(pubkey.to_string()))
+        let index = static_keys
+            .iter()
+            .take(num_signers)
+            .position(|k| k == &pubkey)
+            .ok_or_else(|| SigningKeyError::PubkeyNotInSigners(pubkey.to_string()))?;
+        tx.signatures[index] = solana_sdk::signature::Signature::from(sig_bytes);
+        Ok(())
     }
 }
 

@@ -82,16 +82,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Step 2: Generate encryption key bundle. Entropy must come from the
-    // TEE (NSM on Nitro), not host OsRng — see `tee_seeded_rng`.
+    // Step 2: Generate the encryption key bundle and Solana Extension signing
+    // key. Entropy must come from the TEE (NSM on Nitro), not host OsRng —
+    // see `tee_seeded_rng`. Spec §6.2 specifies the Ed25519 keypair for cNFT
+    // partial signing alongside the core encryption bundle.
     tracing::info!("Generating encryption key bundle from TEE entropy...");
     let mut key_bundle_rng = tee_seeded_rng(runtime.as_ref(), "key_bundle")?;
     let key_bundle = KeyBundle::generate(&mut key_bundle_rng)?;
     tracing::info!("Encryption key bundle ready (x25519, p256, ml-kem-768)");
 
-    // Step 3: Generate Solana Extension signing key
-    // Spec §6.2 — Ed25519 keypair for cNFT partial signing. Same entropy
-    // requirement as the encryption bundle above.
     let mut solana_rng = tee_seeded_rng(runtime.as_ref(), "solana_signing_key")?;
     let solana_key = SolanaSigningKey::generate(&mut solana_rng);
     tracing::info!(
@@ -208,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = router(state);
 
-    // Step 6: Start Axum HTTP server
+    // Step 7: Start Axum HTTP server.
     let bind_addr = std::env::var("TEE_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:4000".to_string());
     tracing::info!(addr = %bind_addr, "TEE server starting");
 

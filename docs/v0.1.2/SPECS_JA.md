@@ -1159,7 +1159,9 @@ Extensionはコアとは別のリクエストとして実行される。コア�
 
 ### Extension の有効/無効
 
-Extension の有効化は **TEE バイナリのビルド時点で固定される**。Solana Extension を有効化したビルドと無効化したビルドは別個の TEE バイナリであり、measurement も異なる。Gateway はその TEE バイナリの構成に応じて、対応する Extension エンドポイント（例: `POST /extension/solana`）の存在を判断し、未対応構成では 404 を返す。実装側では `cargo build --features solana-ext` 相当のフラグで切り替える。
+Extension の有効化は **TEE バイナリのビルド時点で固定される**。Extension を有効化したビルドと無効化したビルドは別個の TEE バイナリであり、measurement も異なるべきである。Gateway はその TEE バイナリの構成に応じて、対応する Extension エンドポイント（例: `POST /extension/solana`）の存在を判断し、未対応構成では 404 を返す。
+
+**現行リリース (v0.1.2) の実装**: Solana Extension は常時有効としてビルドされており、`title-solana` crate は `crates/tee/Cargo.toml` で無条件依存。build-time toggle (`--features solana-ext` 相当) は将来のリリースで Extension が複数化する際に導入する。それまでの間、Gateway 側の `/solana-keys` 404 は「TEE が Extension を持たない」のではなく「キャッシュ未初期化」を意味する。
 
 ## 6.2 Solana Extension
 
@@ -1198,20 +1200,21 @@ Attestation Documentからゼロ知識証明（ZK proof）を生成
   │
   ▼
 ZK proofをSolanaプログラムに提出
-  → プログラムが三段の照合を実施
+  → プログラムが四段の照合を実施
     1. 検証回路が正規のものか（verifying_key_hash 照合）
     2. TEE 実体が正規のものか（measurement 照合）
     3. ZK proof の対象が今登録する署名鍵に紐づくか（user_data bind 確認）
-  → すべて通過し、かつ ZK proof の数学的検証に成功した場合のみ、署名鍵をホワイトリストPDAに登録
+    4. ZK proof の数学的検証（Groth16 ペアリング）
+  → 全段通過時のみ、署名鍵をホワイトリストPDAに登録
 ```
 
-ホワイトリストPDAはSolanaプログラムが管理するオンチェーンアカウントである。更新権限はプログラムのみが持ち、後述する三段の同一性確認をすべて通過した ZK proof でのみ新しい署名鍵を追加できる。人手による管理は介在しない。
+ホワイトリストPDAはSolanaプログラムが管理するオンチェーンアカウントである。更新権限はプログラムのみが持ち、後述する四段の register_key 検証をすべて通過した ZK proof でのみ新しい署名鍵を追加できる。人手による管理は介在しない。
 
 Solana上でAttestation Documentの証明書チェーンを直接検証するのは計算コストが高いため、ゼロ知識証明を用いる。ZKスキームにはSP1（Succinct）を採用する。SP1はRustプログラムをそのままzkVM上で実行し、実行結果のゼロ知識証明を生成する汎用zkVMであり、Solana上での証明検証をサポートしている（`sp1_solana` crate）。Attestation Documentの検証ロジック（証明書チェーン検証、measurement照合）を通常のRustコードとして記述し、SP1がゼロ知識証明にコンパイルする。カスタム回路の設計は不要である。
 
-#### 三段の同一性確認
+#### 四段の register_key 検証
 
-ZK proof は「あるプログラムが、ある入力に対して、ある出力を返した」ことを数学的に保証するだけで、「そのプログラムが何だったか」「その入力が何だったか」は proof の中身を見ても分からない。Title Protocol の信頼を成立させるには、Solana プログラム側で三つの「正規性」を別々に確認する必要がある。
+ZK proof は「あるプログラムが、ある入力に対して、ある出力を返した」ことを数学的に保証するだけで、「そのプログラムが何だったか」「その入力が何だったか」は proof の中身を見ても分からない。Title Protocol の信頼を成立させるには、Solana プログラム側で確認 1〜3 で「正規性」3 つを、確認 4 で「proof 自体の数学的整合性」を別々に検証する。実装 (`programs/title-whitelist/src/lib.rs::register_key`) は DoS 耐性のため安価な確認 (1 → 2 → 3) を先に通し、最もコストの高い Groth16 ペアリング (4) を最後に置く。
 
 **確認1: 検証回路の正規性 — verifying_key_hash**
 

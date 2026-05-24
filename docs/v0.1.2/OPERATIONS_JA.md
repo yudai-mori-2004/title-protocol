@@ -447,7 +447,7 @@ anchor 0.30.1 と最新 proc-macro2 の非互換。`anchor build --no-idl` で I
 
 ### SP1 proof 生成が OOM で死ぬ
 
-prover はピーク 8 GB 程度メモリを使う。RAM 16 GB 以上のホストを推奨。
+prover は Groth16 wrap でピーク約 30 GiB を要する。RAM 64 GiB 以上のホスト (EC2 `r5.4xlarge` 以上) を推奨。詳細と理由は `sp1-guests/README.md` を参照。
 
 ---
 

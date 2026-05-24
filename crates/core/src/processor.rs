@@ -215,11 +215,7 @@ mod tests {
             result: Ok(serde_json::json!({"validation": "valid"})),
         }));
 
-        let results = registry.execute(
-            &["c2pa-verify".into()],
-            b"content",
-            "image/jpeg",
-        );
+        let results = registry.execute(&["c2pa-verify".into()], b"content", "image/jpeg");
 
         assert_eq!(results.len(), 1);
         let output = &results["c2pa-verify"];
@@ -258,11 +254,7 @@ mod tests {
     #[test]
     fn registry_execute_unknown_processor() {
         let registry = ProcessorRegistry::new();
-        let results = registry.execute(
-            &["nonexistent".into()],
-            b"content",
-            "image/jpeg",
-        );
+        let results = registry.execute(&["nonexistent".into()], b"content", "image/jpeg");
 
         assert_eq!(results.len(), 1);
         assert_eq!(

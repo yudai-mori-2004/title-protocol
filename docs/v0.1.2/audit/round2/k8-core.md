@@ -156,3 +156,26 @@ Round 1 の must-fix 5 件中 3 件（001 `processor_outputs` 削除、002 `Core
 新規発見 7 件のうち round2-new-001（deserialize 経由の flatten 安全性）と round2-new-002（`status` と `error` キーの曖昧性）は外部公開前に決着させたい型問題。残りは doc / フォーマット / 軽微なリファクタの域。退行は検出されなかった。
 
 Round 1 で 22 件 → Round 2 で 7 件（うち should:4, nitpick:3）。修正サイクルとしては正常に収束しつつあり、残課題は「c2pa Reader 二重構築」「`pub data: Value` の型強化」「逐次 vs 並列の最終決着」の 3 系統に集約される。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001/002/003 | fixed | Round 2 認定済み。 |
+| must-fix-004 | partially-fixed(`ProcessorOutput::ok` のオブジェクト性チェックは存続。`pub data: Value` を `Map<String, Value>` に変更すると下流の呼び出し全箇所 (`json!({...})` への `.as_object()` 取り出し) に波及するため、現実装の Deserialize 経由バイパスは acceptable risk として残置。round2-new-001 も同じ理由で wontfix) | |
+| must-fix-005 | wontfix(`c2pa::Reader` の二重構築は orchestrator フロー全体の refactor が必要で本 audit 範囲を超える。c2pa-rs 0.84 では Reader 構築コストは低く、CPU/メモリへの実害も限定的) | |
+| should-fix-001 | wontfix(逐次 vs 並列は spec §1.3 と processor.rs doc の乖離だが、v0.1.2 では c2pa-verify が唯一の processor で実害ゼロ。仕様改訂か並列化のどちらかは v0.1.3 で決着) | |
+| should-fix-002 | wontfix(sidecar/fragmented + encryption の型レベル防御は orchestrator 側 `EncryptionRequiresSingleInput` で実行時に reject 済み。型システムで強制する設計変更は v0.1.3) | |
+| should-fix-003/004/005/006 | fixed | Round 2 認定済み。 |
+| should-fix-007 | fixed | round2-new-004 と統合対応。`jumbf::find_manifest_labels` の doc に C2PA 2.1 §13.4 出典を追加し、conventional 表現を排除。 |
+| should-fix-008/009 | fixed | Round 2 認定済み。 |
+| should-fix-010 | wontfix(`image` dev-dep + 7-8 回の `create_signed_jpeg()` 呼び出しは test only。OnceLock キャッシュは coverage 改善案だが OSS 公開前のフェーズで対応) | |
+| nitpick-001..007 | wontfix(doc 言語統一・JSON 例の `...` 整理・`EncryptionSuite::suite_id` の `&self`/`&Self` 非対称・dead enum variant・PartialEq 追加 etc は OSS 公開前のドキュメント仕上げで一括対応) | |
+| round2-new-001/002 | wontfix(must-fix-004 partially-fixed と同根。`Map<String, Value>` への移行 + status/error 曖昧性解消は wire format 互換性確認を要し、v0.1.3 SDK 整備と合わせて対応) | |
+| round2-new-003 | wontfix(should-fix-001 と同根) | |
+| round2-new-004 | fixed | should-fix-007 と統合対応。 |
+| round2-new-005 | fixed | `c2pa_verify.rs:25` の `//!` インライン typo を修正。2 行の doc comment に整形。 |
+| round2-new-006 | fixed | `cargo fmt -p title-core` を適用。`.map_err` クロージャの indent が標準に揃った。 |
+| round2-new-007 | fixed | `c2pa_verify.rs` に `format_signature_hash(&[u8]) -> String` ヘルパを新設し、`compute_signature_hash` / `compute_signature_hash_from_manifest_data` の両方から呼ばせる構造に集約。将来 sha3-256 等への切替が 1 箇所で済む。 |

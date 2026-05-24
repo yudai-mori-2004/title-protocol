@@ -22,7 +22,8 @@
 //! is used as the protocol-level content identifier (spec §1.3) and
 //! appears in the top-level `ProcessResponse` (spec §2.3).
 //!
-//! The utility is public because the TEE orchestration layer //! also needs it when assembling the final response.
+//! The utility is public because the TEE orchestration layer also
+//! needs it when assembling the final response.
 
 use crate::jumbf;
 use crate::processor::{Processor, ProcessorError};
@@ -150,8 +151,7 @@ pub fn compute_signature_hash(
     content_type: &str,
 ) -> Result<String, ProcessorError> {
     let signature_bytes = extract_active_manifest_signature(content, content_type)?;
-    let hash = Sha256::digest(&signature_bytes);
-    Ok(format!("sha256:{}", hex::encode(hash)))
+    Ok(format_signature_hash(&signature_bytes))
 }
 
 /// Computes the signature_hash from raw JUMBF manifest data (for sidecar inputs).
@@ -175,10 +175,15 @@ pub fn compute_signature_hash_from_manifest_data(
         )
     })?;
 
-    let signature_bytes =
-        jumbf::extract_signature_from_jumbf(manifest_data, active_label)?;
-    let hash = Sha256::digest(&signature_bytes);
-    Ok(format!("sha256:{}", hex::encode(hash)))
+    let signature_bytes = jumbf::extract_signature_from_jumbf(manifest_data, active_label)?;
+    Ok(format_signature_hash(&signature_bytes))
+}
+
+/// Format raw signature bytes into the spec §1.3 `signature_hash` string.
+/// Single source of truth so a future digest swap touches one line.
+fn format_signature_hash(signature_bytes: &[u8]) -> String {
+    let hash = Sha256::digest(signature_bytes);
+    format!("sha256:{}", hex::encode(hash))
 }
 
 // ---------------------------------------------------------------------------
@@ -199,15 +204,13 @@ fn extract_active_manifest_signature(
     let reader = c2pa::Reader::from_context(c2pa::Context::default())
         .with_stream(content_type, &mut cursor)
         .map_err(|e| {
-        ProcessorError::C2paVerificationFailed(format!("C2PA Reader construction failed: {e}"))
-    })?;
+            ProcessorError::C2paVerificationFailed(format!("C2PA Reader construction failed: {e}"))
+        })?;
 
     let active_label = reader
         .active_label()
         .ok_or_else(|| {
-            ProcessorError::C2paVerificationFailed(
-                "Active Manifest not found".to_string(),
-            )
+            ProcessorError::C2paVerificationFailed("Active Manifest not found".to_string())
         })?
         .to_string();
 
@@ -231,8 +234,8 @@ fn verify_and_extract(
     let reader = c2pa::Reader::from_context(c2pa::Context::default())
         .with_stream(content_type, &mut cursor)
         .map_err(|e| {
-        ProcessorError::C2paVerificationFailed(format!("C2PA Reader construction failed: {e}"))
-    })?;
+            ProcessorError::C2paVerificationFailed(format!("C2PA Reader construction failed: {e}"))
+        })?;
 
     // Determine validation state
     // Spec §3.2: "valid" when signature chain is structurally valid (Valid or Trusted)
@@ -309,7 +312,11 @@ fn extract_actions(manifest: &c2pa::Manifest) -> Vec<C2paAction> {
     let actions_result: Option<c2pa::assertions::Actions> = manifest
         .find_assertion(c2pa::assertions::Actions::LABEL_VERSIONED)
         .ok()
-        .or_else(|| manifest.find_assertion(c2pa::assertions::Actions::LABEL).ok());
+        .or_else(|| {
+            manifest
+                .find_assertion(c2pa::assertions::Actions::LABEL)
+                .ok()
+        });
 
     match actions_result {
         Some(actions) => actions
@@ -333,9 +340,8 @@ mod tests {
         use image::{ImageBuffer, ImageEncoder, Rgb};
         use std::io::Cursor;
 
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4, 4, |x, y| {
-            Rgb([(x * 60) as u8, (y * 60) as u8, 128])
-        });
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(4, 4, |x, y| Rgb([(x * 60) as u8, (y * 60) as u8, 128]));
 
         let mut buf = Cursor::new(Vec::new());
         image::codecs::jpeg::JpegEncoder::new(&mut buf)
@@ -492,10 +498,10 @@ mod tests {
     fn signature_hash_deterministic() {
         let signed = create_signed_jpeg();
 
-        let hash1 = compute_signature_hash(&signed, "image/jpeg")
-            .expect("signature_hash computation");
-        let hash2 = compute_signature_hash(&signed, "image/jpeg")
-            .expect("signature_hash computation");
+        let hash1 =
+            compute_signature_hash(&signed, "image/jpeg").expect("signature_hash computation");
+        let hash2 =
+            compute_signature_hash(&signed, "image/jpeg").expect("signature_hash computation");
 
         // Same content → same hash (deterministic)
         assert_eq!(hash1, hash2);
@@ -557,7 +563,10 @@ mod tests {
         let value = proc.process(&signed, "image/jpeg").unwrap();
 
         // Check that all expected fields are present
-        assert!(value.get("validation").is_some(), "validation field missing");
+        assert!(
+            value.get("validation").is_some(),
+            "validation field missing"
+        );
         assert!(value.get("actions").is_some(), "actions field missing");
 
         // status field should NOT be present (it's added by ProcessorOutput::ok())
@@ -629,8 +638,7 @@ mod tests {
         let mut registry = crate::ProcessorRegistry::new();
         registry.register(Box::new(C2paVerifyProcessor::new()));
 
-        let results =
-            registry.execute(&["c2pa-verify".into()], &unsigned, "image/jpeg");
+        let results = registry.execute(&["c2pa-verify".into()], &unsigned, "image/jpeg");
 
         assert_eq!(results.len(), 1);
         assert_eq!(

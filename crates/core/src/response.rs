@@ -101,9 +101,7 @@ impl ProcessorOutput {
     /// well-formed response instead of malformed JSON.
     pub fn ok(data: serde_json::Value) -> Self {
         if !data.is_object() {
-            return Self::error(format!(
-                "processor returned non-object data: {data}"
-            ));
+            return Self::error(format!("processor returned non-object data: {data}"));
         }
         Self {
             status: ProcessorStatus::Ok,
@@ -205,7 +203,10 @@ mod tests {
                 signature_hash: "sha256:test".into(),
                 results: {
                     let mut m = HashMap::new();
-                    m.insert("c2pa-verify".into(), ProcessorOutput::ok(serde_json::json!({"validation": "valid"})));
+                    m.insert(
+                        "c2pa-verify".into(),
+                        ProcessorOutput::ok(serde_json::json!({"validation": "valid"})),
+                    );
                     m
                 },
             },
@@ -214,9 +215,15 @@ mod tests {
         let json_str = serde_json::to_string(&resp).unwrap();
         let restored: ProcessResponse = serde_json::from_str(&json_str).unwrap();
 
-        assert_eq!(resp.verifiable.signature_hash, restored.verifiable.signature_hash);
+        assert_eq!(
+            resp.verifiable.signature_hash,
+            restored.verifiable.signature_hash
+        );
         assert_eq!(resp.attestation, restored.attestation);
-        assert_eq!(resp.verifiable.results.len(), restored.verifiable.results.len());
+        assert_eq!(
+            resp.verifiable.results.len(),
+            restored.verifiable.results.len()
+        );
     }
 
     // ── ProcessorOutput ──

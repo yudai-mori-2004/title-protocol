@@ -22,8 +22,7 @@ const BOX_TYPE_CBOR: u32 = 0x6362_6F72;
 /// c2pa.signature UUID (16 bytes).
 /// hex: "6332637300110010800000AA00389B71"
 const CAI_SIGNATURE_UUID: [u8; 16] = [
-    0x63, 0x32, 0x63, 0x73, 0x00, 0x11, 0x00, 0x10, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B,
-    0x71,
+    0x63, 0x32, 0x63, 0x73, 0x00, 0x11, 0x00, 0x10, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
 ];
 
 /// Upper bound on the COSE signature CBOR blob — sized to cover realistic
@@ -65,9 +64,7 @@ fn read_header(reader: &mut Cursor<&[u8]>) -> Result<Option<BoxHeader>, Processo
     if size == 1 {
         let mut ext_buf = [0u8; 8];
         reader.read_exact(&mut ext_buf).map_err(|e| {
-            ProcessorError::C2paVerificationFailed(format!(
-                "JUMBF extended size read error: {e}"
-            ))
+            ProcessorError::C2paVerificationFailed(format!("JUMBF extended size read error: {e}"))
         })?;
         Ok(Some(BoxHeader {
             box_type,
@@ -93,14 +90,14 @@ fn read_desc_info(
     }
 
     let mut uuid = [0u8; 16];
-    reader.read_exact(&mut uuid).map_err(|e| {
-        ProcessorError::C2paVerificationFailed(format!("UUID read error: {e}"))
-    })?;
+    reader
+        .read_exact(&mut uuid)
+        .map_err(|e| ProcessorError::C2paVerificationFailed(format!("UUID read error: {e}")))?;
 
     let mut toggles = [0u8; 1];
-    reader.read_exact(&mut toggles).map_err(|e| {
-        ProcessorError::C2paVerificationFailed(format!("Toggles read error: {e}"))
-    })?;
+    reader
+        .read_exact(&mut toggles)
+        .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Toggles read error: {e}")))?;
 
     let mut label = String::new();
     if toggles[0] & 0x02 != 0 {
@@ -141,9 +138,9 @@ fn read_desc_info(
     let read_so_far: u64 = 16 + 1 + label_bytes;
     if read_so_far < content_size {
         let skip = content_size - read_so_far;
-        reader.seek(SeekFrom::Current(skip as i64)).map_err(|e| {
-            ProcessorError::C2paVerificationFailed(format!("Skip error: {e}"))
-        })?;
+        reader
+            .seek(SeekFrom::Current(skip as i64))
+            .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Skip error: {e}")))?;
     }
 
     Ok(DescInfo { uuid, label })
@@ -152,16 +149,16 @@ fn read_desc_info(
 /// Finds all manifest labels in JUMBF data.
 ///
 /// Scans the top-level JUMBF superboxes and returns their labels.
-/// The active manifest is conventionally the last one in the list.
+/// The active manifest is the last `c2pa.manifest` box in the store
+/// (C2PA 2.1 §13.4). Caller-side selection logic relies on this order.
 ///
 /// # Arguments
 /// * `jumbf_data` — Raw JUMBF bytes (from a .c2pa sidecar file or `load_jumbf_from_memory`)
 pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, ProcessorError> {
     let mut reader = Cursor::new(jumbf_data);
 
-    let top_header = read_header(&mut reader)?.ok_or_else(|| {
-        ProcessorError::C2paVerificationFailed("empty JUMBF input".into())
-    })?;
+    let top_header = read_header(&mut reader)?
+        .ok_or_else(|| ProcessorError::C2paVerificationFailed("empty JUMBF input".into()))?;
     if top_header.box_type != BOX_TYPE_JUMB {
         return Err(ProcessorError::C2paVerificationFailed(
             "Top-level is not a JUMBF superbox".to_string(),
@@ -200,9 +197,7 @@ pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, Pro
 
         reader
             .seek(SeekFrom::Start(child_start + child_header.size))
-            .map_err(|e| {
-                ProcessorError::C2paVerificationFailed(format!("Seek error: {e}"))
-            })?;
+            .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Seek error: {e}")))?;
     }
 
     Ok(labels)
@@ -221,9 +216,8 @@ pub(crate) fn extract_signature_from_jumbf(
 ) -> Result<Vec<u8>, ProcessorError> {
     let mut reader = Cursor::new(jumbf_data);
 
-    let top_header = read_header(&mut reader)?.ok_or_else(|| {
-        ProcessorError::C2paVerificationFailed("empty JUMBF input".into())
-    })?;
+    let top_header = read_header(&mut reader)?
+        .ok_or_else(|| ProcessorError::C2paVerificationFailed("empty JUMBF input".into()))?;
     if top_header.box_type != BOX_TYPE_JUMB {
         return Err(ProcessorError::C2paVerificationFailed(
             "Top-level is not a JUMBF superbox".to_string(),
@@ -263,9 +257,7 @@ pub(crate) fn extract_signature_from_jumbf(
 
         reader
             .seek(SeekFrom::Start(child_start + child_header.size))
-            .map_err(|e| {
-                ProcessorError::C2paVerificationFailed(format!("Seek error: {e}"))
-            })?;
+            .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Seek error: {e}")))?;
     }
 
     Err(ProcessorError::C2paVerificationFailed(format!(
@@ -297,9 +289,7 @@ fn find_signature_in_manifest(
 
         reader
             .seek(SeekFrom::Start(box_start + header.size))
-            .map_err(|e| {
-                ProcessorError::C2paVerificationFailed(format!("Seek error: {e}"))
-            })?;
+            .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Seek error: {e}")))?;
     }
 
     Err(ProcessorError::C2paVerificationFailed(
@@ -308,10 +298,7 @@ fn find_signature_in_manifest(
 }
 
 /// Extracts the first CBOR box data from within a superbox.
-fn find_cbor_in_box(
-    reader: &mut Cursor<&[u8]>,
-    box_end: u64,
-) -> Result<Vec<u8>, ProcessorError> {
+fn find_cbor_in_box(reader: &mut Cursor<&[u8]>, box_end: u64) -> Result<Vec<u8>, ProcessorError> {
     while reader.position() < box_end {
         let box_start = reader.position();
         let Some(header) = read_header(reader)? else {
@@ -334,9 +321,7 @@ fn find_cbor_in_box(
 
         reader
             .seek(SeekFrom::Start(box_start + header.size))
-            .map_err(|e| {
-                ProcessorError::C2paVerificationFailed(format!("Seek error: {e}"))
-            })?;
+            .map_err(|e| ProcessorError::C2paVerificationFailed(format!("Seek error: {e}")))?;
     }
 
     Err(ProcessorError::C2paVerificationFailed(

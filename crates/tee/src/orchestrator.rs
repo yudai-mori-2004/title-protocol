@@ -592,7 +592,7 @@ mod tests {
                 let mut m = HashMap::new();
                 m.insert(
                     "c2pa-verify".into(),
-                    ProcessorOutput::ok(serde_json::json!({"validation": "valid"})),
+                    ProcessorOutput::from_value_object(serde_json::json!({"validation": "valid"})),
                 );
                 m
             },

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// 処理結果のうち、Attestation Documentで封印される部分。
 /// 仕様書 §2.3
@@ -75,10 +76,13 @@ pub struct ProcessorOutput {
     /// 処理の成否。
     pub status: ProcessorStatus,
 
-    /// processor固有の出力データ。
-    /// トップレベルにフラット展開される。
+    /// processor固有の出力データ。トップレベルにフラット展開される。
+    ///
+    /// 型を `Map<String, Value>` に固定することで、`#[serde(flatten)]` が
+    /// 要求する「object 形」を型レベルで強制する。`Value` (配列・スカラー)
+    /// を直接代入して serialize 時に panic する経路を物理的に塞ぐ。
     #[serde(flatten)]
-    pub data: serde_json::Value,
+    pub data: Map<String, Value>,
 }
 
 /// Processorの処理状態。
@@ -95,26 +99,37 @@ pub enum ProcessorStatus {
 impl ProcessorOutput {
     /// Build a successful `ProcessorOutput`. Spec §3.1.
     ///
-    /// `data` must be a JSON object — `#[serde(flatten)]` is only valid on
-    /// map-shaped inner values. A non-object falls through to an `error`
-    /// output so a processor returning a stray array or scalar produces a
-    /// well-formed response instead of malformed JSON.
-    pub fn ok(data: serde_json::Value) -> Self {
-        if !data.is_object() {
-            return Self::error(format!("processor returned non-object data: {data}"));
-        }
+    /// `data` は JSON object であることを型 (`Map<String, Value>`) で要求する。
+    /// 旧 API では `Value` を受けて `is_object()` ガードで非 object を弾いていた
+    /// が、`pub data: Value` への直接代入経路が型から塞がれず、配列やスカラーを
+    /// 直接代入すると serialize 時に panic していた。`Map` 化でこの経路は不可。
+    ///
+    /// 既存呼び出し側との互換性のため、`serde_json::json!({ ... })` のような
+    /// オブジェクトリテラル渡しには `from_value_object` を併用する。
+    pub fn ok(data: Map<String, Value>) -> Self {
         Self {
             status: ProcessorStatus::Ok,
             data,
         }
     }
 
+    /// `serde_json::json!({ ... })` リテラルから `ProcessorOutput::ok` を作る
+    /// 便利ヘルパ。非 object を渡した場合は `error` variant に落とす。
+    pub fn from_value_object(value: Value) -> Self {
+        match value {
+            Value::Object(map) => Self::ok(map),
+            other => Self::error(format!("processor returned non-object data: {other}")),
+        }
+    }
+
     /// Error variant — recorded inline so the rest of the response stays
     /// well-formed. Spec §3.1 (one processor failing doesn't affect others).
     pub fn error(message: impl Into<String>) -> Self {
+        let mut data = Map::new();
+        data.insert("error".to_string(), Value::String(message.into()));
         Self {
             status: ProcessorStatus::Error,
-            data: serde_json::json!({ "error": message.into() }),
+            data,
         }
     }
 }
@@ -134,7 +149,7 @@ mod tests {
                     let mut m = HashMap::new();
                     m.insert(
                         "c2pa-verify".into(),
-                        ProcessorOutput::ok(serde_json::json!({
+                        ProcessorOutput::from_value_object(serde_json::json!({
                             "validation": "valid",
                             "signer": "Google",
                             "timestamp": "2026-01-15T10:30:00Z"
@@ -142,7 +157,7 @@ mod tests {
                     );
                     m.insert(
                         "image-pdq".into(),
-                        ProcessorOutput::ok(serde_json::json!({
+                        ProcessorOutput::from_value_object(serde_json::json!({
                             "pdqhash": "a95669d1"
                         })),
                     );
@@ -205,7 +220,7 @@ mod tests {
                     let mut m = HashMap::new();
                     m.insert(
                         "c2pa-verify".into(),
-                        ProcessorOutput::ok(serde_json::json!({"validation": "valid"})),
+                        ProcessorOutput::from_value_object(serde_json::json!({"validation": "valid"})),
                     );
                     m
                 },
@@ -230,7 +245,7 @@ mod tests {
 
     #[test]
     fn processor_output_ok_flatten() {
-        let output = ProcessorOutput::ok(serde_json::json!({
+        let output = ProcessorOutput::from_value_object(serde_json::json!({
             "validation": "valid",
             "signer": "Google"
         }));

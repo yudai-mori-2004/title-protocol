@@ -132,7 +132,7 @@ impl ProcessorRegistry {
         for id in processor_ids {
             let output = match self.get(id) {
                 Some(proc) => match proc.process(content, content_type) {
-                    Ok(data) => ProcessorOutput::ok(data),
+                    Ok(data) => ProcessorOutput::from_value_object(data),
                     Err(e) => ProcessorOutput::error(e.to_string()),
                 },
                 None => ProcessorOutput::error(format!("Unknown processor: {id}")),

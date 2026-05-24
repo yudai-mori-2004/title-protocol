@@ -198,7 +198,12 @@ pub(crate) fn find_manifest_labels(jumbf_data: &[u8]) -> Result<Vec<String>, Pro
     let _top_desc = read_desc_info(&mut reader, content_size(desc_header.size)?)?;
 
     let mut labels = Vec::new();
-    let top_end = top_header.size;
+    // `find_manifest_labels` の現在の唯一の呼び出し元は raw JUMBF 全体を
+    // `Cursor::new(jumbf_data)` で渡しているため `cursor.position() == 0` 始まり
+    // で `top_header.size` が偶然「絶対終端」になる。将来 nested box 走査で
+    // 再利用しても壊れないよう、`find_signature_in_manifest` 側と同じく
+    // `box_end(box_start, size)` で陽に計算する。
+    let top_end = box_end(0, top_header.size)?;
 
     while reader.position() < top_end {
         let child_start = reader.position();
@@ -256,7 +261,8 @@ pub(crate) fn extract_signature_from_jumbf(
     }
     let _top_desc = read_desc_info(&mut reader, content_size(desc_header.size)?)?;
 
-    let top_end = top_header.size;
+    // `find_manifest_labels` と同様、box_start=0 を陽に取って一貫性を保つ。
+    let top_end = box_end(0, top_header.size)?;
     while reader.position() < top_end {
         let child_start = reader.position();
         let Some(child_header) = read_header(&mut reader)? else {

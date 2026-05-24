@@ -33,6 +33,17 @@ Full protocol rewrite. See [Technical Spec](docs/v0.1.2/SPECS_JA.md).
 - GlobalConfig PDA (replaced by whitelist PDA)
 - `image-phash` processor (deprecated, replaced by `image-pdq`)
 - `cert-rootlens` processor (removed from initial processor list)
+- TypeScript SDK (defer until SDK / API stabilization phase post-v0.1.2)
+- cNFT Indexer (Helius Webhooks + Supabase). Verifier-side reads now go directly through Solana RPC / DAS API; design rework deferred to a future release.
+- Rust CLI (`crates/cli`). Admin operations currently live in `crates/solana/tests/devnet_whitelist.rs` `#[ignore]` tests until a production CLI is reintroduced.
+- TEE endpoints `/sign-and-mint` / `/create-tree` / `/register-node` (cNFT minting moved to `POST /extension/solana`; tree create is an admin-only flow run from the integration tests).
+- Solana program admin instructions for ResourceLimits / TrustList (replaced by `approved_vkeys` / `approved_measurements` PDAs)
+- TSA / RFC 3161 timestamp trust list (silent removal in earlier rounds; documented here for completeness — current builds rely on the C2PA manifest's embedded timestamps only).
+- Gateway pluggable storage backends (S3 / Postgres / local). The v0.1.2 design fetches directly from caller-supplied URLs through the proxy.
+- DAO governance scaffolding (single admin wallet for v0.1.2; multisig / DAO migration deferred to a future release per the OPERATIONS roadmap).
+- Cost / billing chapter (deferred to business documentation; not part of the protocol spec).
+- WASM modules: `hardware-google`, `c2pa-training-v1`, `c2pa-license-v1` (replaced by Rust-native processors once equivalents are reimplemented).
+- `signed_json` data model (replaced by the JCS+SHA-256 user_data binding documented in §1.7 / §2.3).
 
 ## [0.1.0] — 2026-03-02
 

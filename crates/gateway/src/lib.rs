@@ -68,7 +68,7 @@ pub struct KeysResponse {
 /// # JSON例
 /// ```json
 /// {
-///   "processors": ["c2pa-verify", "image-pdq", "provenance-graph"]
+///   "processors": ["c2pa-verify"]
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,11 +200,13 @@ mod tests {
 
     #[test]
     fn processors_response_from_spec() {
+        // 現行 (v0.1.2) ビルドでは c2pa-verify のみ。将来 processor が
+        // 追加されたら配列が拡張される。
         let json = r#"{
-            "processors": ["c2pa-verify", "image-pdq", "provenance-graph"]
+            "processors": ["c2pa-verify"]
         }"#;
         let resp: ProcessorsResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.processors.len(), 3);
+        assert_eq!(resp.processors.len(), 1);
         assert!(resp.processors.contains(&"c2pa-verify".into()));
     }
 

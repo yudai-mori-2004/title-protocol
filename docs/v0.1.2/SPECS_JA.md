@@ -622,15 +622,17 @@ TEE再起動時に鍵は更新される。クライアントは暗号化の直�
 
 ### GET /processors
 
-対応しているprocessorの一覧を返す。
+対応しているprocessorの一覧を返す。実体は TEE バイナリにビルド時固定で登録された processor 群。
 
-**Response:**
+**Response (v0.1.2 の現行ビルド):**
 
 ```json
 {
-  "processors": ["c2pa-verify", "image-pdq", "provenance-graph"]
+  "processors": ["c2pa-verify"]
 }
 ```
+
+将来 processor が追加されると配列が拡張される (§3.2 を参照)。
 
 | フィールド | 型 | 説明 |
 |---|---|---|
@@ -732,7 +734,7 @@ Title ProtocolはC2PA署名付きコンテンツの属性抽出レイヤーで�
 
 ## 3.2 現行のprocessor一覧
 
-以下は初期実装で提供するprocessorの一覧である。processorの追加はTEEバイナリの再ビルドとデプロイで行われる。
+以下が初期実装としてプロトコル仕様に定義された processor 群である。**現行リリース (v0.1.2) で実装されているのは `c2pa-verify` のみ**で、`provenance-graph` / `image-pdq` / `video-vpdq` / `cert-google` / `cert-sony` / `cert-leica` は将来リリースで実装する。processor の追加・有効化は TEE バイナリの再ビルドと measurement の更新を伴う。
 
 ### c2pa-verify
 

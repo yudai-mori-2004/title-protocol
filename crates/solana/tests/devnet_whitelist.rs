@@ -132,13 +132,19 @@ fn build_revoke_key_ix(
         &[b"whitelist", signing_pubkey.as_ref()],
         &program_id,
     );
+    let (approved_vkeys_pda, _) =
+        Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
 
     let disc = anchor_discriminator("revoke_key");
 
     Instruction {
         program_id,
+        // Order must match the `RevokeKey` Accounts struct in
+        // `programs/title-whitelist/src/lib.rs`: whitelist_entry,
+        // approved_vkeys (read-only, used for has_one admin), admin.
         accounts: vec![
             AccountMeta::new(whitelist_pda, false),
+            AccountMeta::new_readonly(approved_vkeys_pda, false),
             AccountMeta::new_readonly(*admin, true),
         ],
         data: disc.to_vec(),

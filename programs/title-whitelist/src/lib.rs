@@ -200,7 +200,7 @@ pub mod title_whitelist {
         let parsed = parse_public_values(&public_values)?;
 
         // Step 3: measurement allowlist (cheap eq).
-        let candidate = StoredMeasurement::from_slice(&parsed.measurement);
+        let candidate = StoredMeasurement::from_slice(parsed.measurement);
         require!(
             ctx.accounts
                 .approved_measurements
@@ -222,7 +222,9 @@ pub mod title_whitelist {
         // Step 5: Groth16 verify — the expensive step, last.
         verify_sp1_groth16(&sp1_vkey_hash, &proof, &public_values)?;
 
-        // Step 6: Create PDA
+        // Step 6: Create PDA. The single `Vec` alloc this whole instruction
+        // makes is the one for the `KeyRegistered` event — everything before
+        // here stays in borrowed slices.
         let clock = Clock::get()?;
         let entry = &mut ctx.accounts.whitelist_entry;
         entry.signing_pubkey = signing_pubkey;
@@ -231,13 +233,13 @@ pub mod title_whitelist {
             .unix_timestamp
             .checked_add(KEY_EXPIRY_SECONDS)
             .ok_or(error!(WhitelistError::TimestampOverflow))?;
-        entry.measurement = StoredMeasurement::from_slice(&parsed.measurement);
+        entry.measurement = candidate;
         entry.revoked = false;
         entry.bump = ctx.bumps.whitelist_entry;
 
         emit!(KeyRegistered {
             signing_pubkey: Pubkey::new_from_array(signing_pubkey),
-            measurement: parsed.measurement,
+            measurement: parsed.measurement.to_vec(),
             expires_at: entry.expires_at,
         });
 
@@ -322,10 +324,10 @@ fn verify_sp1_groth16(
 /// The guest's full layout is documented in
 /// `sp1-guests/attestation-aws-nitro/program/src/main.rs`; here we only
 /// retain the fields used for the four register_key checks.
-struct ParsedPublicValues {
-    measurement: Vec<u8>,
+struct ParsedPublicValues<'a> {
+    measurement: &'a [u8],
     has_user_data: bool,
-    user_data_hash: Vec<u8>,
+    user_data_hash: &'a [u8],
 }
 
 /// Parse the SP1 public values.
@@ -339,7 +341,7 @@ struct ParsedPublicValues {
 ///   user_data_hash   : 32 bytes (only if has_user_data == 1)
 ///   has_public_key   : u8
 ///   public_key_hash  : 32 bytes (only if has_public_key == 1)
-fn parse_public_values(data: &[u8]) -> Result<ParsedPublicValues> {
+fn parse_public_values(data: &[u8]) -> Result<ParsedPublicValues<'_>> {
     let mut offset = 0;
 
     // instance_id: String (u32 len + bytes) — skipped, length-validated only.
@@ -375,7 +377,7 @@ fn parse_public_values(data: &[u8]) -> Result<ParsedPublicValues> {
         data.len() >= offset + measurement_len,
         WhitelistError::InvalidPublicValues
     );
-    let measurement = data[offset..offset + measurement_len].to_vec();
+    let measurement = &data[offset..offset + measurement_len];
     offset += measurement_len;
 
     // has_user_data: u8 — must be canonical 0/1. Treating any non-1 value
@@ -389,15 +391,17 @@ fn parse_public_values(data: &[u8]) -> Result<ParsedPublicValues> {
     let has_user_data = data[offset] == 1;
     offset += 1;
 
-    let mut user_data_hash = Vec::new();
-    if has_user_data {
+    let user_data_hash: &[u8] = if has_user_data {
         require!(
             data.len() >= offset + 32,
             WhitelistError::InvalidPublicValues
         );
-        user_data_hash = data[offset..offset + 32].to_vec();
+        let slice = &data[offset..offset + 32];
         offset += 32;
-    }
+        slice
+    } else {
+        &[]
+    };
 
     // has_public_key + (optional) public_key_hash. We don't use these
     // values, but parse them so trailing garbage in the public_values
@@ -682,6 +686,18 @@ pub struct RevokeKey<'info> {
         bump = whitelist_entry.bump
     )]
     pub whitelist_entry: Account<'info, WhitelistEntry>,
+    /// Borrow `approved_vkeys` (read-only) just to cross-check `has_one =
+    /// admin` against its PDA-recorded admin. Combined with the explicit
+    /// `constraint = ADMIN_AUTHORITY` below, this mirrors the two-layer
+    /// admin check on `UpdateApprovedVkeys` / `UpdateApprovedMeasurements`
+    /// — a future `transfer_admin` ix that rotates the PDA admin would
+    /// then also flow through revoke_key without a code change here.
+    #[account(
+        seeds = [b"approved_vkeys"],
+        bump = approved_vkeys.bump,
+        has_one = admin @ WhitelistError::Unauthorized
+    )]
+    pub approved_vkeys: Account<'info, ApprovedVkeys>,
     #[account(
         constraint = admin.key() == ADMIN_AUTHORITY @ WhitelistError::Unauthorized
     )]

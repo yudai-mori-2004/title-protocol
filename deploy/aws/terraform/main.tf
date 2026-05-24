@@ -30,25 +30,20 @@ provider "aws" {
 # ---------------------------------------------------------------------------
 # AMI — Amazon Linux 2023, x86_64 (Nitro Enclaves require x86_64 host)
 # ---------------------------------------------------------------------------
-
-data "aws_ami" "al2023" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-*-x86_64"]
-  }
-
-  filter {
-    name   = "architecture"
-    values = ["x86_64"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
+#
+# Pinned to the AMI that produced the live PCR0 baseline currently
+# registered on Solana devnet. `most_recent = true` would silently switch
+# to a new AMI on every `terraform apply`, which changes the kernel /
+# init scripts that contribute to PCR0 — breaking on-chain attestation
+# verification without any code change.
+#
+# To roll forward: pick a new AMI consciously, update this variable, run
+# `terraform apply`, then re-register the new PCR0 via the SP1 prove
+# flow. See `docs/v0.1.2/OPERATIONS_JA.md` §2.5 for the full procedure.
+variable "al2023_ami_id" {
+  description = "Pinned Amazon Linux 2023 AMI id for ap-northeast-1. Bump consciously and re-register the resulting PCR0."
+  type        = string
+  default     = "ami-0c8698b371227f828"
 }
 
 # ---------------------------------------------------------------------------
@@ -120,7 +115,7 @@ resource "aws_security_group" "node" {
 # ---------------------------------------------------------------------------
 
 resource "aws_instance" "node" {
-  ami                    = data.aws_ami.al2023.id
+  ami                    = var.al2023_ami_id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.node.key_name
   vpc_security_group_ids = [aws_security_group.node.id]

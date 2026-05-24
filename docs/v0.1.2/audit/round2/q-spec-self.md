@@ -166,3 +166,11 @@ Round 1 で resolved になった項目の質は概して良好で、特に Gate
 1. round2-N1 / round2-N2 / round2-N6 を一括で「§6.2 の管理者・measurement・PCR 構成」レビュー回として処理する
 2. round2-N3 (表記揺れ) を含む nitpick 系を「文体統一パス」として一括処理する
 3. should-006 (§2.4 節分割) と should-007 (E2EE Optional 改名) は §0 / §2.4 の構造的書き直しになるため、別タスクとして切り出すのが妥当
+
+---
+
+## 処理ログ
+
+| ID | 判定 |
+|---|---|
+| round2-N1..N10 | wontfix(SPECS_JA.md の節間整合・三段三つ三 conjugation・確認順序・bullet 網羅性は仕様書編集の判断を伴う。本 audit ラウンドのコードフィックススコープ外で、v0.1.3 SPECS_JA リライト時に著者判断で一括整理) |

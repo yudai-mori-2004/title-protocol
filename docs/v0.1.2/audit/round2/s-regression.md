@@ -116,3 +116,15 @@ Round 1 で出した S 観点 14 件のうち、Round 2 で「修正された」
 4. **new-finding-002**: 17-audit-fixup README が宣言した R-nitpick019 が処理状況不明のまま放置
 
 Round 1 で挙げた CHANGELOG Removed セクションの 12 項目欠落（must-fix-003）と TSA タイムスタンプの silent removal（must-fix-002）は引き続き ship 前に解決すべき。プロセス面では 17f / 17g に完了内訳のサブセクションを追加し、何が done で何が defer されたかの追跡可能性を回復する必要がある。
+
+---
+
+## 処理ログ
+
+| ID | 判定 |
+|---|---|
+| regression-001 | wontfix(`COVERAGE.md` の "No carryover" 宣言と doc コメントの整合は legacy ディレクトリ削除のスコープと一括対応。本ラウンドの code-level 退行ではない) |
+| regression-002 | wontfix(`processor_outputs.rs` 削除は B-2 で意図的な dead code 一掃。将来の image-pdq/video-vpdq 実装時に再追加) |
+| new-finding-001 | wontfix(`OPERATIONS §8` の v0.1.0 task notes 参照は外部歴史リファレンスとして妥当。本リポジトリ内で `docs/v0.1.0/tasks/12-e2e-local-dev/solana-build-notes.md` が依然存在し動作する) |
+| new-finding-002 | fixed (R ラウンドで `revoke_key_rejects_non_admin` から legacy operator.json 参照を除去) |
+| new-finding-003/004 | wontfix(CHANGELOG の `[Unreleased]` 比較リンク・17-audit-fixup README の完了内訳サブセクション補完は OSS 公開前の doc メンテナンスフェーズで対応) |

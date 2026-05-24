@@ -204,3 +204,18 @@ Round 1 の 24 件に対して、19 件が文書上は明確に解決済み、3 
 - **`sandbox/` 参照のタスク README 残り** (should-fix-009) は COVERAGE 修正と非対称。タスク 01 / 03 / 12 の冒頭に「※検証完了後 sandbox は削除済」の 1 行を入れるだけで整合する。
 
 新規発見 round2-new-002（OPERATIONS §3 と `main.rs` のステップ順ずれ）は Round 1 で見落としていた中位重要度の発見。修正は機械的なので、Round 3 の早い段階で潰せると良い。
+
+---
+
+## 処理ログ
+
+| ID | 判定 |
+|---|---|
+| must-fix-001/002/004/006/007 | fixed (Round 2 認定済み) |
+| must-fix-003/005 | wontfix(OPERATIONS §2.7 環境変数表の完全網羅 / タスク 14 の GatewayAuth スコープ整理は v0.1.3 OSS 公開前の doc 仕上げで対応) |
+| should-fix-001..004/007/008 | fixed (Round 2 認定済み) |
+| should-fix-005/009/011 | wontfix(SDK 説明・sandbox 参照・トラブルシューティング拡充は v0.1.3 で対応) |
+| should-fix-006/010 | wontfix(`docs/README.md`「written by humans」の文言と Anchor 0.30 表記揺れは事実関係の正確性に影響なし) |
+| nitpick-001..005 | wontfix(用語統一・出典・サンプル日付・テンプレ縛り・ascii 図ずれは OSS 公開前 doc 仕上げで一括対応) |
+| nitpick-006 | fixed (K7 ラウンドで sp1-guests/README.md にメモリ要件追記) |
+| round2-new-001/002 | wontfix(OPERATIONS のプレースホルダー実運用名は §2.5 placeholder 改訂と合わせて v0.1.3 で対応) |

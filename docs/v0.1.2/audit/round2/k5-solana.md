@@ -378,3 +378,35 @@ Round 1 の must-fix 4 件のうち 3 件は綺麗に解決した。残った mu
 `register_key` の確認順序 (should-fix-002) と `parse_public_values` の末尾検証 (should-fix-003) は Round 1 修正案を完全に取り込んでおり、設計品質が一段上がった。CU budget の collection 有無分岐 (should-fix-005) も「実測値に基づいて 250k/400k を出し分ける」という細やかな実装で、本番運用での CU 超過事故リスクが下がっている。
 
 admin 鍵移管 (should-fix-012) は依然「documenting the gap」段階。OSS 公開時の最重要懸念点として変わらず残るので、別タスクとしてフェーズ切り (e.g. v0.1.3 で `transfer_admin` ix + ApprovedVkeys.admin を真実とする refactor) を切ることを強く推奨する。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001 | partially-fixed(StoredMeasurement レイアウトは on-chain と一致済み。AnchorDeserialize 経由の wire 読み取り API は未実装だが、現状クライアント側で AccountInfo::data を直接 parse する経路がないため実害なし。SDK 追加時に対応) | |
+| must-fix-002 | wontfix(`programs/title-whitelist` は Solana toolchain 隔離のため独立 workspace 配置。`crates/solana` から `path = "../../programs/title-whitelist"` で依存させると Solana SDK/standard library の混在で workspace ビルドが壊れる。`KEY_EXPIRY_SECONDS` の二重定義は client コメントで「authoritative source は on-chain、update both together」と明記済み) | |
+| must-fix-003 / 004 | fixed | Round 2 認定済み。 |
+| should-fix-001 | wontfix(`RevokeKey` の `AccountNotInitialized (3012)` は Anchor の generic だが運用上問題なく、独自 variant 追加は ABI 拡張コストに見合わず) | |
+| should-fix-002 / 003 / 005 / 008 / 009 / 013 | fixed | Round 2 認定済み。 |
+| should-fix-004 | wontfix(ガバナンス: Gateway/TEE 同一運営者前提のため process_extension で signing_key の on-chain whitelist 在籍確認は冗長。TEE 起動時の self-attestation で同等の保証あり) | |
+| should-fix-006 | wontfix(`rent_exempt_minimum` のハードコードは Solana の rent 定数が安定している現状で十分。将来変更時のみ `client.get_minimum_balance_for_rent_exemption()` 経由に差し替える) | |
+| should-fix-007 | wontfix(`find_program_address` の bump 再計算コストは数百 CU で実害なし。`WhitelistEntry::bump` を活用する client API は CU 制約のある呼び出しコンテキストが無く価値が薄い) | |
+| should-fix-010 | partially-fixed(must-fix-004 の修正で `InvalidProofLength` 経路が決定論的に発火するようになり、Round 1 の懸念は実質解消。テスト分割は OSS 公開前のフォロー) | |
+| should-fix-011 | wontfix(`add_placeholder_*` テストは `#[ignore]` 属性で通常実行されない devnet-only。feature gate を追加すると `cargo test --include-ignored` での devnet 検証が煩雑になる。`OPERATIONS_JA` 側で mainnet promote 前の placeholder 除去手順を案内するのが運用上自然) | |
+| should-fix-012 | partially-fixed(移行計画コメントが lib.rs:33-40 に記載済み。`transfer_admin` ix 実装は v0.1.3 への積み残し) | |
+| nitpick-001 | wontfix(`WhitelistEntry::SIZE` テストは手計算式の整合確認用。本物の wire encode 検証は SDK 側 AnchorDeserialize 経由が出てから対応) | |
+| nitpick-002 / 003 / 004 / 007 | fixed | Round 2 認定済み。 |
+| nitpick-005 | partially-fixed | Round 2 認定済み。Bubblegum 側の定数公開を待つ。 |
+| nitpick-006 | wontfix(`env!("CARGO_MANIFEST_DIR").replace("/crates/solana", "")` は repo layout に依存するが、テスト用なので破壊時に明示エラーで気付ける) | |
+| N-1 | fixed | `devnet_whitelist.rs` の error code hex assertion を新しい採番に修正 (`0x1779`=VkeyAlreadyApproved, `0x177c`=MeasurementAlreadyApproved)。`programs/title-whitelist/src/lib.rs` の `#[error_code]` 直前に「DO NOT INSERT new variants except at the end」ポリシーコメントを追加し再発防止。 |
+| N-2 | fixed | `add_placeholder_vkey_devnet` の instruction data から u32 length prefix を削除。`vkey_hash: [u8; 32]` は Borsh 固定長配列で length prefix を持たないため、誤った 4 バイトプレフィックスが付いていた。コメントで意図を明記。 |
+| N-3 | wontfix(`EmptyProof` を削除すると enum 採番が再シフトし N-1 を再発させる。dead-but-stable variant として ABI 安定性を優先) | |
+| N-4 | wontfix(`EmptyPublicValues` の二重チェックは `verify_sp1_groth16` を将来他経路から呼ぶ可能性に備えた defensive な API 設計。register_key 経由では確かに到達しないが parser を経由しない呼び出しに備える) | |
+| N-5 | skipped(監査者撤回) | |
+| N-5' | wontfix(`verifier()` ヘルパは将来 `MockAttestationVerifier::new()` が非自明な初期化に変わる場合の集約ポイントとして妥当) | |
+| N-6 | wontfix(`PubkeyNotInSigners` は MintV2Builder の不変条件違反を捕捉する safety net。`panic!` 化は呼び出し側の error propagation 設計と整合しないため現状維持) | |
+| N-7 | wontfix(`MAX_VKEYS` 境界テストは devnet で 16 回の有償 tx を要し、`require!` のロジック自体は単純なため pay-for-test の価値が薄い) | |
+| N-8 | wontfix(`KeyRevoked` event 拡張は program redeploy を伴う ABI 変更。`getSignaturesForAddress` から slot/timestamp を取れるため監査ログ要件は外側で満たせる) | |
+| N-9 | wontfix(`InitSpace` macro への移行は account discriminator/space 計算の再評価を伴い、誤算で既存 PDA との互換性が壊れるリスクが高い。手計算 SIZE は MAX_MEASUREMENT_LEN コメントで invariant を明示済み) | |

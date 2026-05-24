@@ -738,6 +738,12 @@ pub struct MeasurementRevoked {
 // Error codes
 // ---------------------------------------------------------------------------
 
+// Anchor numbers error variants from 6000 in declaration order, and those
+// codes are part of the program's external ABI: clients (including the
+// integration tests in `crates/solana/tests/devnet_whitelist.rs`) match on
+// the resulting hex codes. **Only append new variants at the end.** Reordering
+// or inserting in the middle silently breaks every consumer that compares
+// against a hex code without recompiling against this crate.
 #[error_code]
 pub enum WhitelistError {
     #[msg("SP1 proof is empty")]

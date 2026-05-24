@@ -518,8 +518,9 @@ fn add_placeholder_vkey_devnet() {
     // Real value comes from `sp1-guests/attestation-aws-nitro/host: cargo run --bin vkey`.
     let placeholder: [u8; 32] = [0xAA; 32];
 
+    // `vkey_hash: [u8; 32]` is a Borsh fixed-length array — emit the 32
+    // bytes raw without a length prefix (Vec<u8> would prefix with u32).
     let mut data = anchor_discriminator("add_approved_vkey").to_vec();
-    data.extend_from_slice(&(placeholder.len() as u32).to_le_bytes());
     data.extend_from_slice(&placeholder);
 
     let ix = Instruction {
@@ -543,8 +544,9 @@ fn add_placeholder_vkey_devnet() {
         Ok(sig) => println!("Added placeholder vkey in {sig}"),
         Err(e) => {
             let msg = format!("{e:?}");
+            // VkeyAlreadyApproved = 6009 = 0x1779 (post-InvalidProofLength).
             assert!(
-                msg.contains("0x1775") || msg.contains("VkeyAlreadyApproved"),
+                msg.contains("0x1779") || msg.contains("VkeyAlreadyApproved"),
                 "unexpected error: {msg}"
             );
             println!("Placeholder vkey already approved (idempotent skip)");
@@ -591,8 +593,9 @@ fn add_placeholder_measurement_devnet() {
         Ok(sig) => println!("Added placeholder measurement in {sig}"),
         Err(e) => {
             let msg = format!("{e:?}");
+            // MeasurementAlreadyApproved = 6012 = 0x177c (post-InvalidProofLength).
             assert!(
-                msg.contains("0x1778") || msg.contains("MeasurementAlreadyApproved"),
+                msg.contains("0x177c") || msg.contains("MeasurementAlreadyApproved"),
                 "unexpected error: {msg}"
             );
             println!("Placeholder measurement already approved (idempotent skip)");

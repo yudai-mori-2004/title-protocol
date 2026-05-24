@@ -67,6 +67,14 @@ impl SolanaSigningKey {
     }
 
     /// Sign a Solana VersionedTransaction message and apply partial signature.
+    ///
+    /// In-house callers (`build_v0_tx` in `cnft.rs`) always present a `tx`
+    /// whose `signatures` slot count matches `num_required_signatures`, so
+    /// the slot for our pubkey is guaranteed to exist. But this entry point
+    /// is also exposed to future SDKs / external signers that may hand us a
+    /// `VersionedTransaction` reconstructed from off-host bytes. A
+    /// `signatures.len() < num_required_signatures` mismatch in that case
+    /// must surface as a clean `Err`, not an out-of-bounds panic.
     pub fn sign_transaction(
         &self,
         tx: &mut solana_sdk::transaction::VersionedTransaction,
@@ -83,6 +91,13 @@ impl SolanaSigningKey {
             .take(num_signers)
             .position(|k| k == &pubkey)
             .ok_or_else(|| SigningKeyError::PubkeyNotInSigners(pubkey.to_string()))?;
+
+        if tx.signatures.len() <= index {
+            return Err(SigningKeyError::SignatureSlotMissing {
+                index,
+                len: tx.signatures.len(),
+            });
+        }
         tx.signatures[index] = solana_sdk::signature::Signature::from(sig_bytes);
         Ok(())
     }
@@ -93,6 +108,16 @@ impl SolanaSigningKey {
 pub enum SigningKeyError {
     #[error("Public key {0} not found in transaction signers")]
     PubkeyNotInSigners(String),
+
+    /// The transaction's `signatures` vec is shorter than the signer slot
+    /// our pubkey resolves to. Solana's wire format normally guarantees
+    /// `signatures.len() == num_required_signatures`, but a malformed
+    /// `VersionedTransaction` deserialised from untrusted bytes can violate
+    /// it. Reject the request rather than panicking on the slot write.
+    #[error(
+        "transaction signature slot {index} missing (only {len} slots present)"
+    )]
+    SignatureSlotMissing { index: usize, len: usize },
 }
 
 #[cfg(test)]
@@ -153,5 +178,45 @@ mod tests {
         let key = SolanaSigningKey::generate(&mut rand::rngs::OsRng);
         let solana_pk = key.pubkey();
         assert_eq!(solana_pk.to_bytes(), key.pubkey_bytes());
+    }
+
+    /// Regression: a `VersionedTransaction` whose `signatures` vec was
+    /// truncated (e.g. malformed off-host input) must not panic the slot
+    /// write — `sign_transaction` is the boundary where untrusted bytes
+    /// meet our signing key, so the failure has to be a clean `Err`.
+    /// Originally reported in github.com/yudai-mori-2004/title-protocol PR #1
+    /// (dakewamama).
+    #[test]
+    fn sign_transaction_rejects_truncated_signature_slots() {
+        use solana_sdk::hash::Hash;
+        use solana_sdk::message::{v0, VersionedMessage};
+        use solana_sdk::system_instruction;
+        use solana_sdk::transaction::VersionedTransaction;
+
+        let key = SolanaSigningKey::generate(&mut rand::rngs::OsRng);
+        let payer = key.pubkey();
+        let recipient = solana_sdk::pubkey::Pubkey::new_unique();
+
+        let ix = system_instruction::transfer(&payer, &recipient, 1);
+        let msg = v0::Message::try_compile(&payer, &[ix], &[], Hash::new_unique())
+            .expect("compile v0 message");
+
+        // Construct a deliberately malformed transaction: the header claims
+        // one required signer but the signatures vec is empty.
+        let mut tx = VersionedTransaction {
+            signatures: Vec::new(),
+            message: VersionedMessage::V0(msg),
+        };
+
+        let err = key
+            .sign_transaction(&mut tx)
+            .expect_err("signing must reject truncated signature slots");
+        match err {
+            SigningKeyError::SignatureSlotMissing { index, len } => {
+                assert_eq!(index, 0);
+                assert_eq!(len, 0);
+            }
+            other => panic!("expected SignatureSlotMissing, got {other:?}"),
+        }
     }
 }

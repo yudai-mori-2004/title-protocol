@@ -46,12 +46,17 @@ sudo nitro-cli terminate-enclave --all || true
 sleep 2
 
 echo "==> Starting title-proxy (host network, vsock:8000)"
-# AF_VSOCK bind requires /dev/vsock access; --device exposes it without
-# granting the full --privileged surface (CAP_SYS_ADMIN, seccomp off, etc.).
+# AF_VSOCK bind requires CAP_SYS_ADMIN + seccomp allowance. Empirically,
+# the default Docker seccomp profile on Amazon Linux 2023 rejects the
+# socket(2) call for AF_VSOCK even with `--device /dev/vsock`; running
+# the container --privileged is the only combination that works without
+# shipping a custom seccomp.json. The proxy's only attack surface is the
+# length-prefixed protocol on vsock + outbound HTTPS, so the broader
+# privileges don't widen the trust boundary in practice.
 sudo docker run -d --name title-proxy \
   --restart unless-stopped \
   --network host \
-  --device /dev/vsock \
+  --privileged \
   title-protocol-proxy:latest
 
 if [[ -n "\$DEBUG_FLAG" ]]; then

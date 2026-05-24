@@ -49,5 +49,16 @@ cargo run --release --bin vkey
 cargo run --release --bin prove -- /path/to/attestation.bin
 ```
 
+> `prove` peaks at roughly 30 GiB resident memory during the Groth16 wrap.
+> Use an instance with at least 64 GiB RAM (EC2 `r5.4xlarge` or larger).
+> Run `cargo run --release --bin prove -- --help` for the full output-file
+> layout and a recap of the resource requirements.
+
+> Always build with `cargo build --locked` (or `cargo prove build --locked`).
+> The committed `Cargo.lock` pins the SP1 SDK to the exact version that
+> produced the on-chain `APPROVED_VKEYS` constant; an unlocked `cargo update`
+> would silently change the vkey hash and invalidate every existing
+> `register_key` on-chain.
+
 See [docs/v0.1.2/OPERATIONS_JA.md](../docs/v0.1.2/OPERATIONS_JA.md) §2.4 / §4
 for the full SP1 + on-chain lifecycle.

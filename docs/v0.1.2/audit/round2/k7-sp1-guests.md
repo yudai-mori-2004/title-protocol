@@ -217,3 +217,17 @@ Round 1 比: 13 件 → 5 件。must は 3 → 0。
 - `vkey.rs` のメタデータが stderr / stdout を分けている設計 (`vkey > vkey_hash.hex` がきれいに通る) は OSS 運用ツールとして模範的。
 - `crates/attestation-aws-nitro/src/doc.rs:53` での `authenticate(timestamp)` シグネチャ変更により、guest 側が `prefix_len = 0` をうっかり変えてしまう将来事故が型システムで物理的に不可能になった (K7-06 の「物理的歯止め」案がそのまま採用)。
 - `Cargo.lock` 2 ファイルが両 workspace に git tracked で存在し、`6.2.2` 完全固定。SDK minor bump による vkey ドリフトは現状の運用 (`--locked` build) で阻止できる状態。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| K7-01..03, K7-05..08, K7-10/11/13 | fixed | Round 2 認定済み。 |
+| K7-04 | fixed | `sp1-guests/README.md` の `## Running` セクション末尾にメモリ要件（~30 GiB peak / 64 GiB RAM 推奨 / r5.4xlarge）を blockquote で追記。 |
+| K7-09 | wontfix(`cpu_setup` の vkey 計算と prove client 構築が二重になるが、vkey 取得と prove は別タイミング・別プロセスで実行されるため運用上影響ゼロ) | |
+| K7-12 | fixed | `sp1-guests/README.md` に `cargo build --locked` の必須要件と Cargo.lock の役割（APPROVED_VKEYS とのバインド）を 4 行 blockquote で追記。`"=6.2.2"` への変更は Cargo.lock 固定で二重防御として残置。 |
+| R2-N1 | fixed | `program/src/main.rs:44` の `assert!` 文言に実長と上限を埋め込む形に書き直し。`"attestation document too large: {} > {} bytes"` 形式。 |
+| R2-N2 | wontfix(`cpu_setup` の `(client, pk)` タプル分離は SP1 SDK の API 制約で `setup()` が client method。`vkey_hash` で `_client` で受ける現行が SDK 公開 API 上の最短) | |
+| R2-N3 | wontfix(`Prover`/`ProveRequest`/`ProvingKey` の trait import は rust の trait resolution 上必須。`use ... as _` への置換は読み手分割の好みで本質的振る舞いに無影響) | |

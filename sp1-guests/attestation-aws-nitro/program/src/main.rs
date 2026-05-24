@@ -43,7 +43,9 @@ pub fn main() {
     let doc_bytes: Vec<u8> = sp1_zkvm::io::read_vec();
     assert!(
         doc_bytes.len() <= MAX_DOC_BYTES,
-        "attestation document too large"
+        "attestation document too large: {} > {} bytes",
+        doc_bytes.len(),
+        MAX_DOC_BYTES,
     );
 
     let report = AttestationReport::parse(&doc_bytes).expect("COSE_Sign1 parse failed");

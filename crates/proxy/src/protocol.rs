@@ -27,8 +27,13 @@
 //! ```text
 //! [4B u32 BE: status_code][4B u32 BE: CHUNKED_SENTINEL]
 //! [4B u32 BE: chunk_len][chunk bytes] ...repeated...
-//! [4B u32 BE: 0]   // end-of-stream
+//! [4B u32 BE: 0 or CHUNKED_TRUNCATED]   // end-of-stream marker
 //! ```
+//!
+//! The end-of-stream marker disambiguates clean termination from a
+//! proxy-side cap hit: `0` means the upstream finished, `CHUNKED_TRUNCATED`
+//! means the proxy stopped reading after `MAX_RESPONSE_BYTES`. The TEE must
+//! treat the second case as a fetch failure rather than a complete body.
 //!
 //! Status `0` is reserved for proxy-internal errors (network failure,
 //! timeout, decode failure). HTTP status codes from the upstream pass
@@ -39,6 +44,13 @@
 /// `Content-Length` could never collide (real bodies are capped well below
 /// 4 GiB by `MAX_RESPONSE_BYTES`).
 pub const CHUNKED_SENTINEL: u32 = u32::MAX;
+
+/// End-of-stream marker (in place of the normal `0u32`) signalling that the
+/// proxy hit `MAX_RESPONSE_BYTES` before the upstream finished. Distinct
+/// from `0` so the TEE can fail the fetch instead of silently accepting a
+/// truncated body. Stays inside the chunked stream: only valid where a
+/// chunk length is expected, never as a content length.
+pub const CHUNKED_TRUNCATED: u32 = u32::MAX;
 
 /// Maximum byte length accepted for the proxy request `method` field.
 pub const MAX_METHOD_BYTES: usize = 16;

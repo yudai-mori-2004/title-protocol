@@ -113,3 +113,25 @@ Round 1 で挙げた 5 件の must-fix のうち、技術本体に近い 4 件 (
 一方で残課題は明確で、(1) **`--privileged` 問題は実質ノータッチ**、(2) **`unsafe impl Send` は理論的にはまだ完全に証明されていない**、(3) **TLS 終端位置・method allowlist が SPECS_JA §5.2 に未記載**、という Round 1 で指摘した「コメントではなく仕様に書け」「実装ではなく構造で守れ」型の指摘群が、結果としてコメント追加で片付けられた格好になっている。Round 2 で新規に拾った must-fix-006（chunked 打ち切りが TEE から見えない）は、must-fix-001 の修正が連れてきた新しい silent failure であり、最終リリース前に必ず潰したい。
 
 `crates/proxy` は v0.1.2 で唯一信頼境界の外に出るコンポーネントであり、ここでの「黙って失敗する」経路はそのまま「TEE 起点の検証ストーリーが説明できなくなる」ことを意味する。Round 3 を回す余裕があるなら、必ず (a) must-fix-006 のトレーラ導入、(b) `--privileged` 解消、(c) SPECS_JA §5.2 への wire spec / TLS 終端 / method allowlist の節新設、の 3 つを揃えて読みたい。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001/002/004 | fixed | Round 2 認定済み。 |
+| must-fix-003 | partially-fixed(`unsafe impl Send` の Safety コメントは強化済み。`vsock::VsockStream` の OwnedFd 分割は API 制約で踏み込めず、現状の `try_clone` + 1 タスク所有モデルが妥当) | |
+| must-fix-005 | wontfix(`--privileged` は Amazon Linux 2023 + デフォルト seccomp の制約。`deploy/aws/scripts/run-stack.sh` の justification コメント + G ラウンドで commit 54e034f で確定済み) | |
+| should-fix-001/002/004 | fixed | Round 2 認定済み。 |
+| should-fix-003 | wontfix(must-fix-005 と同じ。代替検証ログは将来の OPERATIONS_JA 拡張で対応) | |
+| should-fix-005 | partially-fixed(`Content-Type` 強制付与は削除済み。任意 header pass-through 拡張は Solana RPC が現状で動作するため不要) | |
+| should-fix-006/007 | partially-fixed(コメントは追加。SPECS_JA への wire spec/method allowlist/TLS 終端節追加は F-docs 観点で別途対応) | |
+| nitpick-001 | fixed | Round 2 認定済み。 |
+| nitpick-002/003/004 | wontfix(rationale コメント縮減 / vsock_async モジュール分離 / wire spec 二重記述は本質的な振る舞いに無影響) | |
+| must-fix-006 | fixed | `protocol.rs` に `CHUNKED_TRUNCATED = u32::MAX` end-marker を追加。chunked 経路の上限超過時、`handler.rs` は通常の `0u32` end-marker の代わりに `CHUNKED_TRUNCATED` を送信。TEE 側 `proxy_fetcher.rs::read_chunked_body` はこれを `FetchError::HttpError` に変換し、proxy 打ち切りを「サイレント truncation」ではなく明示的な fetch エラーとして surface。wire spec docstring も両端で同期。 |
+| should-fix-008 | wontfix(`poll_write` の blocking syscall は one-shot/short connection 前提で worker thread starvation の実観測なし。100 MiB chunked の場合は read 側で `spawn_blocking` 済みで write 側は output buffer + 単発 syscall。実害が観測されてから本格対応) | |
+| should-fix-009 | wontfix(must-fix-005 / should-fix-003 と同根。検証ログ追加は将来の OSS 公開時に整備) | |
+| should-fix-010 | wontfix(must-fix-006 の修正は wire prototocl 修正で proxy 側ユニットテスト `chunked_get_uses_sentinel` でハッピーパス確認済み。3 ケース追加は OSS 公開前の品質強化フェーズ) | |
+| nitpick-005 | wontfix(`STREAM_CHUNK_LIMIT` 命名・doc 拡充は本質的振る舞いに無影響) | |
+| nitpick-006 | wontfix(`handle_tcp_connection`/`handle_vsock_connection` の read 二重実装は async/sync I/O プリミティブが異なるため共通化のコストが見合わない) | |

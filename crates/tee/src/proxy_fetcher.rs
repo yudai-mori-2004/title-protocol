@@ -144,6 +144,11 @@ impl ProxyContentFetcher {
 /// match `title_proxy::protocol::CHUNKED_SENTINEL`.
 const CHUNKED_SENTINEL: u32 = u32::MAX;
 
+/// End-of-stream marker meaning "the proxy hit MAX_RESPONSE_BYTES" — must
+/// match `title_proxy::protocol::CHUNKED_TRUNCATED`. Treated as a fetch
+/// failure on this side, not a complete body.
+const CHUNKED_TRUNCATED: u32 = u32::MAX;
+
 impl ContentFetcher for ProxyContentFetcher {
     fn fetch(&self, url: &str) -> Result<FetchResponse, FetchError> {
         let mut socket = self.open()?;
@@ -257,10 +262,20 @@ fn read_chunked_body(
 ) -> Result<Vec<u8>, FetchError> {
     let mut body = Vec::new();
     loop {
-        let n = read_u32(r, url_for_err)? as usize;
+        let n = read_u32(r, url_for_err)?;
         if n == 0 {
             return Ok(body);
         }
+        if n == CHUNKED_TRUNCATED {
+            return Err(FetchError::HttpError {
+                url: url_for_err.to_string(),
+                reason: format!(
+                    "proxy truncated chunked response after {} bytes (upstream exceeded budget)",
+                    body.len()
+                ),
+            });
+        }
+        let n = n as usize;
         if body.len().saturating_add(n) > max_body_bytes {
             return Err(FetchError::HttpError {
                 url: url_for_err.to_string(),

@@ -5,7 +5,7 @@
 //! TLS is terminated here; integrity comes from the C2PA signature, not
 //! the transport (Spec §5.2).
 
-use crate::protocol::{self, CHUNKED_SENTINEL, MAX_RESPONSE_BYTES};
+use crate::protocol::{self, CHUNKED_SENTINEL, CHUNKED_TRUNCATED, MAX_RESPONSE_BYTES};
 
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_TOTAL_TIMEOUT_SECS: u64 = 120;
@@ -131,10 +131,10 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
                 total = total.saturating_add(chunk.len() as u64);
                 if total > MAX_RESPONSE_BYTES {
                     tracing::warn!(total, max = MAX_RESPONSE_BYTES, upstream_host = %upstream_host, "chunked response exceeded budget");
-                    // Terminate the stream with a zero-length chunk so the
-                    // TEE sees a clean EOF, then surface the failure through
-                    // the next request (proxy is one-shot per connection).
-                    w.write_all(&0u32.to_be_bytes()).await?;
+                    // Signal truncation with a dedicated marker so the TEE
+                    // surfaces a fetch error instead of treating the partial
+                    // body as a complete response.
+                    w.write_all(&CHUNKED_TRUNCATED.to_be_bytes()).await?;
                     w.flush().await?;
                     return shutdown_write(w).await;
                 }

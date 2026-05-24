@@ -188,13 +188,13 @@ TEEが実行する個々の処理を**processor**と呼ぶ。各processorは独�
 
 processorの構成はプロトコルの実装によって決まる。各processorは対等であり、processor間に実行順序の依存関係は存在しない。
 
-### c2pa-verifyの必須化とsignature_hash
+### C2PA署名の必須性とsignature_hash
 
-Title ProtocolはC2PA署名付きコンテンツの属性抽出レイヤーであるため、C2PA署名チェーンの検証（c2pa-verify）は全リクエストで必須とする。クライアントが`processor_ids`に明示しなくても、c2pa-verifyは常に実行される。
+Title ProtocolはC2PA署名付きコンテンツの属性抽出レイヤーであるため、**C2PA署名チェーンの検証は全リクエストで必須**である。ただしこれは「`c2pa-verify` processor を強制実行する」という意味ではなく、orchestrator が `signature_hash` を計算する段階で C2PA 署名の存在と整合性を検証することで強制される (署名のないコンテンツはこの段で reject される)。
 
-c2pa-verifyは、コンテンツのActive Manifest（最新のマニフェスト）の署名のSHA-256ハッシュを算出する。この値を**signature_hash**と呼び、プロトコルレベルのコンテンツ識別子として使用する。同一のC2PAコンテンツからは、誰が計算しても同一のsignature_hashが得られる。
+**signature_hash** は、コンテンツの Active Manifest（最新のマニフェスト）の COSE 署名の SHA-256 ハッシュであり、プロトコルレベルのコンテンツ識別子として使用する。orchestrator が processor 実行の前段で計算するため、processor の指定有無に関わらず全レスポンスに含まれ、Attestation Document の `user_data` 経由でバインドされる。同一の C2PA コンテンツからは、誰が計算しても同一の `signature_hash` が得られる。
 
-signature_hashは全ての処理結果に含まれ、Attestation Documentによってバインドされる。これにより、処理結果が「どのコンテンツに対するものか」が暗号学的に特定可能になる。
+`c2pa-verify` processor は標準提供される processor の 1 つで、Active Manifest 内の属性（claim_generator、signer、actions など）を JSON として取り出す責務を持つ。`signature_hash` の計算とは独立しており、クライアントが `processor_ids` に明示指定した場合のみ実行される。`rootlens-license-v1` のように C2PA 検証ロジックを自前で内包したオールインワン processor を使うときは、`c2pa-verify` を別途指定する必要はない。
 
 ### 入力形式
 
@@ -730,7 +730,9 @@ Processorは、コンテンツのデータから属性を抽出する独立し�
 
 ### C2PA署名の必須性
 
-Title ProtocolはC2PA署名付きコンテンツの属性抽出レイヤーであり、c2pa-verifyは全リクエストで必須である。C2PA署名のないコンテンツに対してはリクエスト全体が拒否される。
+Title ProtocolはC2PA署名付きコンテンツの属性抽出レイヤーであり、**C2PA署名のないコンテンツに対してはリクエスト全体が拒否される**。これは orchestrator が `signature_hash` を計算する段階で署名検証を兼ねるためであり、processor リストに何が指定されているかとは独立に強制される (§1.3)。
+
+**`c2pa-verify` processor 自体は他の processor と並列の関係**であり、protocol レベルで強制実行されることはない。Title Protocol が標準提供する processor の 1 つとして扱う。クライアントは `processor_ids` で明示指定して実行する。`rootlens-license-v1` のように C2PA 検証ロジックを自前で内包したオールインワン processor を 1 本指定すれば、`c2pa-verify` を別途指定する必要はなくレスポンスにも現れない (実装上の二重パースを避けられる)。
 
 ## 3.2 現行のprocessor一覧
 

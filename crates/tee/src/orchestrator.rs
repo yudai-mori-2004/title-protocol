@@ -12,7 +12,7 @@
 //! 3. Decrypt the fetched payload when `request.encryption` is set (§2.4)
 //! 4. Compute `signature_hash` (§1.3 -- mandatory for all requests)
 //! 5. For encrypted requests, verify the inner `signature_hash` matches (§2.4)
-//! 6. Ensure `c2pa-verify` is in the processor list (§1.3 -- implicitly required)
+//! 6. Execute the processors requested by the client (no implicit injection)
 //! 7. Execute processors via `ProcessorRegistry` (§3.1)
 //! 8. Assemble + JCS-canonicalize + SHA-256 (§1.5, §2.3), wrap in attestation (§1.2)
 //! 9. For encrypted requests, seal the response with the negotiated key (§2.4)
@@ -21,9 +21,10 @@
 //!
 //! For sidecar inputs, the manifest (.c2pa) is separate from the content file.
 //! The orchestrator computes `signature_hash` from the manifest JUMBF data
-//! directly, and runs `c2pa-verify` on the content bytes (which may fail if
-//! the content has no embedded manifest). Other processors receive the raw
-//! content bytes.
+//! directly. Processors that need C2PA-verify semantics (e.g. the dedicated
+//! `c2pa-verify` processor or an all-in-one processor like
+//! `rootlens-license-v1`) parse the content bytes themselves; the
+//! orchestrator does not re-run verification on their behalf.
 //!
 //! ## Memory management (§4.1, §4.2)
 //!
@@ -41,7 +42,6 @@ use sha2::{Digest, Sha256};
 use title_core::{
     compute_signature_hash, compute_signature_hash_from_manifest_data, EncryptionSuite, InputData,
     ProcessRequest, ProcessResponse, ProcessorOutput, ProcessorRegistry, VerifiableResponse,
-    C2PA_VERIFY_PROCESSOR_ID,
 };
 use title_crypto::key_bundle::KeyBundle;
 use title_crypto::payload;
@@ -233,11 +233,18 @@ pub fn process_request(
         }
     }
 
-    // Step 6: Build processor ID list with c2pa-verify always included
-    let processor_ids = ensure_c2pa_verify(&request.processor_ids);
-
-    // Step 7: Execute processors via registry
-    let results = execute_processors(registry, &processor_ids, &content_bytes, &content_type);
+    // Step 6: Execute processors. Client が指定した processor_ids をそのまま
+    // 実行する。c2pa-verify は他の processor と並列の関係で、明示指定された
+    // 場合のみ実行される (rootlens-license-v1 のようなオールインワン processor
+    // が自前で C2PA 検証を内包するケースを許す)。署名検証自体は orchestrator
+    // の compute_signature_hash で必須実行されるため、署名なしコンテンツは
+    // この段に到達する前に reject される (§1.3 / §3.2)。
+    let results = execute_processors(
+        registry,
+        &request.processor_ids,
+        &content_bytes,
+        &content_type,
+    );
 
     let verifiable = VerifiableResponse {
         signature_hash,
@@ -319,19 +326,6 @@ fn decrypt_single_payload(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/// Ensure `c2pa-verify` is in the processor ID list.
-/// Spec §1.3 -- c2pa-verify is mandatory for all requests.
-///
-/// If the client did not include `c2pa-verify` in `processor_ids`,
-/// it is prepended to the list.
-fn ensure_c2pa_verify(processor_ids: &[String]) -> Vec<String> {
-    let mut ids = processor_ids.to_vec();
-    if !ids.iter().any(|id| id == C2PA_VERIFY_PROCESSOR_ID) {
-        ids.insert(0, C2PA_VERIFY_PROCESSOR_ID.to_string());
-    }
-    ids
-}
 
 /// Execute processors and collect results.
 /// Spec §3.1 -- each processor runs independently.
@@ -543,33 +537,6 @@ mod tests {
         }
     }
 
-    // ---- ensure_c2pa_verify ----
-
-    #[test]
-    fn c2pa_verify_added_when_missing() {
-        let ids = ensure_c2pa_verify(&["image-pdq".into()]);
-        assert_eq!(ids[0], "c2pa-verify");
-        assert_eq!(ids[1], "image-pdq");
-        assert_eq!(ids.len(), 2);
-    }
-
-    #[test]
-    fn c2pa_verify_not_duplicated_when_present() {
-        let ids = ensure_c2pa_verify(&["c2pa-verify".into(), "image-pdq".into()]);
-        assert_eq!(ids.len(), 2);
-        assert_eq!(
-            ids.iter().filter(|id| id.as_str() == "c2pa-verify").count(),
-            1
-        );
-    }
-
-    #[test]
-    fn c2pa_verify_added_to_empty_list() {
-        let ids = ensure_c2pa_verify(&[]);
-        assert_eq!(ids.len(), 1);
-        assert_eq!(ids[0], "c2pa-verify");
-    }
-
     // ---- compute_jcs_hash ----
 
     #[test]
@@ -678,7 +645,11 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_c2pa_verify_implicit_addition() {
+    fn pipeline_empty_processor_ids_returns_empty_results() {
+        // Client が processor_ids を空で渡した場合、c2pa-verify は
+        // 自動追加されない (orchestrator は client 指定をそのまま実行)。
+        // signature_hash の計算と署名検証は orchestrator 自体が行うため、
+        // 署名なしコンテンツの reject 自体はこの経路でも維持される。
         let signed_jpeg = create_signed_jpeg();
         let mut fetcher = MockFetcher::new();
         fetcher.add(
@@ -687,12 +658,11 @@ mod tests {
             Some("image/jpeg"),
         );
 
-        // Request does NOT include c2pa-verify in processor_ids
         let request = ProcessRequest {
             input: title_core::InputData::Single {
                 content_url: "https://storage.example.com/photo.jpg".to_string(),
             },
-            processor_ids: vec![], // Empty -- c2pa-verify should be auto-added
+            processor_ids: vec![],
             encryption: None,
         };
 
@@ -712,15 +682,10 @@ mod tests {
             .unwrap(),
         );
 
-        // c2pa-verify should be in results even though not requested
-        assert!(
-            response.verifiable.results.contains_key("c2pa-verify"),
-            "c2pa-verify should be implicitly added"
-        );
-        assert_eq!(
-            response.verifiable.results["c2pa-verify"].status,
-            title_core::ProcessorStatus::Ok
-        );
+        // results は空 (processor を指定していないため)。signature_hash は
+        // orchestrator が計算した値が入る。
+        assert!(response.verifiable.results.is_empty());
+        assert!(response.verifiable.signature_hash.starts_with("sha256:"));
     }
 
     #[test]

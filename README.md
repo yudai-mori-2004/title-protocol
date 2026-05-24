@@ -97,17 +97,19 @@ Two components. No intermediate storage managed by the protocol.
 
 ### Processors
 
-`c2pa-verify` runs on every request and produces the `signature_hash` — the protocol-level content identifier derived from the active manifest's signature. All other processors are optional.
+Processors are parallel; the client picks which to run via `processor_ids`. The orchestrator itself computes `signature_hash` (the protocol-level content identifier derived from the active manifest's COSE signature) on every request — that step also fails closed on unsigned content, so the C2PA-signed requirement holds regardless of which processors are selected.
 
 | Processor | Output |
 |---|---|
-| `c2pa-verify` | C2PA signature chain validation, `signature_hash` |
+| `c2pa-verify` | Active Manifest attributes (claim_generator, signer, actions) — opt-in |
 | `provenance-graph` | Ingredient relationship DAG |
 | `image-pdq` | PDQ 256-bit perceptual hash |
 | `video-vpdq` | Per-frame vPDQ hash sequence |
 | `cert-google` | Google C2PA root CA chain verification |
 | `cert-sony` | Sony C2PA root CA chain verification |
 | `cert-leica` | Leica C2PA root CA chain verification |
+
+Operators can also build all-in-one processors (e.g. `rootlens-license-v1`) that embed C2PA verification directly. In that case `c2pa-verify` need not be listed separately — the all-in-one processor reads the content once and emits its own structured output.
 
 ### Input Types
 

@@ -10,6 +10,11 @@ use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use solana_sdk::pubkey::Pubkey;
 
+/// 仕様 §6.2 — Solana 鍵登録用 user_data のドメインタグ。
+/// 同じ TEE が発行する core 処理用 Attestation Document の user_data
+/// (タグ `b"title:core"`) と原理的に衝突しないよう SHA-256 入力の先頭に置く。
+pub const SOLANA_KEY_USER_DATA_TAG: &[u8] = b"title:solana-key";
+
 /// Solana Ed25519 signing keypair held in TEE memory.
 /// Spec §6.2 — secret key never leaves TEE.
 pub struct SolanaSigningKey {
@@ -51,11 +56,13 @@ impl SolanaSigningKey {
         self.verifying_key().to_bytes()
     }
 
-    /// SHA-256 hash of the public key.
-    /// Spec §6.2 — used as user_data in Attestation Document:
-    /// user_data = SHA-256(Solana公開鍵)
-    pub fn pubkey_hash(&self) -> [u8; 32] {
+    /// 仕様 §6.2 — Solana 鍵登録用 Attestation Document の user_data。
+    /// `user_data = SHA-256(b"title:solana-key" || solana_pubkey)`。
+    /// ドメインタグ `b"title:solana-key"` で core 処理用 user_data
+    /// (`SHA-256(b"title:core" || JCS(...))`) と分離する。
+    pub fn solana_key_user_data(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
+        hasher.update(SOLANA_KEY_USER_DATA_TAG);
         hasher.update(self.pubkey_bytes());
         hasher.finalize().into()
     }
@@ -158,17 +165,24 @@ mod tests {
     }
 
     #[test]
-    fn pubkey_hash_is_sha256() {
+    fn solana_key_user_data_includes_domain_tag() {
         let seed = [1u8; 32];
         let key = SolanaSigningKey::from_seed(&seed);
-        let hash = key.pubkey_hash();
-        assert_eq!(hash.len(), 32);
+        let user_data = key.solana_key_user_data();
+        assert_eq!(user_data.len(), 32);
 
-        // Verify manually
+        // SHA-256(b"title:solana-key" || pubkey) を手計算で再現
         let mut hasher = Sha256::new();
+        hasher.update(SOLANA_KEY_USER_DATA_TAG);
         hasher.update(key.pubkey_bytes());
         let expected: [u8; 32] = hasher.finalize().into();
-        assert_eq!(hash, expected);
+        assert_eq!(user_data, expected);
+
+        // タグ無し (SHA-256(pubkey) 単独) とは別の値になる
+        let mut no_tag = Sha256::new();
+        no_tag.update(key.pubkey_bytes());
+        let no_tag_hash: [u8; 32] = no_tag.finalize().into();
+        assert_ne!(user_data, no_tag_hash);
     }
 
     #[test]

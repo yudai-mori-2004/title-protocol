@@ -344,17 +344,24 @@ fn execute_processors(
     registry.execute(processor_ids, content, content_type)
 }
 
-/// Compute JCS-canonicalized SHA-256 hash of a VerifiableResponse.
-/// Spec §1.5, §2.3
+/// 仕様 §1.7 / §2.3 — core 処理用 user_data のドメインタグ。
+/// Solana 鍵登録用 (`b"title:solana-key"`) と分離する。
+const CORE_USER_DATA_TAG: &[u8] = b"title:core";
+
+/// VerifiableResponse を JCS (RFC 8785) で正規化し、ドメインタグ付き
+/// SHA-256 ハッシュを返す。これが Attestation Document の `user_data`
+/// となり、処理結果と TEE attestation をバインドする。
 ///
-/// The hash is used as `user_data` in the Attestation Document, binding
-/// the processing results to the TEE attestation.
+/// 仕様 §1.5, §2.3:
+///   user_data = SHA-256(b"title:core" || JCS({"signature_hash":..., "results":...}))
 fn compute_jcs_hash(verifiable: &VerifiableResponse) -> Result<Vec<u8>, OrchestratorError> {
     let json_value = serde_json::to_value(verifiable)?;
     let jcs_bytes = serde_json_canonicalizer::to_vec(&json_value)
         .map_err(|e| OrchestratorError::JcsFailed(e.to_string()))?;
-    let hash = Sha256::digest(&jcs_bytes);
-    Ok(hash.to_vec())
+    let mut hasher = Sha256::new();
+    hasher.update(CORE_USER_DATA_TAG);
+    hasher.update(&jcs_bytes);
+    Ok(hasher.finalize().to_vec())
 }
 
 /// Build the final ProcessResponse with Attestation Document.
@@ -373,7 +380,7 @@ fn build_attested_response(
     let jcs_hash = compute_jcs_hash(&verifiable)?;
 
     // Step 8: Get Attestation Document
-    // Spec §1.2 -- user_data = SHA-256(JCS(verifiable))
+    // Spec §1.2 / §2.3 -- user_data = SHA-256(b"title:core" || JCS(verifiable))
     let attestation_doc = runtime
         .get_attestation_document(&jcs_hash)
         .map_err(|e| OrchestratorError::AttestationFailed(e.to_string()))?;

@@ -93,14 +93,22 @@ fn parse_hash(s: &str) -> Result<Hash, ExtensionError> {
         .map_err(|e| ExtensionError::Base58Failed(format!("invalid hash '{}': {}", s, e)))
 }
 
-/// Compute JCS-canonicalized SHA-256 hash of a VerifiableResponse.
-/// Spec §1.5, §2.3 — same as orchestrator.rs but standalone.
+/// 仕様 §1.7 / §2.3 — core 処理用 user_data のドメインタグ。
+/// `crates/tee/src/orchestrator.rs` の `CORE_USER_DATA_TAG` と完全一致させること。
+const CORE_USER_DATA_TAG: &[u8] = b"title:core";
+
+/// VerifiableResponse の JCS 正規化 + ドメインタグ付き SHA-256 を計算する。
+/// orchestrator.rs の `compute_jcs_hash` と同じ式:
+///   user_data = SHA-256(b"title:core" || JCS({"signature_hash":..., "results":...}))
 fn compute_verifiable_hash(response: &ProcessResponse) -> Result<Vec<u8>, ExtensionError> {
     let json_value = serde_json::to_value(&response.verifiable)
         .map_err(|e| ExtensionError::ParseFailed(e.to_string()))?;
     let jcs_bytes = serde_json_canonicalizer::to_vec(&json_value)
         .map_err(|e| ExtensionError::AttestationInvalid(format!("JCS failed: {}", e)))?;
-    Ok(Sha256::digest(&jcs_bytes).to_vec())
+    let mut hasher = Sha256::new();
+    hasher.update(CORE_USER_DATA_TAG);
+    hasher.update(&jcs_bytes);
+    Ok(hasher.finalize().to_vec())
 }
 
 /// Verify that an Attestation Document is authentic and binds to the processing result.
@@ -196,7 +204,10 @@ mod tests {
 
         let json_value = serde_json::to_value(&verifiable).unwrap();
         let jcs_bytes = serde_json_canonicalizer::to_vec(&json_value).unwrap();
-        let hash = Sha256::digest(&jcs_bytes);
+        let mut hasher = Sha256::new();
+        hasher.update(CORE_USER_DATA_TAG);
+        hasher.update(&jcs_bytes);
+        let hash = hasher.finalize();
 
         let mut attestation_raw = MockAttestationVerifier::PREFIX.to_vec();
         attestation_raw.extend_from_slice(&hash);

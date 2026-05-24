@@ -320,7 +320,7 @@ GatewayはTEEの手前に配置される薄い管理層であり、以下を担�
 
 Gateway は信頼されない構成要素である。リクエスト内容（content_url、processor_ids 等）と返却結果いずれも改変する能力を物理的には持つが、改変は以下のいずれかで検知される。具体的なエンドポイントとフレーム定義は §2.5 を参照。
 
-- **処理結果の改変**: Attestation Document 内の user_data（= `JCS(signature_hash + results)` の SHA-256）と一致しなくなるため検知される。
+- **処理結果の改変**: Attestation Document 内の user_data（= `SHA-256(b"title:core" || JCS({"signature_hash":..., "results":...}))`）と一致しなくなるため検知される。`b"title:core"` は core 処理用のドメインタグであり、Solana 鍵登録用 user_data（タグ `b"title:solana-key"`、§6.2 参照）と SHA-256 入力レベルで分離される。
 - **リクエスト内容の改変**: 利用形態に応じて検知レイヤが変わる:
   - **サーバーサイド利用（非暗号化）**: クライアントと Gateway を同一運営者が運用する前提。改変は意図的ではないため対象外。
   - **クライアントサイド利用（暗号化）**: コンテンツと signature_hash が暗号化ペイロードに封入される。Gateway が content_url を別ペイロードに差し替えた攻撃は TEE 内では検知不能だが、クライアントが事前計算した signature_hash をレスポンスと照合することで検知される（詳細は §2.4 ステップ 12）。
@@ -464,7 +464,16 @@ TEEは、全processorの結果をまとめた処理結果と、その処理結�
 
 各 processor の出力構造はセクション3を Source of Truth とする。本節の `results` 例は概念図であり、フィールド形式の正典は §3.2 にある。
 
-検証者は、レスポンスの `signature_hash` + `results` をJCS（JSON Canonicalization Scheme, RFC 8785）で正規化した上でSHA-256ハッシュを計算し、Attestation Document内の`user_data`と照合することで、結果の完全性を確認できる。
+検証者は次の手順で結果の完全性を確認できる:
+
+1. `signature_hash` と `results` を JSON オブジェクト `{ "signature_hash": ..., "results": ... }` として組み立てる
+2. その JSON を JCS（JSON Canonicalization Scheme, RFC 8785）で正規化する
+3. core 処理用ドメインタグ `b"title:core"` を SHA-256 入力の先頭に置き、続けて JCS バイト列を入れて SHA-256 ハッシュを計算する
+4. その値が Attestation Document の `user_data` フィールドと一致することを確認する
+
+擬似式: `user_data = SHA-256(b"title:core" || JCS({"signature_hash":..., "results":...}))`
+
+ドメインタグ `b"title:core"` は §6.2 で定義する Solana 鍵登録用タグ `b"title:solana-key"` と SHA-256 入力レベルで分離する役割を持つ。同じ TEE が両方の Attestation Document を発行しても、user_data のバイト並びが意味的に区別できる。
 
 暗号化モードでは、上記のJSONがresponse_keyで暗号化された状態で返却される（セクション2.4参照）。クライアントは復号後に同じJSON構造を得る。
 
@@ -1072,7 +1081,8 @@ Processor実行
   │
   ▼
 Attestation Document取得
-  結果をJCS正規化しSHA-256ハッシュを計算
+  結果を JCS 正規化し、ドメインタグ b"title:core" を先頭に付けて SHA-256
+  ハッシュを計算（詳細は §2.3）
   ハッシュをuser_dataに含めたAttestation Documentをハイパーバイザーに要求
   │
   ▼
@@ -1177,8 +1187,10 @@ Solana用Ed25519署名鍵ペアを生成
   │
   ▼
 Attestation Documentを取得
-  user_data = SHA-256(Solana公開鍵)
+  user_data = SHA-256(b"title:solana-key" || Solana公開鍵)
   → 「この公開鍵は正規のTPコードを実行するTEE内で生成された」ことの証明
+  → ドメインタグ b"title:solana-key" は core 処理用 user_data
+    (タグ b"title:core"、§2.3 参照) と SHA-256 入力レベルで分離する
   │
   ▼
 Attestation Documentからゼロ知識証明（ZK proof）を生成
@@ -1221,6 +1233,8 @@ measurement は TEE バイナリのビルド結果から決まる固定値であ
 
 確認 1・確認 2 で正規性が担保された上で、最後に「Attestation Document の user_data フィールドが、今登録しようとしている署名鍵の公開鍵から導出される値と一致するか」を確認する。これにより、攻撃者が別の Attestation Document の proof を流用して別の鍵を登録することを防ぐ。
 
+具体的には `user_data == SHA-256(b"title:solana-key" || signing_pubkey)` を検証する。ドメインタグ `b"title:solana-key"` は core 処理用 user_data（タグ `b"title:core"`、§2.3 参照）と SHA-256 入力レベルで分離するためのものであり、同じ TEE が両方の Attestation を発行しても user_data のバイト並びが意味的に重ならないことを保証する。攻撃者が core 処理レスポンスとして発行された任意の Attestation を流用しても、user_data の先頭バイト列が `b"title:core"` から始まる SHA-256 入力で計算されているため、`SHA-256(b"title:solana-key" || pubkey)` とは原理的に一致しない。
+
 **集合の運用**
 
 `verifying_key_hash` の集合と `measurement` の集合は独立したライフサイクルを持つ。検証プログラムを更新しても TEE バイナリが同じであれば、新しい verifying_key_hash を追加するだけで済む。逆に TEE バイナリだけを更新した場合は新しい measurement を追加する。古い値は必要に応じて削除可能だが、通常運用では追加のみで構わない（古い proof を再生成しなければならないケースは稀）。
@@ -1259,7 +1273,9 @@ TEEが処理:
      - ベンダー証明書チェーンの検証（ルートはベンダーごとに固定の値を埋め込み照合）
      - measurement が自分自身のものと一致するか確認
        （起動時に取得した自己 Attestation Document の値と比較）
-     - user_dataのハッシュが処理結果と一致するか確認
+     - user_data == SHA-256(b"title:core" || JCS({"signature_hash":..., "results":...})) を検証
+       （core 処理用 Attestation のみ受理する。Solana 鍵登録用 Attestation
+        は b"title:solana-key" タグで作られているため、ここで弾かれる）
   3. 検証に成功した場合:
      cNFT発行トランザクションを構築し、TEEの署名鍵で部分署名する
   4. 部分署名済みトランザクションを返却する

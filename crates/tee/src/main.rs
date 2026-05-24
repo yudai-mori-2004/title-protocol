@@ -121,15 +121,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Step 4: Registration attestation. Spec §6.2 — `user_data =
-    // SHA-256(solana_pubkey)`; consumed by the off-host SP1 prover to produce
-    // the Groth16 proof that unlocks `register_key` on Solana.
-    let solana_pubkey_hash = solana_key.pubkey_hash();
+    // SHA-256(b"title:solana-key" || solana_pubkey)`; consumed by the off-host
+    // SP1 prover to produce the Groth16 proof that unlocks `register_key` on
+    // Solana. ドメインタグで core 処理用 user_data と分離する。
+    let solana_pubkey_hash = solana_key.solana_key_user_data();
     let registration_attestation = runtime
         .get_attestation_document(&solana_pubkey_hash)
         .map_err(|e| format!("Failed to obtain registration attestation: {e}"))?;
     tracing::info!(
         bytes = registration_attestation.len(),
-        "Registration attestation captured (user_data = SHA-256(solana_pubkey))"
+        "Registration attestation captured (user_data = SHA-256(b\"title:solana-key\" || solana_pubkey))"
     );
 
     // Step 5: Processors + ResourcePool. Spec §3.1 / §4.1.

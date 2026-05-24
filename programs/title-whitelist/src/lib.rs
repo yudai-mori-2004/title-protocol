@@ -26,6 +26,15 @@ declare_id!("43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs");
 /// Spec §6.2 — 署名鍵の有効期限（90日）
 pub const KEY_EXPIRY_SECONDS: i64 = 90 * 24 * 60 * 60;
 
+/// 仕様 §6.2 — Solana 鍵登録用 user_data のドメインタグ。
+/// TEE 側で `user_data = SHA-256(b"title:solana-key" || solana_pubkey)` を
+/// 計算し Attestation Document に埋め込む。core 処理用 user_data
+/// (`b"title:core" || JCS(...)`) と SHA-256 入力レベルで分離されるため、
+/// 攻撃者が core 処理レスポンスの Attestation を流用して別鍵を登録する
+/// 経路が物理的に塞がる。値は `crates/solana/src/signing_key.rs` の
+/// `SOLANA_KEY_USER_DATA_TAG` と完全一致させること。
+pub const SOLANA_KEY_USER_DATA_TAG: &[u8] = b"title:solana-key";
+
 /// SP1 v6.2 Groth16 verification key (492 bytes).
 /// Extracted from sp1-verifier 6.2.2 vk-artifacts/groth16_vk.bin.
 pub const GROTH16_VK_BYTES: &[u8] = include_bytes!("../vk/groth16_vk_v6.2.bin");
@@ -174,9 +183,11 @@ pub mod title_whitelist {
     /// 3. 公開値から measurement, user_data_hash を抽出
     /// 4. measurement が ApprovedMeasurements に含まれることを確認
     ///    （正規の TEE バイナリで生成された Attestation のみ受理）
-    /// 5. user_data_hash == SHA-256(SHA-256(signing_pubkey)) を確認
-    ///    （Attestation の user_data = SHA-256(Solana公開鍵)、
-    ///     guest は SHA-256(user_data) をコミットするので二重ハッシュ）
+    /// 5. user_data_hash == SHA-256(SHA-256(b"title:solana-key" || signing_pubkey)) を確認
+    ///    （Attestation の user_data = SHA-256(b"title:solana-key" || Solana公開鍵)、
+    ///     guest は SHA-256(user_data) をコミットするので二重ハッシュ。
+    ///     ドメインタグ b"title:solana-key" は core 処理用 user_data
+    ///     (`b"title:core"`) との衝突を物理的に防ぐ。仕様 §6.2 / §1.7）
     /// 6. WhitelistEntry PDA を作成
     pub fn register_key(
         ctx: Context<RegisterKey>,
@@ -211,8 +222,14 @@ pub mod title_whitelist {
         );
 
         // Step 4: signing_pubkey ↔ user_data_hash binding (two SHA-256s).
+        // ドメインタグ b"title:solana-key" を SHA-256 入力の先頭に置くことで、
+        // core 処理用 user_data (タグ b"title:core") と原理的に衝突しない
+        // (仕様 §1.7 / §6.2)。
         require!(parsed.has_user_data, WhitelistError::MissingUserData);
-        let user_data = Sha256::digest(signing_pubkey);
+        let mut user_data_hasher = Sha256::new();
+        user_data_hasher.update(SOLANA_KEY_USER_DATA_TAG);
+        user_data_hasher.update(signing_pubkey);
+        let user_data = user_data_hasher.finalize();
         let expected_hash = Sha256::digest(user_data);
         require!(
             parsed.user_data_hash == expected_hash.as_slice(),

@@ -328,6 +328,10 @@ pub fn detect_content_type(bytes: &[u8], url: &str, server_type: Option<&str>) -
         return "application/c2pa".to_string();
     }
 
+    tracing::warn!(
+        url,
+        "could not determine content type from magic bytes, server header, or URL extension; falling back to application/octet-stream"
+    );
     "application/octet-stream".to_string()
 }
 
@@ -525,7 +529,7 @@ mod tests {
     /// Create a large-enough pool and ticket for tests that don't care about limits.
     fn test_pool_and_ticket() -> (Arc<ResourcePool>, Ticket) {
         let pool = Arc::new(ResourcePool::with_single_limit(1_000_000_000)); // 1 GB
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         (pool, ticket)
     }
 
@@ -674,7 +678,7 @@ mod tests {
 
         // Pool with very small limit
         let pool = Arc::new(ResourcePool::with_single_limit(5));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         let result = fetch_content(&fetcher, &input, &ticket);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FetchError::MemoryLimit(_)));
@@ -813,7 +817,7 @@ mod tests {
 
         // Pool can hold init but not init + segment
         let pool = Arc::new(ResourcePool::with_single_limit(init_bytes.len() + 50));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         let result = fetch_content(&fetcher, &input, &ticket);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FetchError::MemoryLimit(_)));
@@ -951,7 +955,7 @@ mod tests {
 
         // Pool can hold manifest but not manifest + content
         let pool = Arc::new(ResourcePool::with_single_limit(10)); // 8 (manifest) + 12 (content) > 10
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         let result = fetch_content(&fetcher, &input, &ticket);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FetchError::MemoryLimit(_)));

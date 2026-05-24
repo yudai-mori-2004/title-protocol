@@ -51,7 +51,11 @@ impl RealNsm {
 impl Drop for RealNsm {
     fn drop(&mut self) {
         if self.fd >= 0 {
+            // `nsm_exit` returns nothing — there is no error path for the
+            // host driver to report — but log the close at debug so a leaked
+            // fd shows up in traces.
             driver::nsm_exit(self.fd);
+            tracing::debug!(fd = self.fd, "nsm_exit called");
         }
     }
 }
@@ -59,11 +63,17 @@ impl Drop for RealNsm {
 impl NsmOps for RealNsm {
     fn get_random(&self, len: usize) -> Result<Vec<u8>, TeeError> {
         // NSM GetRandom returns up to ~256 bytes per call; loop until we have
-        // the requested number of bytes.
+        // the requested number of bytes. A zero-length response would otherwise
+        // spin forever, so treat it as a device fault.
         let mut out = Vec::with_capacity(len);
         while out.len() < len {
             match driver::nsm_process_request(self.fd, Request::GetRandom) {
                 Response::GetRandom { random } => {
+                    if random.is_empty() {
+                        return Err(TeeError::RandomFailed(
+                            "NSM GetRandom returned 0 bytes".into(),
+                        ));
+                    }
                     let take = (len - out.len()).min(random.len());
                     out.extend_from_slice(&random[..take]);
                 }
@@ -107,7 +117,12 @@ impl NsmOps for RealNsm {
 /// AWS Nitro Enclaves runtime. Spec §5.2.
 ///
 /// Construction calls `nsm_init`; both attestation and entropy then route
-/// through the NSM device. The fd is closed on drop.
+/// through the NSM device. The fd is owned by the inner `RealNsm` and
+/// closed by its `Drop` impl, which fires when the `NitroRuntime` is
+/// dropped. Callers that share the runtime through `Arc` should ensure
+/// no in-flight `get_attestation_document` calls are outstanding before
+/// dropping the last `Arc`; the TEE server's graceful-shutdown path
+/// waits for `axum::serve` to drain before releasing the state arc.
 pub struct NitroRuntime {
     nsm: Box<dyn NsmOps>,
 }
@@ -153,37 +168,32 @@ impl TeeRuntime for NitroRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     /// In-memory NSM stand-in for unit tests. Records calls and replays a
     /// canned attestation document.
     struct FakeNsm {
-        random: RefCell<Vec<Vec<u8>>>,
+        random: Mutex<Vec<Vec<u8>>>,
         attestation: Vec<u8>,
-        last_user_data: RefCell<Option<Vec<u8>>>,
+        last_user_data: Mutex<Option<Vec<u8>>>,
     }
-
-    // FakeNsm uses RefCell — fine for single-threaded tests. Mark Send + Sync
-    // explicitly because the trait requires it.
-    unsafe impl Send for FakeNsm {}
-    unsafe impl Sync for FakeNsm {}
 
     impl NsmOps for FakeNsm {
         fn get_random(&self, len: usize) -> Result<Vec<u8>, TeeError> {
-            self.random.borrow_mut().push(vec![0xAB; len]);
+            self.random.lock().unwrap().push(vec![0xAB; len]);
             Ok(vec![0xAB; len])
         }
         fn get_attestation_doc(&self, user_data: Option<&[u8]>) -> Result<Vec<u8>, TeeError> {
-            *self.last_user_data.borrow_mut() = user_data.map(|d| d.to_vec());
+            *self.last_user_data.lock().unwrap() = user_data.map(|d| d.to_vec());
             Ok(self.attestation.clone())
         }
     }
 
     fn fake_runtime(attestation: Vec<u8>) -> NitroRuntime {
         NitroRuntime::with_nsm(Box::new(FakeNsm {
-            random: RefCell::new(Vec::new()),
+            random: Mutex::new(Vec::new()),
             attestation,
-            last_user_data: RefCell::new(None),
+            last_user_data: Mutex::new(None),
         }))
     }
 

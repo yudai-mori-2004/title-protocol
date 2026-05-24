@@ -76,7 +76,8 @@ fn build_tee_state(fetcher: TestFetcher) -> Arc<TeeAppState> {
         attestation_verifier: Box::new(
             title_attestation::MockAttestationVerifier::new(),
         ),
-        expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT.to_vec(),
+        expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT.to_vec().into_boxed_slice(),
+        registration_attestation: Vec::new(),
         started_at: Instant::now(),
     })
 }

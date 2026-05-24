@@ -15,6 +15,17 @@ EIF_NAME="${EIF_NAME:-title-protocol-tee.eif}"
 REMOTE_DIR="/home/ec2-user/title-protocol"
 ENCLAVE_MEM_MIB="${ENCLAVE_MEM_MIB:-2048}"
 ENCLAVE_CPU_COUNT="${ENCLAVE_CPU_COUNT:-2}"
+# Default is release mode. Set ENCLAVE_DEBUG=1 to attach `nitro-cli console`
+# during development — but note that debug mode causes the NSM to emit
+# all-zero PCR values in its Attestation Documents, so any attestation
+# captured under ENCLAVE_DEBUG=1 is useless for on-chain registration.
+ENCLAVE_DEBUG="${ENCLAVE_DEBUG:-0}"
+if [[ "$ENCLAVE_DEBUG" == "1" ]]; then
+  DEBUG_FLAG="--debug-mode"
+  echo "WARNING: ENCLAVE_DEBUG=1 — Attestation Documents from this enclave will have zeroed PCRs."
+else
+  DEBUG_FLAG=""
+fi
 
 cd "$TERRAFORM_DIR"
 PUBLIC_IP="$(terraform output -raw public_ip)"
@@ -23,7 +34,7 @@ cd "$REPO_ROOT"
 
 SSH="ssh -i $KEY_PATH -o StrictHostKeyChecking=accept-new ec2-user@$PUBLIC_IP"
 
-cat <<REMOTE_SCRIPT | $SSH "REMOTE_DIR=$REMOTE_DIR EIF_NAME=$EIF_NAME ENCLAVE_MEM_MIB=$ENCLAVE_MEM_MIB ENCLAVE_CPU_COUNT=$ENCLAVE_CPU_COUNT API_KEYS='${API_KEYS:-}' bash -s"
+cat <<REMOTE_SCRIPT | $SSH "REMOTE_DIR=$REMOTE_DIR EIF_NAME=$EIF_NAME ENCLAVE_MEM_MIB=$ENCLAVE_MEM_MIB ENCLAVE_CPU_COUNT=$ENCLAVE_CPU_COUNT DEBUG_FLAG='$DEBUG_FLAG' API_KEYS='${API_KEYS:-}' bash -s"
 set -euo pipefail
 cd "\$REMOTE_DIR"
 
@@ -35,18 +46,25 @@ sudo nitro-cli terminate-enclave --all || true
 sleep 2
 
 echo "==> Starting title-proxy (host network, vsock:8000)"
+# AF_VSOCK bind requires /dev/vsock access; --device exposes it without
+# granting the full --privileged surface (CAP_SYS_ADMIN, seccomp off, etc.).
 sudo docker run -d --name title-proxy \
   --restart unless-stopped \
   --network host \
   --device /dev/vsock \
   title-protocol-proxy:latest
 
-echo "==> Launching Nitro Enclave (mem=\${ENCLAVE_MEM_MIB} MiB, cpus=\${ENCLAVE_CPU_COUNT})"
+if [[ -n "\$DEBUG_FLAG" ]]; then
+  MODE_LABEL="debug"
+else
+  MODE_LABEL="release"
+fi
+echo "==> Launching Nitro Enclave (mode=\$MODE_LABEL, mem=\${ENCLAVE_MEM_MIB} MiB, cpus=\${ENCLAVE_CPU_COUNT})"
 sudo nitro-cli run-enclave \
   --eif-path "\$REMOTE_DIR/\$EIF_NAME" \
   --memory "\$ENCLAVE_MEM_MIB" \
   --cpu-count "\$ENCLAVE_CPU_COUNT" \
-  --debug-mode
+  \$DEBUG_FLAG
 
 ENCLAVE_CID=\$(sudo nitro-cli describe-enclaves | jq -r '.[0].EnclaveCID')
 echo "    enclave CID: \$ENCLAVE_CID"

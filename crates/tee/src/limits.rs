@@ -56,20 +56,20 @@ pub const MIN_TRANSFER_SPEED: u64 = 64 * 1024; // 64 KB/s
 // ---------------------------------------------------------------------------
 
 /// Compute the adaptive global timeout for a request.
-/// Spec SS4.4 -- `timeout = min(max_time, base_time + data_size / min_speed)`
+/// Spec §4.4 — `timeout = min(MAX_GLOBAL_TIMEOUT, BASE_TIMEOUT + size / MIN_SPEED)`.
 ///
-/// # Arguments
-/// * `data_size_bytes` -- Known or estimated total data size in bytes.
-///   For fragmented input, this is the sum of all fragment sizes.
-///   If unknown (e.g., streaming), use 0 to get the base timeout.
-///
-/// # Returns
-/// Duration clamped between `BASE_TIMEOUT` and `MAX_GLOBAL_TIMEOUT`.
-pub fn compute_global_timeout(data_size_bytes: u64) -> Duration {
-    let transfer_secs = data_size_bytes / MIN_TRANSFER_SPEED;
+/// `data_size_hint` is `Some(bytes)` when the request payload reveals a
+/// size up front (sum of fragment sizes for `Fragmented`, header size for
+/// `Single`). For streaming requests with unknown size, pass `None` and the
+/// function returns `MAX_GLOBAL_TIMEOUT` so the request gets the full
+/// 30-minute budget rather than collapsing onto `BASE_TIMEOUT`.
+pub fn compute_global_timeout(data_size_hint: Option<u64>) -> Duration {
+    let Some(bytes) = data_size_hint else {
+        return MAX_GLOBAL_TIMEOUT;
+    };
+    let transfer_secs = bytes / MIN_TRANSFER_SPEED;
     let total_secs = BASE_TIMEOUT.as_secs().saturating_add(transfer_secs);
-    let clamped = total_secs.min(MAX_GLOBAL_TIMEOUT.as_secs());
-    Duration::from_secs(clamped)
+    Duration::from_secs(total_secs.min(MAX_GLOBAL_TIMEOUT.as_secs()))
 }
 
 // ---------------------------------------------------------------------------
@@ -185,23 +185,27 @@ mod tests {
     #[test]
     fn global_timeout_small_file() {
         // 1 MB file: 60s base + 1MB/64KB/s = 60 + 16 = 76s
-        let timeout = compute_global_timeout(1_024 * 1_024);
+        let timeout = compute_global_timeout(Some(1_024 * 1_024));
         assert_eq!(timeout, Duration::from_secs(76));
     }
 
     #[test]
     fn global_timeout_large_file() {
-        // 10 GB file: 60 + 10GB/64KB/s = 60 + 163,840 = way over 30min
-        // Should be clamped to MAX_GLOBAL_TIMEOUT
-        let timeout = compute_global_timeout(10 * 1024 * 1024 * 1024);
+        // 10 GB clamped to MAX_GLOBAL_TIMEOUT
+        let timeout = compute_global_timeout(Some(10 * 1024 * 1024 * 1024));
         assert_eq!(timeout, MAX_GLOBAL_TIMEOUT);
     }
 
     #[test]
-    fn global_timeout_zero_size() {
-        // Unknown size: just base timeout
-        let timeout = compute_global_timeout(0);
+    fn global_timeout_zero_size_hint_is_base() {
+        let timeout = compute_global_timeout(Some(0));
         assert_eq!(timeout, BASE_TIMEOUT);
+    }
+
+    #[test]
+    fn global_timeout_unknown_uses_max() {
+        let timeout = compute_global_timeout(None);
+        assert_eq!(timeout, MAX_GLOBAL_TIMEOUT);
     }
 
     #[test]

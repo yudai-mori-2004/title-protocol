@@ -265,7 +265,7 @@ OSS 成熟度（H）:
 | セッション | 状態 | 対象件数 |
 |---|---|---|
 | 17a 暗号+attestation | done | 約 40 |
-| 17b proxy+tee | pending | 約 47 |
+| 17b proxy+tee | done | 約 47 |
 | 17c gateway+core | pending | 約 42 |
 | 17d solana+sp1 | pending | 約 58 |
 | 17e コメント+デッドコード | pending | 約 97 |
@@ -309,3 +309,44 @@ OSS 成熟度（H）:
 - K1-sf009 `CoseSign1::Deserialize` の可視性絞り込み
 
 **検証**: `cargo test --workspace` 全グリーン(crypto 28/28, attestation-aws-nitro 2/2 含む実機 fixture、tee 100/100、gateway 41/41、solana 31/31、core 48/48)。SP1 guest は `cargo check --manifest-path sp1-guests/attestation-aws-nitro/host/Cargo.toml` でビルド確認済。
+
+### 17b 完了内訳
+
+**K6 proxy (`crates/proxy/`)**
+- K6-mf001 chunked transfer: `CHUNKED_SENTINEL = u32::MAX` を導入。upstream の `Content-Length` 不明時(Transfer-Encoding: chunked 等)は `[u32 chunk_len][bytes]…[u32 0]` で送出。TEE 側 `proxy_fetcher.rs` も sentinel を読み取りループへ分岐。新テスト `chunked_get_uses_sentinel` 追加
+- K6-mf002 OOM ガード: `protocol.rs` に `MAX_METHOD_BYTES=16`, `MAX_URL_BYTES=8KiB`, `MAX_REQUEST_BODY_BYTES=8MiB`, `MAX_RESPONSE_BYTES=100MiB` を定義し、`read_string`/`read_bytes` に `max_len` を強制
+- K6-mf003 unsafe: `try_clone().expect()` を proper Err ハンドリングに、`VsockWriter` の `unsafe impl Send` に `// Safety:` 形式の論証コメント、`poll_shutdown` で `Shutdown::Write` を実発行
+- K6-mf004 オーバーフロー: GET path で `content_length > MAX_RESPONSE_BYTES` を事前拒否、chunked path でも累積バイト数を `MAX_RESPONSE_BYTES` で打ち切り
+- K6-mf005 shutdown: 全ての応答パスで `shutdown(Write)` を呼び half-close、protocol.rs doc に「一接続一リクエスト、二回目は未定義動作」を明記
+- K6-sf001 backpressure: `tx.blocking_send` → `tx.try_send`、容量超過時は `tracing::warn!` で drop
+- K6-sf002 observability: `duration_ms`, `upstream_host` をすべての info ログに追加、err は `source` チェーン込みで描画
+- K6-sf003 `--privileged`: `deploy/aws/scripts/run-stack.sh` から削除、`--device /dev/vsock` のみに変更(⚠ EC2 再デプロイ時に AF_VSOCK bind 動作確認が必要)
+- K6-sf004 timeouts: `REQUEST_TIMEOUT` を `PROXY_CONNECT_TIMEOUT_SECS`/`PROXY_REQUEST_TIMEOUT_SECS` env で個別調整可能化、デフォルト connect 10s / total 120s に短縮
+- K6-sf005 Content-Type: POST に勝手に付ける `application/json` ヘッダを削除、reqwest デフォルトに委譲
+- K6-nitpick-001 port: `LISTEN_PORT` を `PROXY_LISTEN_PORT` env から解決
+
+**K3 tee (`crates/tee/`)**
+- K3-mf001 起動シーケンス: `lib.rs` doc と `main.rs` のステップ番号を仕様 §5.2 に整合させ、self-attestation + registration-attestation を鍵生成直後(processor/pool/fetcher より前)に移動
+- K3-mf003 unsafe: `FakeNsm` の `RefCell` + `unsafe impl Send/Sync` を `Mutex` に置換
+- K3-mf004 timeout: TCP / vsock 両ブランチで `set_read_timeout` / `set_write_timeout` のエラーを `.ok()` ではなく Err で propagate
+- K3-mf005 timeout hint: `compute_global_timeout(Option<u64>)` に変更、`None` で `MAX_GLOBAL_TIMEOUT` を割り当て。orchestrator は `Fragmented` 入力時に `fragment_urls.len() × MAX_FRAGMENT_SIZE` を hint、`Single`/`Sidecar` は `None`
+- K3-mf006 Drop 順序: `NitroRuntime` の doc に「Arc 共有時は graceful shutdown で in-flight を待ってから drop」を追記
+- K3-sf004 encryption pre-check: fetch 前に `encryption + !Single` を `EncryptionUnsupportedForInputType` で即拒否
+- K3-sf006 offchain validation: `/extension/solana` で `MAX_OFFCHAIN_DATA_BYTES = 1 MiB` を強制、超過は 413
+- K3-sf007 axum body limit: `/process` / `/extension/solana` に `DefaultBodyLimit::max(64 KiB)` をレイヤ適用
+- K3-sf009 NSM zero-bytes: `GetRandom` が空応答を返した場合のループ無限化を `RandomFailed` で防御
+- K3-sf010 nsm_exit log: `RealNsm::drop` で `tracing::debug!` を残す
+- K3-sf012 measurement 型: `expected_measurement` を `Vec<u8>` から `Box<[u8]>` に、起動ログに `tee_type` と `measurement_len` を追加
+- K3-sf013 octet-stream warn: `detect_content_type` のフォールバック時に `tracing::warn!` で URL を記録
+- K3-nitpick-011 `hex_short`: 自作関数を削除、`hex::encode(&[..8])` に置き換え
+
+**先送り(17e 範囲)**
+- K3-mf002 `process_request` 関数分割: 17 README で除外項目に指定済(scope 外)
+- K3-sf002 漸進予約 streaming fetcher: 同上
+- K3-sf008 `data_size_hint` Option 化: 17b で K3-mf005 と一緒に対応済
+- K3-sf003/sf005/sf011/sf014 + K3-nitpick-001..010: コメント整理・MockRuntime 3 重実装統合は 17e でまとめて対応
+- K6-sf006/sf007 spec 記述 + K6-nitpick-002..004 + protocol.rs doc 統一: 17f で対応
+
+**検証**: `cargo test --workspace` 全グリーン(proxy 5/5 含む新規 chunked テスト、tee 101/101、gateway 41/41 + 8/8 e2e、attestation-aws-nitro 2/2、crypto 28/28、solana 31/31、core 48/48)。
+
+**⚠ 実機確認必須**: `deploy/aws/scripts/run-stack.sh` の `--privileged` 削除は EC2 上で `--device /dev/vsock` のみで title-proxy が起動するか次回再デプロイ時に確認すること。失敗時は `--privileged` を一旦戻す。

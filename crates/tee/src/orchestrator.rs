@@ -166,10 +166,30 @@ pub fn process_request(
     pool: &Arc<ResourcePool>,
     key_bundle: &KeyBundle,
 ) -> Result<ProcessOutcome, OrchestratorError> {
-    // Step 1: Admit request
-    // Spec §4.1 — check admission_limit, issue Ticket
+    // Step 0: Reject incompatible encryption + input combinations before
+    // touching the network. Spec §2.4 — only `Single` inputs carry the
+    // encrypted wire payload; for `Fragmented`/`Sidecar` we would otherwise
+    // fetch every URL only to bail out on decrypt.
+    if request.encryption.is_some()
+        && !matches!(request.input, InputData::Single { .. })
+    {
+        return Err(OrchestratorError::EncryptionUnsupportedForInputType);
+    }
+
+    // Step 1: Admit request. Spec §4.1.
+    // Hint the timeout calculation with `Single` = unknown (None → MAX),
+    // `Fragmented` = sum of fragment sizes (none recorded up front, so we
+    // hint with `max_fragment_size × count` so the global timeout matches
+    // the worst case the request could legitimately occupy).
+    let size_hint: Option<u64> = match &request.input {
+        InputData::Single { .. } | InputData::Sidecar { .. } => None,
+        InputData::Fragmented {
+            init_url: _,
+            fragment_urls,
+        } => Some((fragment_urls.len() as u64).saturating_mul(crate::limits::MAX_FRAGMENT_SIZE as u64)),
+    };
     let ticket = pool
-        .try_admit(0)
+        .try_admit(size_hint)
         .ok_or(OrchestratorError::AdmissionRejected)?;
 
     // Step 2: Fetch content from URL(s) with memory tracking

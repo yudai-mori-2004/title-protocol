@@ -100,22 +100,49 @@ impl ProxyContentFetcher {
                     url: addr.clone(),
                     reason: format!("proxy connect failed: {e}"),
                 })?;
-                stream.set_read_timeout(Some(PROXY_IO_TIMEOUT)).ok();
-                stream.set_write_timeout(Some(PROXY_IO_TIMEOUT)).ok();
+                stream
+                    .set_read_timeout(Some(PROXY_IO_TIMEOUT))
+                    .map_err(|e| FetchError::HttpError {
+                        url: addr.clone(),
+                        reason: format!("set_read_timeout failed: {e}"),
+                    })?;
+                stream
+                    .set_write_timeout(Some(PROXY_IO_TIMEOUT))
+                    .map_err(|e| FetchError::HttpError {
+                        url: addr.clone(),
+                        reason: format!("set_write_timeout failed: {e}"),
+                    })?;
                 Ok(Box::new(stream))
             }
             #[cfg(all(target_os = "linux", feature = "vendor-aws"))]
             ProxyEndpoint::Vsock { cid, port } => {
+                let url = format!("vsock://{cid}:{port}");
                 let stream = vsock::VsockStream::connect_with_cid_port(*cid, *port)
                     .map_err(|e| FetchError::HttpError {
-                        url: format!("vsock://{cid}:{port}"),
+                        url: url.clone(),
                         reason: format!("vsock connect failed: {e}"),
+                    })?;
+                stream
+                    .set_read_timeout(Some(PROXY_IO_TIMEOUT))
+                    .map_err(|e| FetchError::HttpError {
+                        url: url.clone(),
+                        reason: format!("vsock set_read_timeout failed: {e}"),
+                    })?;
+                stream
+                    .set_write_timeout(Some(PROXY_IO_TIMEOUT))
+                    .map_err(|e| FetchError::HttpError {
+                        url,
+                        reason: format!("vsock set_write_timeout failed: {e}"),
                     })?;
                 Ok(Box::new(stream))
             }
         }
     }
 }
+
+/// Sentinel value in `body_len` that signals chunked-stream framing — must
+/// match `title_proxy::protocol::CHUNKED_SENTINEL`.
+const CHUNKED_SENTINEL: u32 = u32::MAX;
 
 impl ContentFetcher for ProxyContentFetcher {
     fn fetch(&self, url: &str) -> Result<FetchResponse, FetchError> {
@@ -126,25 +153,30 @@ impl ContentFetcher for ProxyContentFetcher {
         write_string(&mut socket, url, url)?;
         write_bytes(&mut socket, &[], url)?;
 
-        // Response: [u32 status][u32 body_len][body]
+        // Response: [u32 status][u32 body_len or CHUNKED_SENTINEL][body...]
         let status = read_u32(&mut socket, url)?;
-        let body_len = read_u32(&mut socket, url)? as usize;
+        let body_len_field = read_u32(&mut socket, url)?;
 
-        if body_len > self.max_body_bytes {
-            return Err(FetchError::HttpError {
+        let body = if body_len_field == CHUNKED_SENTINEL {
+            read_chunked_body(&mut *socket, self.max_body_bytes, url)?
+        } else {
+            let body_len = body_len_field as usize;
+            if body_len > self.max_body_bytes {
+                return Err(FetchError::HttpError {
+                    url: url.to_string(),
+                    reason: format!(
+                        "proxy body too large: {body_len} > max {}",
+                        self.max_body_bytes
+                    ),
+                });
+            }
+            let mut buf = vec![0u8; body_len];
+            socket.read_exact(&mut buf).map_err(|e| FetchError::HttpError {
                 url: url.to_string(),
-                reason: format!(
-                    "proxy body too large: {body_len} > max {}",
-                    self.max_body_bytes
-                ),
-            });
-        }
-
-        let mut body = vec![0u8; body_len];
-        socket.read_exact(&mut body).map_err(|e| FetchError::HttpError {
-            url: url.to_string(),
-            reason: format!("body read failed after {body_len} bytes header: {e}"),
-        })?;
+                reason: format!("body read failed after {body_len} bytes header: {e}"),
+            })?;
+            buf
+        };
 
         // Status 0 is reserved for proxy-internal errors (DNS, TLS, etc.);
         // the body is a UTF-8 reason string in that case.
@@ -214,6 +246,37 @@ fn read_u32(r: &mut dyn Read, url_for_err: &str) -> Result<u32, FetchError> {
         reason: format!("proxy read_u32: {e}"),
     })?;
     Ok(u32::from_be_bytes(buf))
+}
+
+/// Drain a chunked-body stream from the proxy. Each chunk is `[u32 len][bytes]`;
+/// a zero-length chunk terminates the stream.
+fn read_chunked_body(
+    r: &mut dyn Read,
+    max_body_bytes: usize,
+    url_for_err: &str,
+) -> Result<Vec<u8>, FetchError> {
+    let mut body = Vec::new();
+    loop {
+        let n = read_u32(r, url_for_err)? as usize;
+        if n == 0 {
+            return Ok(body);
+        }
+        if body.len().saturating_add(n) > max_body_bytes {
+            return Err(FetchError::HttpError {
+                url: url_for_err.to_string(),
+                reason: format!(
+                    "chunked body exceeded max {max_body_bytes} after {} bytes",
+                    body.len()
+                ),
+            });
+        }
+        let start = body.len();
+        body.resize(start + n, 0);
+        r.read_exact(&mut body[start..]).map_err(|e| FetchError::HttpError {
+            url: url_for_err.to_string(),
+            reason: format!("chunked body read failed: {e}"),
+        })?;
+    }
 }
 
 // Helper trait so `open()` can return `Box<dyn ReadWrite>` regardless of

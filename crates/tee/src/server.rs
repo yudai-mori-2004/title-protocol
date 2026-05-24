@@ -61,9 +61,14 @@ pub struct TeeAppState {
     /// `AwsNitroVerifier`. Used by the Solana Extension to authenticate
     /// off-chain data before partial signing.
     pub attestation_verifier: Box<dyn AttestationVerifier + Send + Sync>,
-    /// The TEE's own measurement, captured at boot from its self-attestation.
-    /// Spec §6.2 — "measurement が自分自身のものと一致するか確認".
-    pub expected_measurement: Vec<u8>,
+    /// The TEE's own measurement, captured at boot via self-attestation.
+    /// Length is vendor-defined (AWS Nitro = 48-byte SHA-384 PCR0).
+    /// Spec §6.2 — must match the registered measurement on-chain.
+    pub expected_measurement: Box<[u8]>,
+    /// Attestation Document binding the Solana signing key to the TEE.
+    /// Spec §6.2 — captured at boot with `user_data = SHA-256(solana_pubkey)`.
+    /// Exposed via `GET /solana-keys` for off-host SP1 prover consumption.
+    pub registration_attestation: Vec<u8>,
     /// Server start time for uptime calculation.
     pub started_at: Instant,
 }
@@ -71,13 +76,24 @@ pub struct TeeAppState {
 /// Build the TEE Axum router.
 /// Spec §2.5
 pub fn router(state: Arc<TeeAppState>) -> Router {
+    use axum::extract::DefaultBodyLimit;
+
+    // ProcessRequest / SolanaExtensionBody are pure metadata JSON — content
+    // bytes come from `fetcher`, not the request body. Cap the JSON envelope
+    // at 64 KiB so a runaway Gateway can't push a 100-MB document into the
+    // TEE before admission control sees the request.
+    let post_limit = DefaultBodyLimit::max(64 * 1024);
+
     Router::new()
         .route("/health", get(handle_health))
         .route("/keys", get(handle_keys))
         .route("/processors", get(handle_processors))
-        .route("/process", post(handle_process))
+        .route("/process", post(handle_process).layer(post_limit.clone()))
         .route("/solana-keys", get(handle_solana_keys))
-        .route("/extension/solana", post(handle_solana_extension))
+        .route(
+            "/extension/solana",
+            post(handle_solana_extension).layer(post_limit),
+        )
         .with_state(state)
 }
 
@@ -168,11 +184,24 @@ async fn handle_process(
     }
 }
 
-/// GET /solana-keys — Solana Extension public key.
+/// GET /solana-keys — Solana Extension public key + registration attestation.
 /// Spec §2.5, §6.2
+///
+/// `registration_attestation_b64` is the Attestation Document captured at
+/// TEE boot with `user_data = SHA-256(solana_pubkey)`. Operators feed it to
+/// the off-host SP1 prover; the resulting Groth16 proof is what unlocks
+/// `register_key` on Solana (spec §6.2 step 3). Empty string when the
+/// runtime doesn't produce one (mock).
 async fn handle_solana_keys(State(state): State<Arc<TeeAppState>>) -> impl IntoResponse {
+    use base64::Engine;
+    let attestation_b64 = if state.registration_attestation.is_empty() {
+        String::new()
+    } else {
+        base64::engine::general_purpose::STANDARD.encode(&state.registration_attestation)
+    };
     Json(serde_json::json!({
         "solana_pubkey": state.solana_key.pubkey_base58(),
+        "registration_attestation_b64": attestation_b64,
     }))
 }
 
@@ -208,7 +237,10 @@ async fn handle_solana_extension(
         )
     })?;
 
-    // Fetch offchain data
+    // Fetch off-chain data. A `ProcessResponse` is metadata + hashes only
+    // (no media bytes) — 1 MiB is well past anything realistic and stops
+    // a malicious URL from flooding the JSON parser.
+    const MAX_OFFCHAIN_DATA_BYTES: usize = 1024 * 1024;
     let offchain_resp = state
         .fetcher
         .fetch(&body.offchain_data_url)
@@ -218,6 +250,18 @@ async fn handle_solana_extension(
                 Json(serde_json::json!({ "error": format!("Offchain data fetch failed: {e}") })),
             )
         })?;
+
+    if offchain_resp.body.len() > MAX_OFFCHAIN_DATA_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "error": format!(
+                    "offchain data too large: {} bytes (max {MAX_OFFCHAIN_DATA_BYTES})",
+                    offchain_resp.body.len()
+                )
+            })),
+        ));
+    }
 
     let offchain_data: title_core::ProcessResponse =
         serde_json::from_slice(&offchain_resp.body).map_err(|e| {
@@ -329,7 +373,8 @@ mod tests {
             attestation_verifier: Box::new(
                 title_attestation::MockAttestationVerifier::new(),
             ),
-            expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT.to_vec(),
+            expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT.to_vec().into_boxed_slice(),
+            registration_attestation: Vec::new(),
             started_at: Instant::now(),
         })
     }

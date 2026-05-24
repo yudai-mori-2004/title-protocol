@@ -96,11 +96,11 @@ impl ResourcePool {
 
     /// Try to issue a zero-byte Ticket for a new request.
     /// Returns `None` if the admission limit is exceeded (HTTP 503).
-    /// Spec SS4.1
+    /// Spec §4.1
     ///
-    /// The returned Ticket has the default global timeout computed from
-    /// `data_size_hint`. If the data size is unknown, pass 0.
-    pub fn try_admit(self: &Arc<Self>, data_size_hint: u64) -> Option<Ticket> {
+    /// `data_size_hint` is `Some(bytes)` when the request reveals a size up
+    /// front (e.g. sum of fragment sizes); `None` for streaming requests.
+    pub fn try_admit(self: &Arc<Self>, data_size_hint: Option<u64>) -> Option<Ticket> {
         if self.can_admit() {
             let global_timeout = limits::compute_global_timeout(data_size_hint);
             Some(Ticket::new(
@@ -115,7 +115,7 @@ impl ResourcePool {
 
     /// Issue a zero-byte Ticket unconditionally.
     /// For internal/in-progress operations that bypass admission checks.
-    pub fn ticket(self: &Arc<Self>, data_size_hint: u64) -> Ticket {
+    pub fn ticket(self: &Arc<Self>, data_size_hint: Option<u64>) -> Ticket {
         let global_timeout = limits::compute_global_timeout(data_size_hint);
         Ticket::new(Arc::clone(self), global_timeout, limits::CHUNK_TIMEOUT)
     }
@@ -132,7 +132,7 @@ impl ResourcePool {
 
     /// One-shot: issue Ticket + extend. Returns `None` if total_limit exceeded.
     pub fn acquire(self: &Arc<Self>, size: usize) -> Option<Ticket> {
-        let ticket = self.ticket(0);
+        let ticket = self.ticket(Some(size as u64));
         if ticket.extend(size).is_ok() {
             Some(ticket)
         } else {
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn ticket_incremental_extend() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         assert!(ticket.extend(300).is_ok());
         assert!(ticket.extend(200).is_ok());
         assert_eq!(ticket.reserved(), 500);
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn extend_exceeds_total_limit() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         assert!(ticket.extend(800).is_ok());
         let err = ticket.extend(300).unwrap_err();
         assert!(matches!(err, TicketError::TotalLimitExceeded { .. }));
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn extend_zero_is_noop() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         assert!(ticket.extend(0).is_ok());
         assert_eq!(ticket.reserved(), 0);
         assert_eq!(pool.total_used(), 0);
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn shrink_partial_release() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         ticket.extend(800).unwrap();
         ticket.shrink(500);
         assert_eq!(pool.total_used(), 300);
@@ -452,7 +452,7 @@ mod tests {
     fn shrink_then_drop() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
         {
-            let ticket = pool.ticket(0);
+            let ticket = pool.ticket(Some(0));
             ticket.extend(800).unwrap();
             ticket.shrink(300);
             assert_eq!(pool.total_used(), 500);
@@ -463,7 +463,7 @@ mod tests {
     #[test]
     fn shrink_zero_is_noop() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         ticket.extend(100).unwrap();
         ticket.shrink(0);
         assert_eq!(ticket.reserved(), 100);
@@ -477,18 +477,18 @@ mod tests {
         let pool = Arc::new(ResourcePool::new(600, 1000));
 
         // New request when used=0: admitted
-        let t1 = pool.try_admit(0).expect("should admit when empty");
+        let t1 = pool.try_admit(Some(0)).expect("should admit when empty");
         t1.extend(500).unwrap();
         assert_eq!(pool.total_used(), 500);
 
         // New request when used=500 < 600: still admitted
-        let t2 = pool.try_admit(0).expect("should admit under admission_limit");
+        let t2 = pool.try_admit(Some(0)).expect("should admit under admission_limit");
         t2.extend(100).unwrap();
         assert_eq!(pool.total_used(), 600);
 
         // New request when used=600 >= 600: rejected
         assert!(
-            pool.try_admit(0).is_none(),
+            pool.try_admit(Some(0)).is_none(),
             "should reject at admission_limit"
         );
 
@@ -522,7 +522,7 @@ mod tests {
     fn drop_releases_all_reservation() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
         {
-            let ticket = pool.ticket(0);
+            let ticket = pool.ticket(Some(0));
             ticket.extend(500).unwrap();
             ticket.extend(300).unwrap();
             assert_eq!(pool.total_used(), 800);
@@ -536,21 +536,21 @@ mod tests {
     fn global_timeout_configured_from_data_size() {
         let pool = Arc::new(ResourcePool::with_single_limit(1_000_000));
         // 10 MB hint: base 60s + 10MB/64KB/s = 60 + 160 = 220s
-        let ticket = pool.ticket(10 * 1024 * 1024);
+        let ticket = pool.ticket(Some(10 * 1024 * 1024));
         assert_eq!(ticket.global_timeout(), Duration::from_secs(220));
     }
 
     #[test]
     fn global_timeout_zero_hint_gives_base() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         assert_eq!(ticket.global_timeout(), limits::BASE_TIMEOUT);
     }
 
     #[test]
     fn newly_created_ticket_not_timed_out() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         assert!(!ticket.is_global_timeout_exceeded());
         assert!(!ticket.is_chunk_timeout_exceeded());
     }
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn validate_decoded_size_within_limit() {
         let pool = Arc::new(ResourcePool::with_single_limit(100 * 1024 * 1024)); // 100 MB
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         // 1920x1080 RGB = ~6 MB -- well within limit
         let size = limits::estimate_decoded_size(1920, 1080, 3, 8);
         assert!(ticket.validate_decoded_size(size).is_ok());
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn validate_decoded_size_exceeds_limit() {
         let pool = Arc::new(ResourcePool::with_single_limit(10 * 1024 * 1024)); // 10 MB
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         // 4096x4096 RGBA = ~64 MB -- exceeds 10 MB limit
         let size = limits::estimate_decoded_size(4096, 4096, 4, 8);
         let err = ticket.validate_decoded_size(size).unwrap_err();
@@ -660,7 +660,7 @@ mod tests {
             let pool = Arc::clone(&pool);
             handles.push(thread::spawn(move || {
                 // Each thread owns its Ticket -- no cross-thread sharing
-                let ticket = pool.ticket(0);
+                let ticket = pool.ticket(Some(0));
                 for _ in 0..100 {
                     ticket.extend_unchecked(100).unwrap();
                     ticket.shrink(100);
@@ -691,7 +691,7 @@ mod tests {
         for i in 0..10 {
             let pool = Arc::clone(&pool);
             handles.push(thread::spawn(move || {
-                if let Some(ticket) = pool.try_admit(0) {
+                if let Some(ticket) = pool.try_admit(Some(0)) {
                     let amount = (i + 1) * 1000;
                     if ticket.extend_unchecked(amount).is_ok() {
                         std::hint::black_box(&ticket);
@@ -718,7 +718,7 @@ mod tests {
     #[test]
     fn extend_unchecked_skips_timeout() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         assert!(ticket.extend_unchecked(500).is_ok());
         assert_eq!(ticket.reserved(), 500);
     }
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn extend_unchecked_respects_total_limit() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         ticket.extend_unchecked(800).unwrap();
         let err = ticket.extend_unchecked(300).unwrap_err();
         assert!(matches!(err, TicketError::TotalLimitExceeded { .. }));
@@ -737,7 +737,7 @@ mod tests {
     #[test]
     fn ticket_debug_format() {
         let pool = Arc::new(ResourcePool::with_single_limit(1000));
-        let ticket = pool.ticket(0);
+        let ticket = pool.ticket(Some(0));
         ticket.extend_unchecked(42).unwrap();
         let debug = format!("{ticket:?}");
         assert!(debug.contains("Ticket"));

@@ -138,3 +138,25 @@ title-protocol/
 Round 1 で挙げた 23 件のうち、**must-fix 5 件は 1 件も完全解決していない**。3 件が partial（.gitignore 追加で止まる / テストの一部表記揺れ修正で止まる / vendor_tags 統合無しで identifier 揺れの一部分のみ解消）、2 件は逆行している（行数が増加した）。must-fix-002（`title-tee` → `title-solana` 静的依存）と must-fix-003（vendor 識別子表記揺れ）は次フェーズの「ベンダー追加」「Extension 差し替え」の難易度を直接決める骨格的問題で、本番化フェーズの検収を通すには round2-d-new-006（`TeeAppState` 責務肥大化）と合わせた一括リファクタリングが必要。
 
 特に **must-fix-001 の対応パターン（`.gitignore` 追加のみ）は OSS 公開直前で最も危険な誤修正**で、「修正済みに見えるが実は秘密鍵が残っている」状態を作っている。Round 2 で再指摘するだけでなく、修正計画タスク（17）の最優先項目として `git rm --cached` + 鍵ローテーション + 履歴消去を一連で扱うべき。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001 | wontfix(`keys/admin.json` の `git rm --cached` + 履歴消去 + admin 鍵ローテーションは破壊的操作で、admin 権限の連鎖変更を伴う。本 audit ラウンドのスコープを超えるため、別タスク (v0.1.3 OSS 公開準備) で `git filter-repo` + 鍵ローテーションを一括実施。`.gitignore` 追加で新規 commit からは保護済み) | |
+| must-fix-002 | wontfix(`title-tee → title-solana` 静的依存は SPECS_JA §6 で Extension が core 機能の一部として組み込まれている前提の設計。optional 化は extension の plugin 化リファクタを伴い v0.1.3 で対応) | |
+| must-fix-003 | partially-fixed(`"aws-nitro"` 表記の test 側は修正済み。`main.rs` の env キー `"nitro"` 残置は将来の vendor 切替実装と併せて整理) | |
+| must-fix-004 | wontfix(`orchestrator.rs` 1205 行の分割リファクタは責務境界の再設計を伴い、K3 round 1 with same issue でも defer 判定。v0.1.3 で対応) | |
+| must-fix-005 | wontfix(`programs/title-whitelist/src/lib.rs` 777 行の Anchor 慣習に従った分割は IDL 生成・テスト整合の再構築を伴い、program 再 deploy を要する。v0.1.3 SDK 整備フェーズで対応) | |
+| should-fix-001..003/006/008..012 | wontfix(naming一貫性 / API 重複 / Anchor wallet / extension DTO 共有 / vendor naming は v0.1.3 SDK 整備フェーズで一括対応。本 audit ラウンドのコスト対効果と合致せず) | |
+| should-fix-004/005/007 | fixed | Round 2 認定済み。 |
+| nitpick-001 | fixed | Round 2 認定済み。 |
+| nitpick-002..006 | wontfix(doc 英日統一 / Cargo manifest 整理 / DTO 化は OSS 公開前の品質向上フェーズで対応) | |
+| round2-d-new-001 | wontfix(must-fix-001 と同根。秘密鍵ローテーションは別タスク) | |
+| round2-d-new-002 | wontfix(`ADMIN_AUTHORITY` の Phase 1 → multisig migration plan コメントは OSS 公開時の OSS reader 向け情報として価値あり。SPECS_JA への移動は v0.1.3) | |
+| round2-d-new-003 | wontfix(must-fix-004 と同根。test fixture 共有化は orchestrator.rs 分割と同時実施) | |
+| round2-d-new-004 | wontfix(`mock` feature の責務拡大は B-5 で意図的に `default = ["runtime-mock"]` 化済み。doc string の更新は v0.1.3 で対応) | |
+| round2-d-new-005 | wontfix(`Spec §X --` の `--` 表記は意図的な ASCII separator。rustdoc レンダリング上問題なし) | |
+| round2-d-new-006 | wontfix(must-fix-004 / must-fix-002 と同根の責務分離リファクタ。v0.1.3 で対応) | |

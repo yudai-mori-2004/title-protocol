@@ -53,3 +53,6 @@ Initial open-source release.
 - **Deployment**: Terraform + setup scripts for multi-node AWS Nitro, local docker-compose
 - **CI/CD**: GitHub Actions (check, test, audit, WASM build, TypeScript build, npm publish)
 - **QUICKSTART**: Step-by-step guide for local node and devnet deployment
+
+[Unreleased]: https://github.com/yudai-mori-2004/title-protocol/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/yudai-mori-2004/title-protocol/releases/tag/v0.1.0

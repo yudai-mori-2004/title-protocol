@@ -12,9 +12,12 @@ name = "title-proxy"
 path = "src/main.rs"
 
 [features]
-default = ["vendor-aws"]
-# Listen on a vsock socket (AWS Nitro Enclaves host side). Disable in
-# dev/CI where vsock is not available — falls back to a TCP listener.
+# Default: no vendor-specific listener so `cargo build` works on any
+# platform (Mac / Windows / Linux). The production Docker build passes
+# `--features vendor-aws` explicitly.
+default = []
+# Vsock listener for AWS Nitro Enclaves. Linux-only — see the
+# target.'cfg(target_os = "linux")' section below.
 vendor-aws = ["dep:vsock"]
 
 [dependencies]

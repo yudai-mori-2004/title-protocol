@@ -33,13 +33,13 @@ RUN mkdir -p crates/attestation/src && echo "" > crates/attestation/src/lib.rs \
  && mkdir -p crates/proxy/src && echo "fn main() {}" > crates/proxy/src/main.rs \
  && mkdir -p crates/solana/src && echo "" > crates/solana/src/lib.rs
 
-# vendor-aws is the default feature on title-proxy; enabling it pulls in
-# `vsock`. This works because the container is built and run on linux/amd64.
-RUN cargo build --release --bin title-proxy 2>&1 || true
+# title-proxy ships with `default = []`; pass --features vendor-aws here
+# to pull in the vsock listener. linux/amd64 only.
+RUN cargo build --release --bin title-proxy --features vendor-aws 2>&1 || true
 
 COPY crates/ crates/
 RUN find crates -name "*.rs" -exec touch {} + \
- && cargo build --release --bin title-proxy
+ && cargo build --release --bin title-proxy --features vendor-aws
 
 # --- Runtime stage ---
 FROM --platform=linux/amd64 debian:bookworm-slim

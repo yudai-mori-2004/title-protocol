@@ -1,6 +1,27 @@
 # Title Protocol
 
+[![CI](https://github.com/yudai-mori-2004/title-protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/yudai-mori-2004/title-protocol/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust: 1.93.1](https://img.shields.io/badge/rust-1.93.1-orange.svg)](rust-toolchain.toml)
+
 **Attribute Extraction Layer for C2PA-signed Content**
+
+> The technical specification is written in Japanese
+> (`docs/v0.1.2/SPECS_JA.md`). Code, docstrings, commit messages, and PR
+> review are in English; the JA spec is the source of truth for protocol
+> design only.
+
+## Quickstart
+
+```bash
+git clone https://github.com/yudai-mori-2004/title-protocol.git
+cd title-protocol
+docker compose up --build -d   # TEE (mock runtime) + Gateway
+./docker/smoke-test.sh         # 5 endpoints, ~10s
+```
+
+For an AWS Nitro Enclave deployment, see
+[`deploy/aws/README.md`](deploy/aws/README.md).
 
 ---
 
@@ -130,12 +151,23 @@ and exercised end-to-end on devnet. Remaining work tracked in
 [`docs/v0.1.2/COVERAGE.md`](docs/v0.1.2/COVERAGE.md). See
 [Technical Specification (Japanese)](docs/v0.1.2/SPECS_JA.md) for the full design.
 
+## Roadmap
+
+See [`docs/v0.1.2/OPERATIONS_JA.md` §9](docs/v0.1.2/OPERATIONS_JA.md) for current priorities. Headline items:
+
+- Additional processors: `provenance-graph`, `image-pdq`, `video-vpdq`, `cert-google/sony/leica`
+- TypeScript client SDK
+- Range Request streaming for large content fetch
+- Mainnet contract deployment with multisig admin
+
 ## Documentation
 
 | Document | Description |
 |---|---|
 | [Technical Spec (JA)](docs/v0.1.2/SPECS_JA.md) | Full protocol specification (v0.1.2, Japanese) |
+| [Operations (JA)](docs/v0.1.2/OPERATIONS_JA.md) | Deploy + lifecycle + troubleshooting guide |
 | [Coverage](docs/v0.1.2/COVERAGE.md) | Spec-to-implementation mapping |
+| [deploy/aws/README.md](deploy/aws/README.md) | AWS Nitro Enclave deployment runbook |
 | [docs/README.md](docs/README.md) | Documentation structure and version history |
 
 ## Contributing

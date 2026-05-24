@@ -6,8 +6,10 @@ Thank you for your interest in contributing to Title Protocol.
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Rust | 1.82+ | TEE server, Gateway, Processors |
-| Node.js | 20+ | (Future: client SDK, tooling) |
+| Rust | pinned in `rust-toolchain.toml` (1.93.1) | TEE, Gateway, Proxy, Crypto |
+| Docker + Compose | recent | Local mock stack |
+| Anchor CLI | 0.30.x | Solana program (`programs/title-whitelist`) |
+| Solana CLI | 2.x | Devnet / Localnet interaction |
 
 ## Getting Started
 
@@ -15,25 +17,46 @@ Thank you for your interest in contributing to Title Protocol.
 git clone https://github.com/yudai-mori-2004/title-protocol.git
 cd title-protocol
 
-# Build and test (once implementation exists)
-cargo check --workspace
+# Local mock stack (TEE in mock runtime + Gateway):
+docker compose up --build -d
+./docker/smoke-test.sh
+
+# Or build + test directly:
 cargo test --workspace
+cargo clippy --workspace --all-targets --features title-tee/runtime-mock
 ```
+
+### Solana program build
+
+The Anchor program at `programs/title-whitelist/` lives outside the Cargo
+workspace (Solana toolchain conflict). Build it with:
+
+```bash
+cd programs/title-whitelist && anchor build --no-idl
+```
+
+See [`docs/v0.1.2/OPERATIONS_JA.md`](docs/v0.1.2/OPERATIONS_JA.md) §2.2 for the
+full deployment flow.
 
 ## Project Structure
 
 ```
-docs/                 -- Versioned documentation (SPECS -> COVERAGE -> tasks)
-  v0.1.2/             -- Current version (full rewrite)
-    SPECS_JA.md        -- Technical specification (Japanese)
-    COVERAGE.md        -- Spec-to-implementation mapping
-    tasks/             -- AI development task definitions
-  v0.1.0/              -- Archived spec + tasks
-  v0.1.1/              -- Archived spec + tasks
-legacy/v0.1.0/         -- Archived v0.1.0 implementation (reference only)
+crates/                 -- Rust workspace: core, crypto, attestation, tee,
+                           gateway, proxy, solana, attestation-aws-nitro
+programs/title-whitelist/  -- Anchor program (devnet 43y8E...; separate workspace)
+sp1-guests/             -- SP1 zkVM guest + host (separate workspaces)
+docs/                   -- Versioned documentation (SPECS -> COVERAGE -> tasks)
+  v0.1.2/               -- Current version
+    SPECS_JA.md         -- Technical specification (Japanese, source of truth)
+    OPERATIONS_JA.md    -- Deploy + lifecycle + troubleshooting
+    COVERAGE.md         -- Spec-to-implementation mapping
+    tasks/              -- Per-session task definitions
+deploy/aws/             -- Terraform + Dockerfiles for AWS Nitro deployment
+docker/                 -- Mock-runtime Dockerfile + smoke test
 ```
 
-Implementation code will be added as v0.1.2 tasks are completed. The crate structure is defined by the specification but not yet created.
+The earlier `v0.1.0` source tree is **not** kept in-tree; consult the
+`v0.1.0` git tag (or `docs/v0.1.0/`) when historical context is needed.
 
 ## Coding Standards
 
@@ -49,7 +72,6 @@ Implementation code will be added as v0.1.2 tasks are completed. The crate struc
 
 - Keep changes focused and minimal
 - Do not modify archived version docs (`docs/v0.1.0/`, `docs/v0.1.1/`) unless fixing errors
-- Do not modify legacy code (`legacy/v0.1.0/`)
 
 ## AI-Driven Development
 

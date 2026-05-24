@@ -2,5 +2,6 @@
 *.tfstate
 *.tfstate.*
 .terraform/
-.terraform.lock.hcl
-tfplan
+*.tfplan
+# `.terraform.lock.hcl` is intentionally **not** ignored — it pins provider
+# versions so multiple developers reproduce the same toolchain.

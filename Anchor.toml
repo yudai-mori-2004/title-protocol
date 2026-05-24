@@ -14,8 +14,8 @@ title_whitelist = "43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Devnet"
+# Default to Localnet so a bare `anchor test` cannot accidentally hit a
+# shared cluster. Devnet / mainnet selection is documented in
+# `docs/v0.1.2/OPERATIONS_JA.md` §2.2.
+cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
-
-[scripts]
-test = "echo 'Use: cargo test --workspace'"

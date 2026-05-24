@@ -26,6 +26,13 @@ pub enum GatewayError {
     #[error("TEE rejected request (HTTP {status})")]
     TeeRejected { status: u16 },
 
+    /// TEE returned a 5xx other than 503 (e.g. 500/502/504). Passed through
+    /// so the client can distinguish "TEE crashed" from "TEE answered with
+    /// a timeout" from "TEE is busy" without collapsing all upstream
+    /// failures to 502.
+    #[error("TEE upstream error (HTTP {status})")]
+    TeeUpstreamError { status: u16 },
+
     /// Client authentication failed (401).
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
@@ -45,7 +52,7 @@ impl IntoResponse for GatewayError {
         let status = match &self {
             GatewayError::TeeUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             GatewayError::TeeError(_) => StatusCode::BAD_GATEWAY,
-            GatewayError::TeeRejected { status } => {
+            GatewayError::TeeRejected { status } | GatewayError::TeeUpstreamError { status } => {
                 StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
             }
             GatewayError::Unauthorized(_) => StatusCode::UNAUTHORIZED,

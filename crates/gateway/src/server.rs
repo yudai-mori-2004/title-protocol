@@ -172,6 +172,9 @@ pub(crate) mod tests {
         pub keys_response: Mutex<Option<KeysResponse>>,
         pub processors_response: Mutex<Option<ProcessorsResponse>>,
         pub process_response: Mutex<Option<ProcessResponse>>,
+        /// When set, `process()` returns these raw bytes as the encrypted
+        /// outcome instead of using `process_response`.
+        pub process_encrypted_response: Mutex<Option<Vec<u8>>>,
         pub solana_keys_response: Mutex<Option<SolanaKeysResponse>>,
         pub solana_ext_response: Mutex<Option<SolanaExtensionResponse>>,
         pub should_fail: Mutex<bool>,
@@ -201,6 +204,7 @@ pub(crate) mod tests {
                     },
                     attestation: "mock-attestation".into(),
                 })),
+                process_encrypted_response: Mutex::new(None),
                 solana_keys_response: Mutex::new(None),
                 solana_ext_response: Mutex::new(None),
                 should_fail: Mutex::new(false),
@@ -265,6 +269,9 @@ pub(crate) mod tests {
         ) -> Result<ProcessOutcome, TeeClientError> {
             if *self.should_fail.lock().unwrap() {
                 return Err(TeeClientError::Unreachable("mock failure".into()));
+            }
+            if let Some(bytes) = self.process_encrypted_response.lock().unwrap().clone() {
+                return Ok(ProcessOutcome::Encrypted(bytes));
             }
             self.process_response
                 .lock()
@@ -469,6 +476,45 @@ pub(crate) mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["signature_hash"], "sha256:mock");
         assert_eq!(body["attestation"], "mock-attestation");
+    }
+
+    #[tokio::test]
+    async fn process_relays_encrypted_bytes_with_octet_stream_content_type() {
+        let mock = MockTeeClient::new();
+        let sealed: Vec<u8> = (0u8..32).collect();
+        *mock.process_encrypted_response.lock().unwrap() = Some(sealed.clone());
+        let state = test_state(mock);
+        state.refresh_tee_info().await.unwrap();
+        let app = router(state);
+
+        let req_body = serde_json::json!({
+            "input_type": "single",
+            "content_url": "https://example.com/photo.jpg",
+            "processor_ids": ["c2pa-verify"],
+            "encryption": "x25519"
+        });
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/process")
+                    .header("content-type", "application/json")
+                    .body(Body::from(req_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ct = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(ct, "application/octet-stream");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), sealed.as_slice());
     }
 
     #[tokio::test]

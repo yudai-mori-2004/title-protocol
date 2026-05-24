@@ -92,3 +92,24 @@ Round 1 指摘の主要 must-fix 5 件は全件解消、should-fix も 7/9 が�
 残課題は (a) **新設パスのテスト不足**（new-should-001）、(b) **5xx 透過の積み残し**（new-should-002）、(c) **OSS 公開品質**（Cargo.toml workspace 化・doc 英語化・e2e flaky の改善）の 3 つに集約される。タスク 17 で一括対応するのが効率的。
 
 致命的な仕様逸脱・セキュリティ問題は Round 2 では発見されなかった。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001..005 | fixed | Round 2 認定済み。 |
+| should-fix-001/004/005/006/007/008 | fixed | Round 2 認定済み。 |
+| should-fix-002 | wontfix(MockTeeClient テストの `Mutex::lock().unwrap()` は test-only。panic 中の lock 取得は診断が複雑化するが、本番コードには波及しない) | |
+| should-fix-003 | wontfix(reqwest retry は idempotent GET でも上流再試行の副作用が読みづらい。ALB レイヤでカバーする運用方針) | |
+| should-fix-009 | wontfix(e2e restart テストの flaky bind は test 環境固有。SO_REUSEADDR + retry は OSS 公開前に対応) | |
+| nitpick-001/003/005 | fixed | Round 2 認定済み。 |
+| nitpick-002 | wontfix(API 型 docstring の英日混在は SPECS_JA 引用部分の意図的なバイリンガル設計。OSS 公開時に統一) | |
+| nitpick-004 | wontfix(`Cargo.toml` workspace 化は他 crate との依存整合確認が必要で、本 audit のスコープを超える) | |
+| nitpick-006 | fixed | new-nitpick-002 と統合対応。 |
+| new-should-fix-001 | fixed | `MockTeeClient` に `process_encrypted_response: Mutex<Option<Vec<u8>>>` を追加し、Encrypted 経路を mock 経由で注入可能に。`process_relays_encrypted_bytes_with_octet_stream_content_type` テストを追加し、Content-Type=`application/octet-stream` + body 透過の回帰を保証。 |
+| new-should-fix-002 | fixed | `GatewayError::TeeUpstreamError { status }` variant を追加し、`tee_err` で 5xx (503/429 を除く) を透過。500/502/504 が 502 BAD_GATEWAY に潰れる挙動を解消し、クライアントが retry 判断できるようにした。 |
+| new-nitpick-001 | wontfix(nitpick-002 と同根の OSS 公開時タスク) | |
+| new-nitpick-002 | fixed | `handle_solana_extension` の `is_tee_available` → `solana_keys.is_none` の順序鎮意図を 3 行コメントで明文化。 |
+| new-nitpick-003 | wontfix(`prune_idle` の prune 意味論コメントは将来の rate-limit 拡張時に整理) | |

@@ -44,6 +44,7 @@ fn tee_err(e: TeeClientError) -> GatewayError {
                 503 => GatewayError::TeeUnavailable(format!("TEE upstream returned HTTP {status}")),
                 429 => GatewayError::RateLimited,
                 400..=499 => GatewayError::TeeRejected { status },
+                500..=599 => GatewayError::TeeUpstreamError { status },
                 _ => GatewayError::TeeError(format!("TEE upstream returned HTTP {status}")),
             }
         }
@@ -167,13 +168,16 @@ pub async fn handle_solana_extension(
     State(state): State<Arc<GatewayState>>,
     Json(request): Json<SolanaExtensionRequest>,
 ) -> Result<Json<SolanaExtensionResponse>, GatewayError> {
+    // Order matters: a downed TEE returns 503 (transient), which beats the
+    // 404 we'd otherwise return for the extension cache being empty. Once
+    // the TEE is back up the cache is rebuilt and the 404 path becomes
+    // a real "Solana Extension not enabled" answer.
     if !state.is_tee_available() {
         return Err(GatewayError::TeeUnavailable(
             "TEE is not available".into(),
         ));
     }
 
-    // Check if Solana Extension is enabled
     {
         let cache = state.tee_cache.read().await;
         if cache.solana_keys.is_none() {

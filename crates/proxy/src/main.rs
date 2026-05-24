@@ -37,6 +37,11 @@ async fn main() -> anyhow::Result<()> {
     // host). Rejecting < 3 means a co-tenant host process cannot connect
     // to this proxy via vsock loopback.
     const MIN_ACCEPTED_CID: u32 = 3;
+    // accept 直後の vsock stream に I/O timeout を設定する。これを入れないと
+    // 「接続を開いて 1 バイト送って黙る」攻撃 (slow-read DoS) で tokio の
+    // blocking thread pool (デフォルト 512) を埋め尽くされる経路が残る。
+    // TEE 側 (`proxy_fetcher.rs::PROXY_IO_TIMEOUT`) と揃えて 60s。
+    const ACCEPT_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
     std::thread::spawn(move || loop {
         match listener.accept() {
@@ -44,6 +49,14 @@ async fn main() -> anyhow::Result<()> {
                 let peer_cid = peer.cid();
                 if peer_cid < MIN_ACCEPTED_CID {
                     tracing::warn!(peer_cid, "rejecting vsock connection from reserved CID");
+                    continue;
+                }
+                if let Err(e) = s.set_read_timeout(Some(ACCEPT_IO_TIMEOUT)) {
+                    tracing::warn!(error = %e, peer_cid, "failed to set vsock read timeout; dropping connection");
+                    continue;
+                }
+                if let Err(e) = s.set_write_timeout(Some(ACCEPT_IO_TIMEOUT)) {
+                    tracing::warn!(error = %e, peer_cid, "failed to set vsock write timeout; dropping connection");
                     continue;
                 }
                 match tx.try_send(s) {
@@ -139,9 +152,16 @@ mod vsock_async {
     use std::task::{Context, Poll};
     use tokio::io::AsyncWrite;
 
-    /// Tokio `AsyncWrite` shim over the blocking `vsock::VsockStream`. Each
-    /// `poll_write` blocks the worker thread for the duration of a single
-    /// `write(2)` — fine here because connections are one-shot and short.
+    /// Tokio `AsyncWrite` shim over the blocking `vsock::VsockStream`.
+    ///
+    /// 各 `poll_write` は単一の `write(2)` 呼び出しが完了するまでワーカー
+    /// スレッドをブロックする。`MAX_RESPONSE_BYTES = 100 MiB` の chunked GET
+    /// が走った場合、外側の `BufWriter`(cap 8 KiB) を経由して同一ワーカで
+    /// 最大 12,500 回の syscall がシリアル実行される。これ自体は許容範囲
+    /// (各 syscall は accept 時に設定した 60 秒 timeout で必ず戻る) だが、
+    /// 「one-shot で short」と言い切れる前提ではない。同時 chunked 接続が
+    /// 多い場合は tokio multi-thread runtime のワーカー数 (デフォルト
+    /// `available_parallelism()`) で全体スループットが律速される。
     pub struct VsockWriter(pub vsock::VsockStream);
 
     impl AsyncWrite for VsockWriter {
@@ -173,6 +193,10 @@ mod vsock_async {
     // it into a `tokio::spawn`ed task and uses it from that single task
     // — there is no concurrent access from another thread. We need to
     // assert `Send` explicitly because `vsock 0.5` does not.
+    //
+    // `VsockWriter` がラップする stream には accept 時に
+    // `set_read_timeout` / `set_write_timeout` が掛かっているため、`poll_write`
+    // 内の `write(2)` は無期限ブロックしない。
     unsafe impl Send for VsockWriter {}
 }
 
@@ -291,7 +315,9 @@ mod tests {
             .unwrap();
         write_request(&mut stream, "DELETE", "http://example.com", &[]).await;
         let (status, body) = read_response(&mut stream).await;
-        assert_eq!(status, 400);
+        // proxy 内部での拒否なので PROXY_ERROR_STATUS (= 0)。上流の HTTP 400
+        // と区別できるようにすることで TEE 側で原因の切り分けが可能になる。
+        assert_eq!(status, 0, "proxy-internal reject uses status 0");
         assert!(String::from_utf8(body)
             .unwrap()
             .contains("Unsupported method"));

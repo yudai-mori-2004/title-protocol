@@ -149,7 +149,19 @@ const CHUNKED_SENTINEL: u32 = u32::MAX;
 /// End-of-stream marker meaning "the proxy hit MAX_RESPONSE_BYTES" — must
 /// match `title_proxy::protocol::CHUNKED_TRUNCATED`. Treated as a fetch
 /// failure on this side, not a complete body.
-const CHUNKED_TRUNCATED: u32 = u32::MAX;
+///
+/// `CHUNKED_SENTINEL` とは別ビットパターン (`u32::MAX - 1`) を選んでいる。
+/// 両者を同値にしていた頃は wire の根幹定数が衝突しており、将来の拡張で
+/// silent regression が起きる構造的リスクがあった。Round 3 (K6 must-fix-008)
+/// で分離。proxy 側 `title_proxy::protocol::CHUNKED_TRUNCATED` と完全一致
+/// させること。
+const CHUNKED_TRUNCATED: u32 = u32::MAX - 1;
+
+/// 1 chunk あたりの最大バイト数。proxy 側
+/// `title_proxy::protocol::MAX_WIRE_CHUNK_BYTES` と一致。proxy はこの上限で
+/// piece を分割して書き出すため、TEE 側で chunk_len > MAX_WIRE_CHUNK_BYTES
+/// を受け取った場合は proxy 故障とみなす。
+const MAX_WIRE_CHUNK_BYTES: u32 = 4 * 1024 * 1024;
 
 impl ContentFetcher for ProxyContentFetcher {
     fn fetch(&self, url: &str) -> Result<FetchResponse, FetchError> {
@@ -278,6 +290,14 @@ fn read_chunked_body(
                 reason: format!(
                     "proxy truncated chunked response after {} bytes (upstream exceeded budget)",
                     body.len()
+                ),
+            });
+        }
+        if n > MAX_WIRE_CHUNK_BYTES {
+            return Err(FetchError::HttpError {
+                url: url_for_err.to_string(),
+                reason: format!(
+                    "chunk_len {n} exceeds wire limit {MAX_WIRE_CHUNK_BYTES} — likely proxy fault",
                 ),
             });
         }

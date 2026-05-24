@@ -5,12 +5,13 @@
 //! TLS is terminated here; integrity comes from the C2PA signature, not
 //! the transport (Spec §5.2).
 
-use crate::protocol::{self, CHUNKED_SENTINEL, CHUNKED_TRUNCATED, MAX_RESPONSE_BYTES};
+use crate::protocol::{
+    self, CHUNKED_SENTINEL, CHUNKED_TRUNCATED, MAX_RESPONSE_BYTES, MAX_WIRE_CHUNK_BYTES,
+};
 
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_TOTAL_TIMEOUT_SECS: u64 = 120;
 const PROXY_ERROR_STATUS: u32 = 0;
-const STREAM_CHUNK_LIMIT: u32 = 4 * 1024 * 1024;
 
 fn env_secs(name: &str, default: u64) -> u64 {
     std::env::var(name)
@@ -59,7 +60,10 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
         other => {
             tracing::warn!(method = other, upstream_host = %upstream_host, "rejecting unsupported HTTP method");
             let msg = format!("Unsupported method: {other}").into_bytes();
-            write_error(w, 400, &msg).await?;
+            // proxy 内部での拒否なので PROXY_ERROR_STATUS (= 0) を使う。
+            // 上流由来の HTTP 400 と区別できるようにすることで、TEE 側で
+            // 「proxy が拒否したのか上流が拒否したのか」を切り分けられる。
+            write_error(w, PROXY_ERROR_STATUS, &msg).await?;
             return shutdown_write(w).await;
         }
     };
@@ -146,7 +150,7 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
                     w.flush().await?;
                     return shutdown_write(w).await;
                 }
-                for piece in chunk.chunks(STREAM_CHUNK_LIMIT as usize) {
+                for piece in chunk.chunks(MAX_WIRE_CHUNK_BYTES as usize) {
                     w.write_all(&(piece.len() as u32).to_be_bytes()).await?;
                     w.write_all(piece).await?;
                 }
@@ -157,29 +161,60 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
         }
         shutdown_write(w).await
     } else {
-        let body_bytes = match response.bytes().await {
-            Ok(b) => b.to_vec(),
-            Err(e) => {
-                tracing::error!(
-                    err = format!("{e:#}"),
-                    upstream_host = %upstream_host,
-                    duration_ms = started.elapsed().as_millis() as u64,
-                    "upstream body read failed",
-                );
-                let msg = format!("Proxy body read failed: {e}").into_bytes();
+        // 非 GET / 非 200 経路。GET 200 と対称にストリーミング読みで
+        // `MAX_RESPONSE_BYTES` を強制する。以前は `response.bytes().await` で
+        // body 全体をメモリに展開してから上限チェックしていたが、これだと
+        // 攻撃者制御の上流が 1 GiB を返した時点で proxy が OOM する。
+        let content_length = response.content_length();
+        if let Some(len) = content_length {
+            if len > MAX_RESPONSE_BYTES {
+                tracing::warn!(content_length = len, max = MAX_RESPONSE_BYTES, upstream_host = %upstream_host, "response too large");
+                let msg =
+                    format!("response too large: {len} > {MAX_RESPONSE_BYTES}").into_bytes();
                 write_error(w, PROXY_ERROR_STATUS, &msg).await?;
                 return shutdown_write(w).await;
             }
-        };
-        if body_bytes.len() as u64 > MAX_RESPONSE_BYTES {
-            tracing::warn!(body_len = body_bytes.len(), max = MAX_RESPONSE_BYTES, upstream_host = %upstream_host, "response too large");
-            let msg = format!(
-                "response too large: {} > {MAX_RESPONSE_BYTES}",
-                body_bytes.len()
-            )
-            .into_bytes();
-            write_error(w, PROXY_ERROR_STATUS, &msg).await?;
-            return shutdown_write(w).await;
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut body_bytes: Vec<u8> = Vec::with_capacity(
+            content_length
+                .map(|n| n as usize)
+                .unwrap_or(0)
+                .min(MAX_RESPONSE_BYTES as usize),
+        );
+        loop {
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    if body_bytes.len() as u64 + chunk.len() as u64 > MAX_RESPONSE_BYTES {
+                        tracing::warn!(
+                            seen = body_bytes.len() + chunk.len(),
+                            max = MAX_RESPONSE_BYTES,
+                            upstream_host = %upstream_host,
+                            "response too large",
+                        );
+                        let msg = format!(
+                            "response too large: > {MAX_RESPONSE_BYTES}",
+                        )
+                        .into_bytes();
+                        write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+                        return shutdown_write(w).await;
+                    }
+                    body_bytes.extend_from_slice(&chunk);
+                }
+                Some(Err(e)) => {
+                    tracing::error!(
+                        err = format!("{e:#}"),
+                        upstream_host = %upstream_host,
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        "upstream body read failed",
+                    );
+                    let msg = format!("Proxy body read failed: {e}").into_bytes();
+                    write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+                    return shutdown_write(w).await;
+                }
+                None => break,
+            }
         }
         tracing::info!(url, status, body_len = body_bytes.len(), duration_ms = started.elapsed().as_millis() as u64, upstream_host = %upstream_host, "forwarded");
         w.write_all(&status.to_be_bytes()).await?;

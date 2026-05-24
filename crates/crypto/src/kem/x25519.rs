@@ -49,16 +49,10 @@ pub struct X25519Decapsulator {
 }
 
 impl X25519Decapsulator {
-    pub fn from_seed(seed: &[u8]) -> Result<Self, CryptoError> {
-        let arr: [u8; 32] =
-            seed.try_into()
-                .map_err(|_| CryptoError::InvalidKeyLength {
-                    expected: 32,
-                    actual: seed.len(),
-                })?;
-        let secret = StaticSecret::from(arr);
+    pub fn generate(rng: &mut (impl rand::RngCore + rand::CryptoRng)) -> Self {
+        let secret = StaticSecret::random_from_rng(rng);
         let public = PublicKey::from(&secret);
-        Ok(Self { secret, public })
+        Self { secret, public }
     }
 }
 
@@ -87,8 +81,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let seed: [u8; 32] = rand::random();
-        let decap = X25519Decapsulator::from_seed(&seed).unwrap();
+        let decap = X25519Decapsulator::generate(&mut rand::rngs::OsRng);
         let encap = X25519Encapsulator::from_public_key(&decap.public_key_bytes()).unwrap();
 
         let (shared_enc, encap_key) = encap.encapsulate().unwrap();
@@ -98,8 +91,7 @@ mod tests {
 
     #[test]
     fn each_encapsulation_unique() {
-        let seed: [u8; 32] = rand::random();
-        let decap = X25519Decapsulator::from_seed(&seed).unwrap();
+        let decap = X25519Decapsulator::generate(&mut rand::rngs::OsRng);
         let encap = X25519Encapsulator::from_public_key(&decap.public_key_bytes()).unwrap();
 
         let (s1, ek1) = encap.encapsulate().unwrap();

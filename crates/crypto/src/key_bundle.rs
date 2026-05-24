@@ -34,20 +34,10 @@ impl KeyBundle {
     ///
     /// The RNG should be backed by TeeRuntime::random_bytes in production.
     pub fn generate(rng: &mut (impl rand::RngCore + rand::CryptoRng)) -> Result<Self, CryptoError> {
-        let mut x25519_seed = [0u8; 32];
-        rng.fill_bytes(&mut x25519_seed);
-        let x25519 = X25519Decapsulator::from_seed(&x25519_seed)?;
-
-        let mut p256_seed = [0u8; 32];
-        rng.fill_bytes(&mut p256_seed);
-        let p256 = P256Decapsulator::from_seed(&p256_seed)?;
-
-        let ml_kem = MlKem768Decapsulator::generate(rng);
-
         Ok(Self {
-            x25519,
-            p256,
-            ml_kem,
+            x25519: X25519Decapsulator::generate(rng),
+            p256: P256Decapsulator::generate(rng),
+            ml_kem: MlKem768Decapsulator::generate(rng),
         })
     }
 

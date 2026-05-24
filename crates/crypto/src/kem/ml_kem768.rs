@@ -10,6 +10,7 @@
 
 use ml_kem::ml_kem_768;
 use ml_kem::{Key, KeyExport};
+use rand::RngCore;
 
 use crate::CryptoError;
 
@@ -41,10 +42,9 @@ impl MlKem768Encapsulator {
 
 impl Encapsulator for MlKem768Encapsulator {
     fn encapsulate(&self) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
-        let m: [u8; 32] = rand::random();
-        let mut m_arr = ml_kem::B32::default();
-        m_arr.copy_from_slice(&m);
-        let (ct, ss) = self.ek.encapsulate_deterministic(&m_arr);
+        let mut m = ml_kem::B32::default();
+        rand::rngs::OsRng.fill_bytes(&mut m);
+        let (ct, ss) = self.ek.encapsulate_deterministic(&m);
         Ok((ss.to_vec(), ct.to_vec()))
     }
 }

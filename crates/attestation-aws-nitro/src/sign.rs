@@ -1,32 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Signature verification dispatch — routes by OID to the appropriate RustCrypto crate.
-// No cryptographic primitives are implemented here.
-// Origin: Automata Network — aws-nitro-enclave-attestation (Apache-2.0).
+// AWS Nitro chains only contain ECDSA-P256/P384 certificates, so RSA paths are
+// intentionally omitted.
+
+use std::borrow::Cow;
 
 use crate::constants::*;
 use anyhow::anyhow;
-use oid::ObjectIdentifier;
 use p256::ecdsa::{
-    signature::Verifier as ECDSASha256Verifier, Signature as P256Signature,
+    signature::Verifier as P256Verifier, Signature as P256Signature,
     VerifyingKey as P256VerifyingKey,
 };
 use p384::ecdsa::{
     signature::hazmat::PrehashVerifier, Signature as P384Signature,
     VerifyingKey as P384VerifyingKey,
 };
-use rsa::{
-    pkcs1::DecodeRsaPublicKey,
-    pkcs1v15::{Signature as PKCS1v15Signature, VerifyingKey as PKCS1v15VerifyingKey},
-    pss::{Signature as PSSSignature, VerifyingKey as PSSVerifyingKey},
-    RsaPublicKey,
-};
-use sha2::{Digest, Sha256, Sha384};
+use sha2::{Digest, Sha256};
 use x509_parser::der_parser::Oid;
-use x509_parser::{
-    der_parser::{ber::BerObjectContent, der::parse_der},
-    x509::AlgorithmIdentifier,
-};
+use x509_parser::x509::AlgorithmIdentifier;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct PubKey<'a> {
@@ -35,42 +27,29 @@ pub struct PubKey<'a> {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum KeyAlgoParams {
-    P256,
-    P384,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum KeyAlgo {
-    ECDSA(KeyAlgoParams),
-    RSA,
+    EcdsaP256,
+    EcdsaP384,
 }
 
 impl KeyAlgo {
     pub fn from_algo(algo: &AlgorithmIdentifier) -> anyhow::Result<Self> {
-        if algo.oid() == &OID_KEY_ALGO_EC {
-            let Some(key_params) = &algo.parameters else {
-                return Err(anyhow!("ECDSA public key parameters are missing"));
-            };
-            let param_oid = ObjectIdentifier::try_from(key_params.data).map_err(|err| {
-                anyhow!("Failed to parse ECDSA public key parameters OID: {:?}", err)
-            })?;
-            let param_oid: String = param_oid.into();
-            let key_params = if param_oid == EC_KEY_P256_PARAM_OID {
-                KeyAlgoParams::P256
-            } else if param_oid == EC_KEY_P384_PARAM_OID {
-                KeyAlgoParams::P384
-            } else {
-                return Err(anyhow!(
-                    "Unsupported ECDSA key parameter OID: {}",
-                    param_oid
-                ));
-            };
-            Ok(Self::ECDSA(key_params))
-        } else if algo.oid() == &OID_KEY_ALGO_PKCS1_V1_5 {
-            Ok(KeyAlgo::RSA)
+        if algo.oid() != &OID_KEY_ALGO_EC {
+            return Err(anyhow!("unsupported public-key algorithm: {:?}", algo.oid()));
+        }
+        let params = algo
+            .parameters
+            .as_ref()
+            .ok_or_else(|| anyhow!("ECDSA public key missing curve parameters"))?;
+        // `Any.data` holds the raw OID content (no tag/length prefix), which
+        // is exactly what `Oid::new` consumes.
+        let curve_oid = Oid::new(Cow::Borrowed(params.data));
+        if curve_oid == EC_KEY_P256_OID {
+            Ok(Self::EcdsaP256)
+        } else if curve_oid == EC_KEY_P384_OID {
+            Ok(Self::EcdsaP384)
         } else {
-            Err(anyhow!("Invalid algo: {:?}", algo))
+            Err(anyhow!("unsupported ECDSA curve OID: {:?}", curve_oid))
         }
     }
 }
@@ -79,8 +58,6 @@ impl KeyAlgo {
 pub enum SigAlgo {
     EcdsaSHA256,
     EcdsaSHA384,
-    RsaSSAPSS,
-    RsaSHA256,
 }
 
 impl SigAlgo {
@@ -89,24 +66,18 @@ impl SigAlgo {
             Ok(SigAlgo::EcdsaSHA256)
         } else if oid == &OID_SIG_ALGO_ECDSA_SHA384 {
             Ok(SigAlgo::EcdsaSHA384)
-        } else if oid == &OID_SIG_ALGO_RSASSA_PSS {
-            Ok(SigAlgo::RsaSSAPSS)
-        } else if oid == &OID_SIG_ALGO_RSA_SHA256 {
-            Ok(SigAlgo::RsaSHA256)
         } else {
-            Err(anyhow!("invalid sig oid: {:?}", oid.to_id_string()))
+            Err(anyhow!("unsupported signature OID: {:?}", oid.to_id_string()))
         }
     }
 
     pub fn check_compatible_with(self, key_algo: KeyAlgo) -> anyhow::Result<()> {
         match (self, key_algo) {
-            (SigAlgo::EcdsaSHA256, KeyAlgo::ECDSA(KeyAlgoParams::P256)) => Ok(()),
-            (SigAlgo::EcdsaSHA256, KeyAlgo::ECDSA(KeyAlgoParams::P384)) => Ok(()),
-            (SigAlgo::EcdsaSHA384, KeyAlgo::ECDSA(KeyAlgoParams::P384)) => Ok(()),
-            (SigAlgo::RsaSHA256, KeyAlgo::RSA) => Ok(()),
-            (SigAlgo::RsaSSAPSS, KeyAlgo::RSA) => Ok(()),
+            (SigAlgo::EcdsaSHA256, KeyAlgo::EcdsaP256)
+            | (SigAlgo::EcdsaSHA256, KeyAlgo::EcdsaP384)
+            | (SigAlgo::EcdsaSHA384, KeyAlgo::EcdsaP384) => Ok(()),
             _ => Err(anyhow!(
-                "Incompatible key and signature algorithm, issuer_pubkey: {:?}, subject_sig: {:?}",
+                "incompatible key/signature algorithms: key={:?}, sig={:?}",
                 key_algo,
                 self,
             )),
@@ -114,109 +85,74 @@ impl SigAlgo {
     }
 }
 
-pub fn ec_decode_sig(sig: &[u8], params: KeyAlgoParams) -> anyhow::Result<Vec<u8>> {
-    let (_, decoded) = parse_der(sig).map_err(|err| anyhow!("decode der failed: {:?}", err))?;
-    let mut ret: Vec<u8> = Vec::new();
-
-    let expected_len = match params {
-        KeyAlgoParams::P256 => 32usize,
-        KeyAlgoParams::P384 => 48usize,
-    };
-
-    match decoded.content {
-        BerObjectContent::Sequence(sig_obj) => {
-            // ECDSA signatures are SEQUENCE { r INTEGER, s INTEGER } — exactly two integers.
-            if sig_obj.len() != 2 {
-                return Err(anyhow!(
-                    "ECDSA signature SEQUENCE must have 2 elements, got {}",
-                    sig_obj.len()
-                ));
-            }
-            for v in sig_obj.iter() {
-                let big = v
-                    .as_biguint()
-                    .map_err(|e| anyhow!("ECDSA signature element is not an INTEGER: {:?}", e))?;
-                let mut sig_slice = big.to_bytes_be();
-                sig_slice = pad_zero_to_length(sig_slice, expected_len);
-                if sig_slice.len() != expected_len {
-                    return Err(anyhow!(
-                        "decode ec sig failed: does not match expected length, want: {}, got: {}",
-                        expected_len,
-                        sig_slice.len()
-                    ));
-                }
-                ret.append(&mut sig_slice);
-            }
-        }
-        content => return Err(anyhow!("DER is not of SEQUENCE type: {:?}", content)),
-    }
-
-    Ok(ret)
-}
-
-pub fn verify_signature(
+/// Verify a DER-encoded ECDSA signature (X.509 certificate signatures).
+///
+/// Malformed DER — negative INTEGER, indefinite length, trailing bytes — is
+/// rejected by the curve crate's `Signature::from_der`, so no hand-rolled DER
+/// walking is needed.
+pub fn verify_signature_der(
     pubkey: PubKey,
     sig_algo: SigAlgo,
-    sig: &[u8],
+    sig_der: &[u8],
     msg: &[u8],
 ) -> anyhow::Result<bool> {
-    let result = match (pubkey.algo, sig_algo) {
-        (KeyAlgo::ECDSA(KeyAlgoParams::P256), SigAlgo::EcdsaSHA256) => {
-            let verifying_key = P256VerifyingKey::from_sec1_bytes(pubkey.val)
-                .map_err(|err| anyhow!("parse verifying key failed: {}", err))?;
-            let signature = P256Signature::from_slice(sig)
-                .map_err(|err| anyhow!("parse signature failed: {}", err))?;
-            verifying_key.verify(msg, &signature).is_ok()
+    match (pubkey.algo, sig_algo) {
+        (KeyAlgo::EcdsaP256, SigAlgo::EcdsaSHA256) => {
+            let vk = P256VerifyingKey::from_sec1_bytes(pubkey.val)
+                .map_err(|err| anyhow!("parse P-256 verifying key: {err}"))?;
+            let signature = P256Signature::from_der(sig_der)
+                .map_err(|err| anyhow!("parse P-256 DER signature: {err}"))?;
+            Ok(vk.verify(msg, &signature).is_ok())
         }
-        (KeyAlgo::ECDSA(KeyAlgoParams::P384), SigAlgo::EcdsaSHA256) => {
-            let verifying_key = P384VerifyingKey::from_sec1_bytes(pubkey.val)
-                .map_err(|err| anyhow!("parse p384 verifying key failed: {}", err))?;
-            let signature = P384Signature::from_slice(sig)
-                .map_err(|err| anyhow!("parse p384 signature failed: {:?}", err))?;
+        (KeyAlgo::EcdsaP384, SigAlgo::EcdsaSHA256) => {
+            let vk = P384VerifyingKey::from_sec1_bytes(pubkey.val)
+                .map_err(|err| anyhow!("parse P-384 verifying key: {err}"))?;
+            let signature = P384Signature::from_der(sig_der)
+                .map_err(|err| anyhow!("parse P-384 DER signature: {err}"))?;
             let digest = Sha256::digest(msg);
-            verifying_key.verify_prehash(&digest, &signature).is_ok()
+            Ok(vk.verify_prehash(&digest, &signature).is_ok())
         }
-        (KeyAlgo::ECDSA(KeyAlgoParams::P384), SigAlgo::EcdsaSHA384) => {
-            let verifying_key = P384VerifyingKey::from_sec1_bytes(pubkey.val)
-                .map_err(|err| anyhow!("parse verifying key failed: {}", err))?;
-            let signature = P384Signature::from_slice(sig)
-                .map_err(|err| anyhow!("parse p384 signature failed: {:?}", err))?;
-            verifying_key.verify(msg, &signature).is_ok()
+        (KeyAlgo::EcdsaP384, SigAlgo::EcdsaSHA384) => {
+            let vk = P384VerifyingKey::from_sec1_bytes(pubkey.val)
+                .map_err(|err| anyhow!("parse P-384 verifying key: {err}"))?;
+            let signature = P384Signature::from_der(sig_der)
+                .map_err(|err| anyhow!("parse P-384 DER signature: {err}"))?;
+            Ok(vk.verify(msg, &signature).is_ok())
         }
-        (KeyAlgo::RSA, SigAlgo::RsaSHA256) => {
-            let pub_key = RsaPublicKey::from_pkcs1_der(pubkey.val)
-                .map_err(|err| anyhow!("parse RSA verifying key failed: {}", err))?;
-            let verifying_key = <PKCS1v15VerifyingKey<Sha256>>::new(pub_key);
-            let signature = PKCS1v15Signature::try_from(sig)
-                .map_err(|err| anyhow!("parse PKCS1v1.5 signature failed: {}", err))?;
-            verifying_key.verify(msg, &signature).is_ok()
-        }
-        (KeyAlgo::RSA, SigAlgo::RsaSSAPSS) => {
-            let pub_key = RsaPublicKey::from_pkcs1_der(pubkey.val)
-                .map_err(|err| anyhow!("parse RSA-PSS verifying key failed: {}", err))?;
-            let verifying_key: PSSVerifyingKey<Sha384> = PSSVerifyingKey::new(pub_key);
-            let signature = PSSSignature::try_from(sig)
-                .map_err(|err| anyhow!("parse RSA-PSS signature failed: {}", err))?;
-            verifying_key.verify(msg, &signature).is_ok()
-        }
-        _ => {
-            return Err(anyhow!(
-                "Incompatible key and signature algorithm, key: {:?}, sig: {:?}",
-                pubkey.algo,
-                sig_algo,
-            ))
-        }
-    };
-    Ok(result)
+        (key_algo, sig_algo) => Err(anyhow!(
+            "incompatible key/signature algorithms: key={:?}, sig={:?}",
+            key_algo,
+            sig_algo,
+        )),
+    }
 }
 
-pub(crate) fn pad_zero_to_length(input: Vec<u8>, expected_length: usize) -> Vec<u8> {
-    if input.len() < expected_length {
-        let padding = expected_length - input.len();
-        let mut padded = vec![0; padding];
-        padded.extend(input);
-        padded
-    } else {
-        input
+/// Verify a fixed-length raw ECDSA signature (`r || s`) — COSE_Sign1 per RFC 8152.
+pub fn verify_signature_raw(
+    pubkey: PubKey,
+    sig_algo: SigAlgo,
+    sig_raw: &[u8],
+    msg: &[u8],
+) -> anyhow::Result<bool> {
+    match (pubkey.algo, sig_algo) {
+        (KeyAlgo::EcdsaP256, SigAlgo::EcdsaSHA256) => {
+            let vk = P256VerifyingKey::from_sec1_bytes(pubkey.val)
+                .map_err(|err| anyhow!("parse P-256 verifying key: {err}"))?;
+            let signature = P256Signature::from_slice(sig_raw)
+                .map_err(|err| anyhow!("parse P-256 raw signature: {err}"))?;
+            Ok(vk.verify(msg, &signature).is_ok())
+        }
+        (KeyAlgo::EcdsaP384, SigAlgo::EcdsaSHA384) => {
+            let vk = P384VerifyingKey::from_sec1_bytes(pubkey.val)
+                .map_err(|err| anyhow!("parse P-384 verifying key: {err}"))?;
+            let signature = P384Signature::from_slice(sig_raw)
+                .map_err(|err| anyhow!("parse P-384 raw signature: {err}"))?;
+            Ok(vk.verify(msg, &signature).is_ok())
+        }
+        (key_algo, sig_algo) => Err(anyhow!(
+            "incompatible key/signature algorithms for raw ECDSA: key={:?}, sig={:?}",
+            key_algo,
+            sig_algo,
+        )),
     }
 }

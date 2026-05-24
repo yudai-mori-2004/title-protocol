@@ -9,9 +9,7 @@ authors.workspace = true
 
 [features]
 default = []
-# Enables `MockAttestationVerifier`. Dev / test only — production builds for a
-# real TEE should leave this disabled so the mock can never be selected at
-# runtime by mistake.
+# Enables MockAttestationVerifier. Test-only.
 mock = []
 
 [dependencies]

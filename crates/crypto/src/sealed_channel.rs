@@ -31,6 +31,7 @@ pub struct OpenedRequest {
 /// Spec §2.4 — response direction uses the same KEM exchange.
 pub struct ResponseChannel {
     response_key: [u8; 32],
+    suite_id: u8,
 }
 
 impl ResponseChannel {
@@ -39,7 +40,8 @@ impl ResponseChannel {
     pub fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let mut nonce = [0u8; NONCE_SIZE];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-        let ciphertext = aead::encrypt(&self.response_key, &nonce, plaintext)?;
+        let aad = [self.suite_id];
+        let ciphertext = aead::encrypt(&self.response_key, &nonce, plaintext, &aad)?;
         Ok(wire::build_response(&nonce, &ciphertext))
     }
 
@@ -47,7 +49,8 @@ impl ResponseChannel {
     /// Spec §2.4
     pub fn open(&self, wire_payload: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let parsed = wire::parse_response(wire_payload)?;
-        aead::decrypt(&self.response_key, parsed.nonce, parsed.ciphertext)
+        let aad = [self.suite_id];
+        aead::decrypt(&self.response_key, parsed.nonce, parsed.ciphertext, &aad)
     }
 }
 
@@ -66,10 +69,14 @@ pub fn seal_for(
 
     let mut nonce = [0u8; NONCE_SIZE];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-    let ciphertext = aead::encrypt(&request_key, &nonce, plaintext)?;
+    let aad = [suite.suite_id()];
+    let ciphertext = aead::encrypt(&request_key, &nonce, plaintext, &aad)?;
 
     let wire_payload = wire::build_request(suite, &encap_key, &nonce, &ciphertext);
-    let channel = ResponseChannel { response_key };
+    let channel = ResponseChannel {
+        response_key,
+        suite_id: suite.suite_id(),
+    };
 
     Ok((wire_payload, channel))
 }
@@ -87,12 +94,16 @@ pub fn open_request(
     let shared_secret = key_bundle.decapsulate(parsed.suite, parsed.encap_key)?;
     let (request_key, response_key) = hkdf::derive_keys(&shared_secret, parsed.encap_key)?;
 
-    let plaintext = aead::decrypt(&request_key, parsed.nonce, parsed.ciphertext)?;
+    let aad = [parsed.suite.suite_id()];
+    let plaintext = aead::decrypt(&request_key, parsed.nonce, parsed.ciphertext, &aad)?;
 
     Ok(OpenedRequest {
         suite: parsed.suite,
         plaintext,
-        response_channel: ResponseChannel { response_key },
+        response_channel: ResponseChannel {
+            response_key,
+            suite_id: parsed.suite.suite_id(),
+        },
     })
 }
 
@@ -175,14 +186,11 @@ mod tests {
         let response = b"response data";
         let resp_wire = opened.response_channel.seal(response).unwrap();
 
-        // Client can open the response
         let decrypted = client_channel.open(&resp_wire).unwrap();
         assert_eq!(decrypted, response);
 
-        // TEE's response channel cannot open the request (different keys)
-        // and client's channel cannot open with request key
-        // (This is implicitly tested by the fact that seal/open work correctly
-        // with their respective keys)
+        // Cross-direction: response channel must not open the request wire
+        assert!(opened.response_channel.open(&wire[..]).is_err());
     }
 
     #[test]

@@ -14,7 +14,7 @@ use serde::Serializer;
 use serde_bytes::ByteBuf;
 use serde_cbor::Value as CborValue;
 
-use crate::sign::{verify_signature, PubKey, SigAlgo};
+use crate::sign::{verify_signature_raw, PubKey, SigAlgo};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct HeaderMap(
@@ -22,12 +22,12 @@ pub struct HeaderMap(
     BTreeMap<CborValue, CborValue>,
 );
 
-fn sig_algo_val(alg: SigAlgo) -> anyhow::Result<i8> {
-    Ok(match alg {
+/// COSE algorithm identifier (RFC 8152 §16.4) for the supported ECDSA suites.
+fn sig_algo_val(alg: SigAlgo) -> i8 {
+    match alg {
         SigAlgo::EcdsaSHA256 => -7,
         SigAlgo::EcdsaSHA384 => -35,
-        alg => return Err(anyhow!("unsupport sigAlgo: {:?}", alg)),
-    })
+    }
 }
 
 #[derive(Debug)]
@@ -57,28 +57,36 @@ impl CoseSign1 {
         let protected: HeaderMap = serde_cbor::from_slice(&self.protected)
             .map_err(|err| anyhow!("deserialization failed: {:?}", err))?;
 
-        if let Some(protected_signature_alg_val) = protected.0.get(&CborValue::Integer(1)) {
-            let protected_signature_alg = match protected_signature_alg_val {
-                CborValue::Integer(val) => val,
-                _ => {
+        // RFC 8152 §3 — the only header key we understand is `alg` (label 1).
+        // Reject any other entry rather than silently ignoring it; in
+        // particular this catches `crit` (label 2) extensions we cannot
+        // validate.
+        for key in protected.0.keys() {
+            match key {
+                CborValue::Integer(1) => {}
+                other => {
                     return Err(anyhow!(
-                        "Protected Header contains invalid Signature Algorithm specification"
-                    ))
+                        "unsupported COSE protected header key: {:?}",
+                        other
+                    ));
                 }
-            };
-            if protected_signature_alg != &(sig_algo_val(sig_algo)? as i128) {
-                return Ok(false);
             }
-        } else {
-            return Err(anyhow!(
-                "Protected Header does not contain a valid Signature Algorithm specification",
-            ));
+        }
+
+        match protected.0.get(&CborValue::Integer(1)) {
+            Some(CborValue::Integer(val)) => {
+                if *val != i128::from(sig_algo_val(sig_algo)) {
+                    return Ok(false);
+                }
+            }
+            Some(_) => return Ok(false),
+            None => return Ok(false),
         }
 
         let sig_structure = SigStructure::new_sign1(&self.protected, &self.payload)?;
         let tbs = sig_structure.as_bytes()?;
 
-        verify_signature(issuer_key, sig_algo, &self.signature, &tbs)
+        verify_signature_raw(issuer_key, sig_algo, &self.signature, &tbs)
     }
 }
 

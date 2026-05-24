@@ -44,10 +44,11 @@ pub fn main() {
     let doc = report.doc();
 
     // Phase 2: full cert chain + COSE signature verification.
-    // The cert chain is walked in full (0 trusted prefix); the vendor root is
-    // pinned by `title-attestation-aws-nitro`'s constants module.
+    // The chain root is pinned by AWS_NITRO_ROOT_CA_SHA256 inside the verifier.
+    // SP1 guests have no wall clock — pass the document's own timestamp so
+    // certificate validity is checked against the moment of attestation.
     let _cert_chain = report
-        .authenticate(0, doc.timestamp / 1000)
+        .authenticate(doc.timestamp / 1000)
         .expect("Attestation Document verification failed");
 
     // Phase 3: commit verified fields as public values.

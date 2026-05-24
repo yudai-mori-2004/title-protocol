@@ -3679,12 +3679,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
-name = "oid"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c19903c598813dba001b53beeae59bb77ad4892c5c1b9b3500ce4293a0d06c2"
-
-[[package]]
 name = "oid-registry"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7833,11 +7827,9 @@ name = "title-attestation-aws-nitro"
 version = "0.1.2"
 dependencies = [
  "anyhow",
- "oid",
  "p256 0.13.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "p256 0.13.2 (git+https://github.com/sp1-patches/elliptic-curves?rev=patch-p256-13.2-sp1-5.0.0)",
  "p384",
- "rsa",
  "serde",
  "serde_bytes",
  "serde_cbor",

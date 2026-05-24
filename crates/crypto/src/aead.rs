@@ -4,7 +4,7 @@
 //!
 //! Spec §2.4 — all suites use AES-256-GCM as the symmetric cipher.
 
-use aes_gcm::aead::Aead;
+use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit};
 
 type Nonce = aes_gcm::Nonce<aes_gcm::aead::consts::U12>;
@@ -15,7 +15,10 @@ pub const NONCE_SIZE: usize = 12;
 pub const KEY_SIZE: usize = 32;
 
 /// Encrypt plaintext with AES-256-GCM.
-pub fn encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+///
+/// `aad` is bound into the GCM tag but not included in the ciphertext.
+/// Callers must supply the same AAD at decryption time.
+pub fn encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     if key.len() != KEY_SIZE {
         return Err(CryptoError::InvalidKeyLength {
             expected: KEY_SIZE,
@@ -35,12 +38,15 @@ pub fn encrypt(key: &[u8], nonce: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Cr
     })?;
     let nonce: &Nonce = nonce_arr.into();
     cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(nonce, Payload { msg: plaintext, aad })
         .map_err(|_| CryptoError::EncryptError)
 }
 
 /// Decrypt ciphertext with AES-256-GCM.
-pub fn decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+///
+/// `aad` must match the value supplied during encryption — a mismatch
+/// will produce `DecryptError` (GCM tag verification failure).
+pub fn decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     if key.len() != KEY_SIZE {
         return Err(CryptoError::InvalidKeyLength {
             expected: KEY_SIZE,
@@ -60,7 +66,7 @@ pub fn decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, C
     })?;
     let nonce: &Nonce = nonce_arr.into();
     cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(nonce, Payload { msg: ciphertext, aad })
         .map_err(|_| CryptoError::DecryptError)
 }
 
@@ -73,11 +79,12 @@ mod tests {
         let key = [0x42u8; KEY_SIZE];
         let nonce = [0x01u8; NONCE_SIZE];
         let plaintext = b"hello title protocol";
+        let aad = b"request";
 
-        let ciphertext = encrypt(&key, &nonce, plaintext).unwrap();
+        let ciphertext = encrypt(&key, &nonce, plaintext, aad).unwrap();
         assert_ne!(ciphertext, plaintext);
 
-        let decrypted = decrypt(&key, &nonce, &ciphertext).unwrap();
+        let decrypted = decrypt(&key, &nonce, &ciphertext, aad).unwrap();
         assert_eq!(decrypted, plaintext);
     }
 
@@ -85,9 +92,17 @@ mod tests {
     fn wrong_key_fails() {
         let key = [0x42u8; KEY_SIZE];
         let nonce = [0x01u8; NONCE_SIZE];
-        let ciphertext = encrypt(&key, &nonce, b"data").unwrap();
+        let ciphertext = encrypt(&key, &nonce, b"data", b"").unwrap();
 
         let wrong_key = [0x43u8; KEY_SIZE];
-        assert!(decrypt(&wrong_key, &nonce, &ciphertext).is_err());
+        assert!(decrypt(&wrong_key, &nonce, &ciphertext, b"").is_err());
+    }
+
+    #[test]
+    fn wrong_aad_fails() {
+        let key = [0x42u8; KEY_SIZE];
+        let nonce = [0x01u8; NONCE_SIZE];
+        let ciphertext = encrypt(&key, &nonce, b"data", b"correct").unwrap();
+        assert!(decrypt(&key, &nonce, &ciphertext, b"wrong").is_err());
     }
 }

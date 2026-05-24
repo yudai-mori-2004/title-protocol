@@ -45,30 +45,28 @@ impl AttestationReport {
     /// AWS Nitro Attestation Document authentication.
     /// <https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html>
     ///
-    /// 1. Build cert chain from cabundle + certificate
-    /// 2. Pin the chain root to the AWS Nitro root CA SHA-256
-    /// 3. Verify each cert against its parent (ECDSA P-384)
-    /// 4. Check validity period against timestamp
-    /// 5. Verify COSE_Sign1 with leaf cert public key (ES384)
-    ///
-    /// The `trusted_certs_len` parameter is retained for parity with the
-    /// underlying [`CertChain`] API but should be set to 0 in production:
-    /// the root pinning step (#2) is what establishes trust, so there is
-    /// no reason to skip any chain link.
-    pub fn authenticate(
-        &self,
-        trusted_certs_len: usize,
-        timestamp: u64,
-    ) -> anyhow::Result<CertChain<'_>> {
+    /// 1. Check `digest == "SHA384"` (only PCR hash algorithm Nitro defines)
+    /// 2. Build cert chain from cabundle + certificate
+    /// 3. Pin the chain root to the AWS Nitro root CA SHA-256
+    /// 4. Verify each non-root cert against its parent
+    /// 5. Check validity period against `timestamp`
+    /// 6. Verify COSE_Sign1 (ES384) with the leaf cert's public key
+    pub fn authenticate(&self, timestamp: u64) -> anyhow::Result<CertChain<'_>> {
+        // PCR semantics depend on the digest algorithm — reject anything other
+        // than the SHA-384 value Nitro is defined to emit.
+        if self.doc.digest != "SHA384" {
+            return Err(anyhow!(
+                "unsupported attestation digest algorithm: {:?}",
+                self.doc.digest
+            ));
+        }
+
         let mut cert_chain = CertChain::new();
         for cert in &self.doc.cabundle {
             cert_chain.add_cert_by_der(cert)?;
         }
         cert_chain.add_cert_by_der(&self.doc.certificate)?;
 
-        // Pin the chain root to the AWS Nitro Enclaves Root-G1 fingerprint.
-        // Without this, an attacker can build a self-signed root that passes
-        // every internal chain check.
         let root = cert_chain
             .certs
             .first()
@@ -79,21 +77,17 @@ impl AttestationReport {
             ));
         }
 
-        match cert_chain.verify_chain(trusted_certs_len) {
+        match cert_chain.verify_chain() {
             Ok(true) => {}
             Ok(false) => return Err(anyhow!("failed to verify x509 chain")),
-            Err(err) => return Err(anyhow!("failed to verify x509 chain: {:?}", err)),
+            Err(err) => return Err(anyhow!("failed to verify x509 chain: {err:?}")),
         };
         cert_chain.check_valid(timestamp)?;
 
         let pubkey = cert_chain.leaf_pubkey();
         let sig_algo = SigAlgo::EcdsaSHA384;
-
-        let result = self.cose_sign.verify_signature(sig_algo, pubkey)?;
-        if !result {
-            return Err(anyhow!(
-                "AttestationReport::authenticate invalid COSE signature for leaf key"
-            ));
+        if !self.cose_sign.verify_signature(sig_algo, pubkey)? {
+            return Err(anyhow!("invalid COSE_Sign1 signature for leaf key"));
         }
 
         Ok(cert_chain)

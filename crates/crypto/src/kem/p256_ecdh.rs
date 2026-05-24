@@ -8,9 +8,8 @@
 //! encap_key = 65 bytes (uncompressed SEC1 point).
 
 use p256::ecdh::EphemeralSecret;
-use p256::elliptic_curve::point::AffineCoordinates;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
-use p256::{NonZeroScalar, ProjectivePoint, PublicKey, SecretKey};
+use p256::{PublicKey, SecretKey};
 
 use crate::CryptoError;
 
@@ -53,14 +52,16 @@ pub struct P256Decapsulator {
 }
 
 impl P256Decapsulator {
-    pub fn from_seed(seed: &[u8]) -> Result<Self, CryptoError> {
-        let sk = SecretKey::from_bytes(seed.into()).map_err(|_| {
-            CryptoError::InvalidKeyLength {
-                expected: 32,
-                actual: seed.len(),
-            }
-        })?;
-        Ok(Self { secret: sk })
+    /// Generate a new key pair from an RNG using SEC1 rejection sampling.
+    ///
+    /// `SecretKey::random` rejects scalars outside `[1, n-1]` so the resulting
+    /// secret is uniform on the valid scalar range, unlike `from_bytes` which
+    /// errors on the unlucky draws and would otherwise leak bias if the caller
+    /// retried with the next bytes.
+    pub fn generate(rng: &mut (impl rand::RngCore + rand::CryptoRng)) -> Self {
+        Self {
+            secret: SecretKey::random(rng),
+        }
     }
 }
 
@@ -80,10 +81,11 @@ impl Decapsulator for P256Decapsulator {
                 actual: encap_key.len(),
             }
         })?;
-        let scalar: NonZeroScalar = self.secret.to_nonzero_scalar();
-        let shared_point =
-            (ProjectivePoint::from(*eph_pk.as_affine()) * *scalar).to_affine();
-        Ok(shared_point.x().to_vec())
+        let shared = p256::ecdh::diffie_hellman(
+            self.secret.to_nonzero_scalar(),
+            eph_pk.as_affine(),
+        );
+        Ok(shared.raw_secret_bytes().to_vec())
     }
 }
 
@@ -93,9 +95,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let sk = SecretKey::random(&mut rand::rngs::OsRng);
-        let seed = sk.to_bytes();
-        let decap = P256Decapsulator::from_seed(&seed).unwrap();
+        let decap = P256Decapsulator::generate(&mut rand::rngs::OsRng);
         let encap = P256Encapsulator::from_public_key(&decap.public_key_bytes()).unwrap();
 
         let (shared_enc, encap_key) = encap.encapsulate().unwrap();
@@ -105,8 +105,7 @@ mod tests {
 
     #[test]
     fn public_key_is_65_bytes() {
-        let sk = SecretKey::random(&mut rand::rngs::OsRng);
-        let decap = P256Decapsulator::from_seed(&sk.to_bytes()).unwrap();
+        let decap = P256Decapsulator::generate(&mut rand::rngs::OsRng);
         assert_eq!(decap.public_key_bytes().len(), 65);
     }
 }

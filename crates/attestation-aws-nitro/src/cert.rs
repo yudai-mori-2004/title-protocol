@@ -3,9 +3,7 @@
 // X.509 certificate chain construction and verification.
 // Origin: Automata Network — aws-nitro-enclave-attestation (Apache-2.0).
 
-use std::borrow::Cow;
-
-use crate::sign::{ec_decode_sig, verify_signature, KeyAlgo, PubKey, SigAlgo};
+use crate::sign::{verify_signature_der, KeyAlgo, PubKey, SigAlgo};
 
 use anyhow::{anyhow, Context};
 use sha2::Sha256;
@@ -76,18 +74,12 @@ impl<'a> Cert<'a> {
         self.raw.tbs_certificate.as_ref()
     }
 
-    pub fn verify(&self, issuer: Option<&Self>) -> anyhow::Result<bool> {
-        let issuer_key = issuer.unwrap_or(self).pubkey();
+    /// Verify this certificate's signature with the issuer's public key.
+    pub fn verify(&self, issuer: &Self) -> anyhow::Result<bool> {
+        let issuer_key = issuer.pubkey();
         let sig_algo = self.sig_algo()?;
-
         sig_algo.check_compatible_with(issuer_key.algo)?;
-
-        let mut sig = Cow::Borrowed(self.signature());
-        if let KeyAlgo::ECDSA(params) = issuer_key.algo {
-            sig = Cow::Owned(ec_decode_sig(&sig, params)?);
-        }
-        let result = verify_signature(issuer_key, sig_algo, &sig, self.tbs_certificate())?;
-        Ok(result)
+        verify_signature_der(issuer_key, sig_algo, self.signature(), self.tbs_certificate())
     }
 }
 
@@ -97,7 +89,8 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
 }
 
 pub struct CertChain<'a> {
-    // cert order: root -> leaf
+    /// Certificates ordered root → leaf. The root must be authenticated out of
+    /// band (the AWS Nitro verifier pins its SHA-256 fingerprint).
     pub certs: Vec<Cert<'a>>,
 }
 
@@ -140,18 +133,18 @@ impl<'a> CertChain<'a> {
         Ok(())
     }
 
-    pub fn verify_chain(&self, trusted_certs_len: usize) -> anyhow::Result<bool> {
-        if trusted_certs_len > self.certs.len() {
-            return Err(anyhow!(
-                "trusted certs length is greater than cert chain length"
-            ));
+    /// Verify each non-root certificate against its parent. The caller is
+    /// responsible for authenticating the root (e.g. SHA-256 pin).
+    pub fn verify_chain(&self) -> anyhow::Result<bool> {
+        if self.certs.is_empty() {
+            return Err(anyhow!("cert chain is empty"));
         }
-        for i in trusted_certs_len..self.certs.len() {
+        for i in 1..self.certs.len() {
             let subject = &self.certs[i];
-            let issuer = if i == 0 { None } else { Some(&self.certs[i - 1]) };
+            let issuer = &self.certs[i - 1];
             if !subject
                 .verify(issuer)
-                .with_context(|| format!("verify cert sig failed at {}", i))?
+                .with_context(|| format!("verify cert sig failed at {i}"))?
             {
                 return Ok(false);
             }

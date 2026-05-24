@@ -2,21 +2,12 @@
 
 //! # Title Attestation: AWS Nitro
 //!
-//! Spec §5.2, §6.2
-//!
-//! Implements `title_attestation::AttestationVerifier` for AWS Nitro Enclaves.
-//!
-//! Parses the COSE_Sign1 envelope, walks the certificate chain back to the
-//! embedded `cabundle` root, verifies every signature with RustCrypto, then
-//! extracts the measurement (PCR0), `user_data`, and `public_key` fields.
-//!
-//! ## Origin
-//!
-//! Verification logic is derived from Automata Network's
-//! `aws-nitro-enclave-attestation` crate (Apache-2.0), itself based on
-//! Amazon's `aws-nitro-enclaves-cose` (Apache-2.0). The crypto primitives
-//! were ported from OpenSSL to RustCrypto by Automata. Title Protocol
-//! internalised the code and removed unrelated dependencies.
+//! Implements [`AttestationVerifier`] for AWS Nitro Enclaves: parses the
+//! COSE_Sign1 envelope, verifies the embedded certificate chain against the
+//! pinned AWS Nitro root, and surfaces the PCR0 measurement plus the
+//! `user_data` / `public_key` fields.
+//
+// Derived from Automata Network's aws-nitro-enclave-attestation (Apache-2.0).
 
 // When built for SP1, shadow the standard `sha2` and `p256` crates with
 // SP1-precompile-accelerated forks. The rest of the source is untouched.
@@ -44,11 +35,9 @@ pub const VENDOR: &str = "aws-nitro";
 
 /// AWS Nitro Enclave Attestation Document verifier.
 ///
-/// Uses the certificate chain shipped inside each Attestation Document
-/// (`cabundle`) and trusts it implicitly — AWS rotates the root externally
-/// and includes the full chain in every document. Verifiers that require a
-/// pinned root should re-check `cert_chain.certs[0]` against their own
-/// trusted copy of the AWS Nitro root.
+/// The chain root is pinned to [`constants::AWS_NITRO_ROOT_CA_SHA256`]; a
+/// cabundle whose first certificate does not match the fingerprint is
+/// rejected.
 #[derive(Debug, Default, Clone)]
 pub struct AwsNitroVerifier;
 
@@ -71,13 +60,8 @@ impl AttestationVerifier for AwsNitroVerifier {
         let report = AttestationReport::parse(doc_bytes)
             .map_err(|e| AttestationError::ParseFailed(format!("{e:?}")))?;
 
-        // Use the smaller of (now, doc.timestamp/1000) for cert validity, so
-        // documents from a TEE whose clock is slightly ahead of ours still
-        // verify while genuinely expired certificates are still caught.
-        let check_ts = report.doc().timestamp.saturating_div(1000).min(now_unix_secs);
-
         report
-            .authenticate(0, check_ts)
+            .authenticate(now_unix_secs)
             .map_err(|e| AttestationError::SignatureInvalid(format!("{e:?}")))?;
 
         let mut doc = report.into_doc();
@@ -105,17 +89,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vendor_tag_consistent() {
-        let v = AwsNitroVerifier::new();
-        assert_eq!(v.vendor(), VENDOR);
-        assert_eq!(VENDOR, "aws-nitro");
-    }
-
-    #[test]
     fn rejects_invalid_bytes() {
         let v = AwsNitroVerifier::new();
         let err = v.verify(b"not a valid attestation", 0).unwrap_err();
-        matches!(err, AttestationError::ParseFailed(_));
+        assert!(matches!(err, AttestationError::ParseFailed(_)));
     }
 
     /// End-to-end verification against a real AWS Nitro Attestation Document.

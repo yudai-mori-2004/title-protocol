@@ -32,3 +32,8 @@ keypair.json
 
 # Legacy code (local reference only, history preserved in git)
 legacy/
+
+# TEE runtime artifacts captured from a live enclave (regenerated on
+# every boot — do not commit). The capture scripts that produce them
+# live under deploy/aws/scripts/.
+deploy/aws/build/

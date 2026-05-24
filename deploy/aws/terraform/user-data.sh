@@ -39,6 +39,10 @@ systemctl enable --now nitro-enclaves-allocator
 systemctl restart nitro-enclaves-allocator
 usermod -aG ne ec2-user
 
+# socat bridges the host TCP port (3000-gateway side) to the Enclave's
+# vsock port — this is the inbound counterpart of title-proxy.
+dnf install -y socat
+
 # Small convenience utilities for operators logging in
 dnf install -y jq tmux
 

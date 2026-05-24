@@ -46,13 +46,18 @@ RUN find crates -name "*.rs" -exec touch {} + \
 # --- Runtime stage ---
 FROM --platform=linux/amd64 debian:bookworm-slim
 
-# CA certificates only — TLS to external content storage / Solana RPC.
-# No curl/jq/etc in the runtime image; the Enclave is locked down.
+# CA certificates for TLS to external upstreams (terminated in title-proxy
+# on the host, but the trust store lives in the enclave for header checks).
+# socat + iproute2 provide the vsock<->TCP inbound bridge.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    socat \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee
+COPY deploy/aws/docker/tee-entrypoint.sh /usr/local/bin/tee-entrypoint.sh
+RUN chmod +x /usr/local/bin/tee-entrypoint.sh
 
 # Production defaults for Nitro:
 #   TEE_RUNTIME=nitro       — pick the AWS Nitro runtime explicitly. Without
@@ -66,4 +71,4 @@ COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee
 ENV TEE_RUNTIME=nitro
 ENV PROXY_ADDR=vsock://3:8000
 
-ENTRYPOINT ["/usr/local/bin/title-tee"]
+ENTRYPOINT ["/usr/local/bin/tee-entrypoint.sh"]

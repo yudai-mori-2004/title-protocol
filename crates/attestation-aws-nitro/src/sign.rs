@@ -71,13 +71,19 @@ impl SigAlgo {
         }
     }
 
-    pub fn check_compatible_with(self, key_algo: KeyAlgo) -> anyhow::Result<()> {
+    /// Compatibility table for DER-encoded X.509 signatures only — matches
+    /// the combinations supported by [`verify_signature_der`]. COSE_Sign1
+    /// raw signatures use a stricter table (only (P-256, SHA-256) and
+    /// (P-384, SHA-384)); the corresponding check lives inside
+    /// [`verify_signature_raw`] itself, since AWS Nitro never produces a
+    /// mismatched COSE signature in practice.
+    pub fn check_compatible_with_der(self, key_algo: KeyAlgo) -> anyhow::Result<()> {
         match (self, key_algo) {
             (SigAlgo::EcdsaSHA256, KeyAlgo::EcdsaP256)
             | (SigAlgo::EcdsaSHA256, KeyAlgo::EcdsaP384)
             | (SigAlgo::EcdsaSHA384, KeyAlgo::EcdsaP384) => Ok(()),
             _ => Err(anyhow!(
-                "incompatible key/signature algorithms: key={:?}, sig={:?}",
+                "incompatible key/signature algorithms for DER ECDSA: key={:?}, sig={:?}",
                 key_algo,
                 self,
             )),

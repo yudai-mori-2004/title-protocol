@@ -144,3 +144,26 @@ Round 1 指摘 24 件中 17 件 fixed / 5 件 partially-fixed / 2 件 unchanged 
 一方、修正で生まれた 6 件は (1) trait docstring と実装の乖離（new-must-001: 未来 timestamp チェック）と (2) error variant の dead-on-arrival 再発（new-should-001: `CertChainInvalid`）が中心。前者は Round 1 should-fix-002 の `min()` 削除を契機に「呼び出し側責務」と「実装責務」の境界が動いたが、その境界を trait/実装の両側で揃え忘れた典型例。後者は Round 1 で 1 度解消した「定義したが使わない variant」の問題が、同じ enum に新規 variant を足す形で復活している。`mock` 周りの should-fix-004 / 005 は意図的に保留した可能性もあるが、`PREFIX` が依然 `pub` で `crates/solana/src/extension.rs:203` から参照されている状態は OSS 公開時の警戒ポイントとして残置。
 
 ベンダー追加（AMD SEV-SNP / Intel TDX）を見据えるなら、`AttestationError` variant 設計と「`now_unix_secs` の正確な契約（単位 / zkVM 環境）」だけ Round 3 前に固めておくと、追加実装が trait に合わせやすくなる。
+
+---
+
+## 処理ログ
+
+| ID | 判定 | 内容 |
+|---|---|---|
+| must-fix-001..007 | fixed | Round 2 認定済み。 |
+| should-fix-001/002/007/008/011 | fixed | Round 2 認定済み。 |
+| should-fix-003 | fixed | `AttestationError::CertChainInvalid` variant を削除（dead variant）。Cert chain 検証失敗は `SignatureInvalid` に集約済みのため、不要 variant を残す意義がない。 |
+| should-fix-004 | wontfix(`MockAttestationVerifier::PREFIX` は test fixture / extension テストで意図的に共有。`pub` のままにすることで mock 生成式が呼び出し側で 1 行で書ける。`pub(crate)` 化すると extension テストが mock helper を再実装する必要が生じてコスト高) | |
+| should-fix-005 | fixed | G ラウンドで `MEASUREMENT` を ASCII バナーに変更済み (`TITLE-PROTOCOL-MOCK-MEASUREMENT-DO-NOT-APPROVE!!`)。debug-mode の all-zero PCR0 との衝突は構造的に解消。 |
+| should-fix-006 | fixed | `attestation/src/lib.rs` の trait docstring に「秒 / UNIX 元期 / zkVM 環境では doc.timestamp を渡せ」を 7 行で追加。 |
+| should-fix-009 | wontfix(`CoseSign1` の手書き Deserialize は `cose` モジュール内 `pub` だが `lib.rs:pub use` で外部公開していないため API surface には現れない。`pub(crate)` 化はクレート内部のみで意味が薄い) | |
+| should-fix-010 | wontfix(alg 不一致を `Ok(false)` ではなく `Err` で返す API 設計は意図的。`?` で即時 fail-close できる一貫性のほうが優先) | |
+| nitpick-001/003/004/005/006 | fixed | Round 2 認定済み。 |
+| nitpick-002 | wontfix(`Spec §1.2 §5.2 §6.2` のリストは attestation 横断利用個所を示すインデックスで、削減すると参照が辿りにくい) | |
+| new-must-001 | fixed | `attestation-aws-nitro/src/doc.rs::authenticate` 冒頭に `self.doc.timestamp / 1000 > timestamp` チェックを追加。trait docstring と実装の契約を一致。回帰テスト `rejects_doc_timestamp_in_future` を追加。 |
+| new-should-001 | fixed | should-fix-003 と統合対応。`CertChainInvalid` variant を削除。 |
+| new-should-002 | wontfix(`CoseSign1::from_bytes` 内の HeaderMap 早期 decode はパース成功保証の早期失敗用途。`verify_signature` 側との二重 decode は CPU 数十マイクロ秒のオーダーで、attestation 処理全体に対し無視できる) | |
+| new-should-003 | fixed | `SigAlgo::check_compatible_with` を `check_compatible_with_der` にリネームし、適用範囲を DER 経路のみに明示。raw 経路 (`verify_signature_raw`) は内部 match で厳格化済みの旨を docstring に明記。`cert.rs` の呼び出しも更新。 |
+| new-nitpick-001 | wontfix(`cert.rs:check_valid` のエラー文言は debug 用途。Display + UNIX 秒の二重表記は時計確認のため意図的) | |
+| new-nitpick-002 | wontfix(`authenticate` の `CertChain` 戻り値は将来の `into_doc()` 連携や追加属性露出を見据えて残置。`pub use CertChain` も型として現在 crate 内のみだが trait 実装と一緒に公開する妥当性あり) | |

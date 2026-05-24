@@ -115,4 +115,18 @@ mod tests {
         assert_eq!(verified.measurement.len(), 48);
         assert!(verified.timestamp_ms > 0);
     }
+
+    /// A verifier clock set before the document's own timestamp must be
+    /// rejected — the trait contract calls this out explicitly.
+    #[test]
+    fn rejects_doc_timestamp_in_future() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/attestation_1.report");
+        let doc_bytes = std::fs::read(path).expect("fixture must exist alongside the crate");
+        let report = AttestationReport::parse(&doc_bytes).unwrap();
+        let doc_ts_secs = report.doc().timestamp / 1000;
+
+        let v = AwsNitroVerifier::new();
+        let err = v.verify(&doc_bytes, doc_ts_secs - 60).unwrap_err();
+        assert!(matches!(err, AttestationError::SignatureInvalid(_)));
+    }
 }

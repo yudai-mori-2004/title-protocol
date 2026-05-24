@@ -48,9 +48,6 @@ pub enum AttestationError {
     #[error("attestation parse failed: {0}")]
     ParseFailed(String),
 
-    #[error("certificate chain verification failed: {0}")]
-    CertChainInvalid(String),
-
     #[error("document signature verification failed: {0}")]
     SignatureInvalid(String),
 
@@ -69,10 +66,14 @@ pub trait AttestationVerifier {
 
     /// Parse and fully verify the document.
     ///
-    /// `now_unix_secs` is the reference time used for certificate validity
-    /// checks. Implementations should reject documents whose internal timestamp
-    /// is in the future relative to `now_unix_secs`, and certificates that
-    /// expire before `now_unix_secs`.
+    /// `now_unix_secs` is the reference time in **seconds since the UNIX
+    /// epoch (1970-01-01 UTC)** used for certificate validity checks. Pass a
+    /// `SystemTime::now()` reading on hosts; for zkVM guests that have no
+    /// real clock, pass the parsed document's own timestamp (the verification
+    /// then degrades to "the document was internally consistent at the time
+    /// it was generated"). Implementations reject documents whose internal
+    /// timestamp is ahead of `now_unix_secs` and certificates whose validity
+    /// period excludes it.
     fn verify(
         &self,
         doc_bytes: &[u8],

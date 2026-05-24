@@ -45,11 +45,13 @@ impl AttestationReport {
     /// <https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html>
     ///
     /// 1. Check `digest == "SHA384"` (only PCR hash algorithm Nitro defines)
-    /// 2. Build cert chain from cabundle + certificate
-    /// 3. Pin the chain root to the AWS Nitro root CA SHA-256
-    /// 4. Verify each non-root cert against its parent
-    /// 5. Check validity period against `timestamp`
-    /// 6. Verify COSE_Sign1 (ES384) with the leaf cert's public key
+    /// 2. Reject documents whose own timestamp is in the future relative to
+    ///    `timestamp` (sanity check on the verifier's clock)
+    /// 3. Build cert chain from cabundle + certificate
+    /// 4. Pin the chain root to the AWS Nitro root CA SHA-256
+    /// 5. Verify each non-root cert against its parent
+    /// 6. Check validity period against `timestamp`
+    /// 7. Verify COSE_Sign1 (ES384) with the leaf cert's public key
     pub fn authenticate(&self, timestamp: u64) -> anyhow::Result<CertChain<'_>> {
         // PCR semantics depend on the digest algorithm — reject anything other
         // than the SHA-384 value Nitro is defined to emit.
@@ -57,6 +59,16 @@ impl AttestationReport {
             return Err(anyhow!(
                 "unsupported attestation digest algorithm: {:?}",
                 self.doc.digest
+            ));
+        }
+
+        // Honor the trait contract: a document timestamped after the verifier's
+        // clock is either a clock-skew bug or an adversarial forgery — reject
+        // it before doing expensive crypto.
+        let doc_secs = self.doc.timestamp / 1000;
+        if doc_secs > timestamp {
+            return Err(anyhow!(
+                "attestation document timestamp {doc_secs}s is ahead of verifier clock {timestamp}s"
             ));
         }
 

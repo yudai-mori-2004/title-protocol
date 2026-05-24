@@ -47,10 +47,7 @@ pub const GROTH16_VK_BYTES: &[u8] = include_bytes!("../vk/groth16_vk_v6.2.bin");
 ///   B) add `transfer_admin(new_admin)` ix gated by the current admin
 ///      signature so rotation no longer requires a program upgrade.
 /// Until that lands, rotation requires `anchor upgrade` by the deploy key.
-pub const ADMIN_AUTHORITY: Pubkey = Pubkey::new_from_array([
-    14, 13, 85, 28, 133, 146, 12, 228, 183, 160, 156, 77, 30, 213, 163, 160,
-    181, 106, 231, 149, 205, 50, 104, 222, 122, 121, 156, 214, 103, 125, 184, 3,
-]);
+pub const ADMIN_AUTHORITY: Pubkey = pubkey!("wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna");
 
 #[program]
 pub mod title_whitelist {

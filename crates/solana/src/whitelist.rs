@@ -104,13 +104,23 @@ pub fn derive_whitelist_pda(signing_pubkey: &[u8; 32]) -> (Pubkey, u8) {
 }
 
 /// Derive the approved-vkeys PDA (singleton).
+///
+/// `find_program_address` は curve25519 上で「PDA らしくない」bump を探す
+/// 試行ループで平均 ~30 回 SHA-256 を回す。program / seed が固定の
+/// singleton PDA については `OnceLock` で 1 回だけ計算してキャッシュする。
 pub fn derive_approved_vkeys_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"approved_vkeys"], &WHITELIST_PROGRAM_ID)
+    static CACHE: std::sync::OnceLock<(Pubkey, u8)> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        Pubkey::find_program_address(&[b"approved_vkeys"], &WHITELIST_PROGRAM_ID)
+    })
 }
 
 /// Derive the approved-measurements PDA (singleton).
 pub fn derive_approved_measurements_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"approved_measurements"], &WHITELIST_PROGRAM_ID)
+    static CACHE: std::sync::OnceLock<(Pubkey, u8)> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        Pubkey::find_program_address(&[b"approved_measurements"], &WHITELIST_PROGRAM_ID)
+    })
 }
 
 #[cfg(test)]

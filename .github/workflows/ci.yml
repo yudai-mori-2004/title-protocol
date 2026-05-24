@@ -24,6 +24,15 @@ jobs:
         run: cargo clippy --workspace --all-targets --features title-tee/runtime-mock
       - name: cargo test
         run: cargo test --workspace --no-fail-fast
+      - name: forbid close= in whitelist program
+        # register_key の init guard を壊す `#[account(close = ...)]` 属性が
+        # 入っていないか検出。仕様 §6.2 の取消設計 (revoke はフラグのみ、
+        # PDA close 禁止) を構造的に強制する。
+        run: |
+          if grep -nE '#\[account\([^)]*close[[:space:]]*=' programs/title-whitelist/src/lib.rs; then
+            echo "::error::register_key の init guard を壊す close= 属性が追加された (Spec §6.2 取消設計)" >&2
+            exit 1
+          fi
 
   proxy:
     name: proxy (default + vendor-aws on Linux)

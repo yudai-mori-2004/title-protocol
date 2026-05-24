@@ -22,6 +22,18 @@ use solana_sdk::{
 pub const SPL_ACCOUNT_COMPRESSION_V2_ID: Pubkey =
     pubkey!("mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW");
 
+/// `CreateTreeConfigV2` + `system_program::create_account` の実測 CU は
+/// ~150K。tree depth / buffer 変動への余裕を見て 400K に設定。
+const CU_LIMIT_CREATE_TREE: u32 = 400_000;
+
+/// MintV2 + MPL Core CPI (with `core_collection`) の実測 CU は ~280K。
+/// MPL Core ハンドラが支配的で余裕を見て 400K に設定。
+const CU_LIMIT_MINT_V2_WITH_COLLECTION: u32 = 400_000;
+
+/// MintV2 (without `core_collection`、Bubblegum 単独経路) の実測 CU は
+/// ~150K。ALT lookup の変動余裕で 250K に設定。
+const CU_LIMIT_MINT_V2_NO_COLLECTION: u32 = 250_000;
+
 /// Derive Bubblegum tree_config PDA. Seeds: `[merkle_tree]`.
 pub fn derive_tree_config(merkle_tree: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[merkle_tree.as_ref()], &mpl_bubblegum::ID)
@@ -31,8 +43,13 @@ pub fn derive_tree_config(merkle_tree: &Pubkey) -> (Pubkey, u8) {
 /// into an MPL Core collection. Seeds: `[b"mpl_core_cpi_signer"]`,
 /// program = Bubblegum. The seed is defined inside the Bubblegum program
 /// (not re-exported); keep this in sync if Bubblegum changes the convention.
+///
+/// Singleton なので `OnceLock` で 1 回だけ `find_program_address` を回す。
 pub(crate) fn derive_mpl_core_cpi_signer() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"mpl_core_cpi_signer"], &mpl_bubblegum::ID)
+    static CACHE: std::sync::OnceLock<(Pubkey, u8)> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        Pubkey::find_program_address(&[b"mpl_core_cpi_signer"], &mpl_bubblegum::ID)
+    })
 }
 
 /// Calculate the data size for a ConcurrentMerkleTree account.
@@ -82,7 +99,7 @@ pub fn build_create_tree_tx(
     let space = merkle_tree_account_size(max_depth, max_buffer_size);
     let lamports = rent_exempt_minimum(space);
 
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_LIMIT_CREATE_TREE);
 
     let create_account_ix = system_instruction::create_account(
         payer,
@@ -232,9 +249,9 @@ pub fn build_and_sign_mint_tx(
     // would survive on the default but a single budget keeps both shapes
     // uniformly fast.
     let cu_limit = if core_collection.is_some() {
-        400_000
+        CU_LIMIT_MINT_V2_WITH_COLLECTION
     } else {
-        250_000
+        CU_LIMIT_MINT_V2_NO_COLLECTION
     };
     let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(cu_limit);
 

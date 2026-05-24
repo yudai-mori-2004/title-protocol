@@ -1,0 +1,19 @@
+[package]
+name = "title-sp1-attestation-aws-nitro-program"
+description = "SP1 guest: verifies an AWS Nitro Attestation Document inside zkVM"
+version = "0.1.2"
+edition = "2021"
+license = "Apache-2.0"
+
+# SP1 guests must live outside the host workspace.
+[workspace]
+
+[dependencies]
+sp1-zkvm = "6.2"
+
+# Production attestation verifier with SP1 precompile patches enabled.
+title-attestation-aws-nitro = { path = "../../../crates/attestation-aws-nitro", default-features = false, features = ["sp1"] }
+
+# SHA-256 of variable-length committed fields (user_data, public_key) so the
+# public values stay fixed-size regardless of input.
+sha2 = "0.10"

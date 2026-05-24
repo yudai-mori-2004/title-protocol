@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 
+use title_attestation::{AttestationError, AttestationVerifier, VerifiedAttestation};
 use title_core::ProcessResponse;
 
 use crate::cnft;
@@ -45,8 +46,11 @@ pub enum ExtensionError {
     #[error("Attestation verification failed: {0}")]
     AttestationInvalid(String),
 
-    #[error("PCR mismatch: expected {expected}, got {actual}")]
-    PcrMismatch { expected: String, actual: String },
+    #[error("Attestation verifier: {0}")]
+    Verifier(#[from] AttestationError),
+
+    #[error("TEE measurement mismatch: expected {expected}, got {actual}")]
+    MeasurementMismatch { expected: String, actual: String },
 
     #[error("user_data hash mismatch")]
     UserDataMismatch,
@@ -119,78 +123,69 @@ fn compute_verifiable_hash(
     Ok(Sha256::digest(&jcs_bytes).to_vec())
 }
 
-/// Verify that an Attestation Document's user_data matches the processing result.
-/// Spec §6.2 — user_dataのハッシュが処理結果と一致するか確認
+/// Verify that an Attestation Document is authentic and binds to the processing result.
+/// Spec §6.2
 ///
-/// In the current mock/test implementation, the attestation is treated as:
-/// `"mock-attestation:" + user_data_bytes`
-///
-/// In production, this would parse COSE_Sign1, verify the certificate chain,
-/// check PCR values, and extract user_data.
+/// 1. Decode the Base64 attestation
+/// 2. Run the vendor-specific verifier (cert chain, signature, validity period)
+/// 3. Check `user_data == SHA-256(JCS(verifiable_response))`
+/// 4. If `expected_measurement` is given, check it equals `verified.measurement`
 pub fn verify_attestation_binding(
+    verifier: &dyn AttestationVerifier,
     response: &ProcessResponse,
-    expected_pcr0: Option<&[u8; 48]>,
-) -> Result<(), ExtensionError> {
+    expected_measurement: Option<&[u8]>,
+    now_unix_secs: u64,
+) -> Result<VerifiedAttestation, ExtensionError> {
     let attestation_bytes = base64::engine::general_purpose::STANDARD
         .decode(&response.attestation)
         .map_err(|e| ExtensionError::AttestationInvalid(format!("Base64 decode: {}", e)))?;
 
+    let verified = verifier.verify(&attestation_bytes, now_unix_secs)?;
+
     let expected_hash = compute_verifiable_hash(response)?;
-
-    // Extract user_data from attestation.
-    // Mock format: "mock-attestation:" + user_data
-    // Production: parse COSE_Sign1 → CBOR payload → user_data field
-    let user_data = extract_user_data_from_attestation(&attestation_bytes)?;
-
+    let user_data = verified
+        .user_data
+        .as_deref()
+        .ok_or_else(|| ExtensionError::AttestationInvalid("attestation has no user_data".into()))?;
     if user_data != expected_hash {
         return Err(ExtensionError::UserDataMismatch);
     }
 
-    // PCR verification (when expected_pcr0 is provided)
-    if let Some(_expected) = expected_pcr0 {
-        // Production: extract PCR0 from attestation and compare
-        // For now, PCR check is a no-op in mock mode
+    if let Some(expected) = expected_measurement {
+        if verified.measurement != expected {
+            return Err(ExtensionError::MeasurementMismatch {
+                expected: hex_encode(expected),
+                actual: hex_encode(&verified.measurement),
+            });
+        }
     }
 
-    Ok(())
+    Ok(verified)
 }
 
-/// Extract user_data from an Attestation Document.
-/// Mock: strips "mock-attestation:" prefix.
-/// Production: would parse COSE_Sign1 CBOR → attestation document → user_data.
-fn extract_user_data_from_attestation(
-    attestation_bytes: &[u8],
-) -> Result<Vec<u8>, ExtensionError> {
-    let prefix = b"mock-attestation:";
-    if attestation_bytes.starts_with(prefix) {
-        return Ok(attestation_bytes[prefix.len()..].to_vec());
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{:02x}", b);
     }
-
-    // Production path: parse COSE_Sign1 and extract user_data
-    // This would use attestation-verify library logic
-    Err(ExtensionError::AttestationInvalid(
-        "Unrecognized attestation format".into(),
-    ))
+    s
 }
 
-/// Process a Solana Extension request.
-/// Spec §6.2 — full pipeline from offchain data to partially signed TX.
+/// Process a Solana Extension request end-to-end.
+/// Spec §6.2 — fetch ⇒ verify attestation ⇒ build cNFT mint TX ⇒ partial sign.
 ///
-/// # Arguments
-/// * `signing_key` — TEE's Solana signing key
-/// * `offchain_data` — The fetched and parsed offchain data (caller handles HTTP fetch)
-/// * `request` — Parsed extension request parameters
-/// * `expected_pcr0` — Expected PCR0 for attestation verification (None in mock)
+/// The caller injects the `AttestationVerifier` matching the TEE vendor.
 pub fn process_extension(
+    verifier: &dyn AttestationVerifier,
     signing_key: &SolanaSigningKey,
     offchain_data: &ProcessResponse,
     request: &ExtensionRequest,
-    expected_pcr0: Option<&[u8; 48]>,
+    expected_measurement: Option<&[u8]>,
+    now_unix_secs: u64,
 ) -> Result<Vec<u8>, ExtensionError> {
-    // Step 1: Verify attestation binding
-    verify_attestation_binding(offchain_data, expected_pcr0)?;
+    verify_attestation_binding(verifier, offchain_data, expected_measurement, now_unix_secs)?;
 
-    // Step 2: Build and sign cNFT mint transaction
     let tx = cnft::build_and_sign_mint_tx(
         signing_key,
         &request.merkle_tree,
@@ -202,9 +197,7 @@ pub fn process_extension(
         &request.recent_blockhash,
     )?;
 
-    // Step 3: Serialize the partially signed transaction
     let tx_bytes = cnft::serialize_transaction(&tx)?;
-
     Ok(tx_bytes)
 }
 
@@ -212,6 +205,7 @@ pub fn process_extension(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use title_attestation::MockAttestationVerifier;
     use title_core::{ProcessorOutput, VerifiableResponse};
 
     fn mock_process_response() -> ProcessResponse {
@@ -227,13 +221,11 @@ mod tests {
             },
         };
 
-        // Compute the JCS hash for user_data
         let json_value = serde_json::to_value(&verifiable).unwrap();
         let jcs_bytes = serde_json_canonicalizer::to_vec(&json_value).unwrap();
         let hash = Sha256::digest(&jcs_bytes);
 
-        // Build mock attestation: "mock-attestation:" + hash
-        let mut attestation_raw = b"mock-attestation:".to_vec();
+        let mut attestation_raw = MockAttestationVerifier::PREFIX.to_vec();
         attestation_raw.extend_from_slice(&hash);
         let attestation = base64::engine::general_purpose::STANDARD.encode(&attestation_raw);
 
@@ -243,19 +235,23 @@ mod tests {
         }
     }
 
+    fn verifier() -> MockAttestationVerifier {
+        MockAttestationVerifier::new()
+    }
+
     #[test]
     fn verify_attestation_binding_valid() {
         let response = mock_process_response();
-        assert!(verify_attestation_binding(&response, None).is_ok());
+        let verified = verify_attestation_binding(&verifier(), &response, None, 0).unwrap();
+        assert_eq!(verified.vendor, "mock");
     }
 
     #[test]
     fn verify_attestation_binding_tampered_results() {
         let mut response = mock_process_response();
-        // Tamper with signature_hash after attestation was generated
         response.verifiable.signature_hash = "sha256:tampered".into();
         assert!(matches!(
-            verify_attestation_binding(&response, None),
+            verify_attestation_binding(&verifier(), &response, None, 0),
             Err(ExtensionError::UserDataMismatch)
         ));
     }
@@ -270,9 +266,29 @@ mod tests {
             attestation: "not-valid-base64!!!".into(),
         };
         assert!(matches!(
-            verify_attestation_binding(&response, None),
+            verify_attestation_binding(&verifier(), &response, None, 0),
             Err(ExtensionError::AttestationInvalid(_))
         ));
+    }
+
+    #[test]
+    fn verify_attestation_binding_measurement_mismatch() {
+        let response = mock_process_response();
+        let wrong = [0xAAu8; 48];
+        assert!(matches!(
+            verify_attestation_binding(&verifier(), &response, Some(&wrong), 0),
+            Err(ExtensionError::MeasurementMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_attestation_binding_measurement_match() {
+        let response = mock_process_response();
+        // MockAttestationVerifier emits an all-zero 48-byte measurement.
+        let expected = MockAttestationVerifier::MEASUREMENT;
+        assert!(
+            verify_attestation_binding(&verifier(), &response, Some(&expected), 0).is_ok()
+        );
     }
 
     #[test]
@@ -288,10 +304,10 @@ mod tests {
             payer: Pubkey::new_unique(),
         };
 
-        let tx_bytes = process_extension(&key, &response, &request, None).unwrap();
+        let tx_bytes =
+            process_extension(&verifier(), &key, &response, &request, None, 0).unwrap();
         assert!(!tx_bytes.is_empty());
 
-        // Should deserialize back to a VersionedTransaction
         let tx: solana_sdk::transaction::VersionedTransaction =
             bincode::deserialize(&tx_bytes).unwrap();
         assert!(!tx.signatures.is_empty());
@@ -311,7 +327,7 @@ mod tests {
             payer: Pubkey::new_unique(),
         };
 
-        let result = process_extension(&key, &response, &request, None);
+        let result = process_extension(&verifier(), &key, &response, &request, None, 0);
         assert!(result.is_err());
     }
 

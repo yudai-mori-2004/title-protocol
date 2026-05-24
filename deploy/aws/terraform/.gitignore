@@ -1,0 +1,6 @@
+# Terraform local state — contains generated SSH private key, never commit.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+tfplan

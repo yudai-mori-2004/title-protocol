@@ -1,15 +1,18 @@
 [workspace]
 members = [
+    "crates/attestation",
+    "crates/attestation-aws-nitro",
     "crates/core",
     "crates/crypto",
     "crates/tee",
     "crates/gateway",
+    "crates/proxy",
     "crates/solana",
 ]
 exclude = [
-    "sandbox",
     "legacy",
     "programs",
+    "sp1-guests",
 ]
 resolver = "2"
 
@@ -33,10 +36,13 @@ serde_json_canonicalizer = "0.2"
 base64 = "0.22"
 
 # Workspace-internal crate references
+title-attestation = { path = "crates/attestation" }
+title-attestation-aws-nitro = { path = "crates/attestation-aws-nitro" }
 title-core = { path = "crates/core" }
 title-tee = { path = "crates/tee" }
 title-crypto = { path = "crates/crypto" }
 title-gateway = { path = "crates/gateway" }
+title-proxy = { path = "crates/proxy" }
 title-solana = { path = "crates/solana" }
 
 [profile.release]

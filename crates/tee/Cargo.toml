@@ -12,12 +12,29 @@ name = "title-tee"
 path = "src/main.rs"
 
 [features]
+# Default ships zero runtimes — a downstream binary must explicitly opt in
+# to either `runtime-mock` (dev / CI) or a vendor runtime such as
+# `vendor-aws` (production). This makes it a compile-time error to release a
+# TEE binary that has no real runtime, and prevents the mock from being
+# accidentally selected at runtime in production builds.
 default = []
-vendor-aws = []
+# Dev / CI runtime. Compiles in `MockRuntime` and `MockAttestationVerifier`,
+# making `TEE_RUNTIME=mock` selectable. NEVER enable in production builds.
+runtime-mock = ["title-attestation/mock"]
+# AWS Nitro Enclaves runtime. Compiles in `NitroRuntime` and the AWS Nitro
+# attestation verifier, making `TEE_RUNTIME=nitro` selectable.
+vendor-aws = [
+    "dep:title-attestation-aws-nitro",
+    "dep:aws-nitro-enclaves-nsm-api",
+    "dep:serde_bytes",
+    "dep:vsock",
+]
 
 [dependencies]
 title-core = { workspace = true }
 title-crypto = { workspace = true }
+title-attestation = { workspace = true }
+title-attestation-aws-nitro = { workspace = true, optional = true }
 title-solana = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -32,6 +49,18 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 tracing = "0.1"
 tracing-subscriber = "0.3"
 rand = "0.8"
+# Used to wrap NSM-supplied seed bytes into a CryptoRng + RngCore for the
+# per-suite key-generation APIs. ChaCha20 has long been the standard CSPRNG
+# pairing with `rand` and is what the NSM-seeded TEE startup uses.
+rand_chacha = "0.3"
+# AWS Nitro Security Module driver (vendor-aws feature only)
+aws-nitro-enclaves-nsm-api = { version = "0.4", optional = true }
+serde_bytes = { version = "0.11", optional = true }
+
+# vsock is Linux-only; gate at the target level so non-Linux dev builds
+# (Mac/Windows) don't try to compile it.
+[target.'cfg(target_os = "linux")'.dependencies]
+vsock = { version = "0.5", optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
@@ -40,3 +69,6 @@ image = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Tests always need the mock verifier regardless of which production runtime
+# is selected, so depend on it via dev-dependencies as well.
+title-attestation = { workspace = true, features = ["mock"] }

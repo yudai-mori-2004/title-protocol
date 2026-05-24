@@ -23,6 +23,7 @@
 pub mod content_fetch;
 pub mod limits;
 pub mod orchestrator;
+pub mod proxy_fetcher;
 pub mod resource_pool;
 pub mod runtime;
 pub mod server;

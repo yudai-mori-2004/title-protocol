@@ -41,16 +41,137 @@ pub const ADMIN_AUTHORITY: [u8; 32] = [
 pub mod title_whitelist {
     use super::*;
 
+    // -------- ApprovedVkeys (検証回路の指紋集合) --------
+
+    /// Approved-vkeys レジストリを初期化する（プログラムごとに1回）。
+    /// Spec §6.2 — 「Solanaプログラムは、許容するverifying_key_hash
+    /// の集合をオンチェーンに保持する」
+    pub fn initialize_approved_vkeys(ctx: Context<InitializeApprovedVkeys>) -> Result<()> {
+        let registry = &mut ctx.accounts.approved_vkeys;
+        registry.admin = ctx.accounts.admin.key();
+        registry.vkeys = Vec::new();
+        registry.bump = ctx.bumps.approved_vkeys;
+        emit!(ApprovedVkeysInitialized {
+            admin: registry.admin
+        });
+        Ok(())
+    }
+
+    /// 許容する verifying_key_hash を追加する（admin のみ）。
+    /// 新しい SP1 guest をリリースした際に呼び出す。
+    pub fn add_approved_vkey(
+        ctx: Context<UpdateApprovedVkeys>,
+        vkey_hash: [u8; 32],
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.approved_vkeys;
+        require!(
+            !registry.vkeys.contains(&vkey_hash),
+            WhitelistError::VkeyAlreadyApproved
+        );
+        require!(
+            registry.vkeys.len() < ApprovedVkeys::MAX_VKEYS,
+            WhitelistError::VkeyRegistryFull
+        );
+        registry.vkeys.push(vkey_hash);
+        emit!(VkeyApproved { vkey_hash });
+        Ok(())
+    }
+
+    /// 許容 verifying_key_hash を取り除く（admin のみ）。
+    pub fn remove_approved_vkey(
+        ctx: Context<UpdateApprovedVkeys>,
+        vkey_hash: [u8; 32],
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.approved_vkeys;
+        let len_before = registry.vkeys.len();
+        registry.vkeys.retain(|v| v != &vkey_hash);
+        require!(
+            registry.vkeys.len() < len_before,
+            WhitelistError::VkeyNotApproved
+        );
+        emit!(VkeyRevoked { vkey_hash });
+        Ok(())
+    }
+
+    // -------- ApprovedMeasurements (TEE バイナリの指紋集合) --------
+
+    /// Approved-measurements レジストリを初期化する（プログラムごとに1回）。
+    /// Spec §6.2 — 「許容する measurement の集合もオンチェーンに保持する」
+    pub fn initialize_approved_measurements(
+        ctx: Context<InitializeApprovedMeasurements>,
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.approved_measurements;
+        registry.admin = ctx.accounts.admin.key();
+        registry.entries = Vec::new();
+        registry.bump = ctx.bumps.approved_measurements;
+        emit!(ApprovedMeasurementsInitialized {
+            admin: registry.admin
+        });
+        Ok(())
+    }
+
+    /// 許容する TEE measurement を追加する（admin のみ）。
+    /// 新しい TEE バイナリをリリースした際に呼び出す。
+    pub fn add_approved_measurement(
+        ctx: Context<UpdateApprovedMeasurements>,
+        measurement: Vec<u8>,
+    ) -> Result<()> {
+        require!(
+            (1..=MAX_MEASUREMENT_LEN).contains(&measurement.len()),
+            WhitelistError::InvalidMeasurementLen
+        );
+        let stored = StoredMeasurement::from_slice(&measurement);
+        let registry = &mut ctx.accounts.approved_measurements;
+        require!(
+            !registry.entries.iter().any(|e| e == &stored),
+            WhitelistError::MeasurementAlreadyApproved
+        );
+        require!(
+            registry.entries.len() < ApprovedMeasurements::MAX_ENTRIES,
+            WhitelistError::MeasurementRegistryFull
+        );
+        registry.entries.push(stored);
+        emit!(MeasurementApproved { measurement });
+        Ok(())
+    }
+
+    /// 許容 measurement を取り除く（admin のみ）。
+    pub fn remove_approved_measurement(
+        ctx: Context<UpdateApprovedMeasurements>,
+        measurement: Vec<u8>,
+    ) -> Result<()> {
+        require!(
+            (1..=MAX_MEASUREMENT_LEN).contains(&measurement.len()),
+            WhitelistError::InvalidMeasurementLen
+        );
+        let stored = StoredMeasurement::from_slice(&measurement);
+        let registry = &mut ctx.accounts.approved_measurements;
+        let len_before = registry.entries.len();
+        registry.entries.retain(|e| e != &stored);
+        require!(
+            registry.entries.len() < len_before,
+            WhitelistError::MeasurementNotApproved
+        );
+        emit!(MeasurementRevoked { measurement });
+        Ok(())
+    }
+
+    // -------- Signing key registration --------
+
     /// TEE 署名鍵を ZK proof 検証により登録する。
-    /// Spec §6.2 — ZK proof を Solana プログラムに提出 → 検証に成功すれば登録
+    /// Spec §6.2 — 二段の同一性確認 + proof 検証 + bind 確認
     ///
     /// # Flow
-    /// 1. SP1 Groth16 proof を検証（attestation-program の実行結果）
-    /// 2. 公開値から pcr0, user_data_hash を抽出
-    /// 3. user_data_hash == SHA-256(SHA-256(signing_pubkey)) を確認
-    ///    （Attestation Document の user_data = SHA-256(Solana公開鍵) であり、
-    ///     guest は SHA-256(user_data) をコミットするため二重ハッシュ）
-    /// 4. WhitelistEntry PDA を作成
+    /// 1. sp1_vkey_hash が ApprovedVkeys に含まれることを確認
+    ///    （正規の検証回路で生成された proof のみ受理）
+    /// 2. SP1 Groth16 proof を検証
+    /// 3. 公開値から measurement, user_data_hash を抽出
+    /// 4. measurement が ApprovedMeasurements に含まれることを確認
+    ///    （正規の TEE バイナリで生成された Attestation のみ受理）
+    /// 5. user_data_hash == SHA-256(SHA-256(signing_pubkey)) を確認
+    ///    （Attestation の user_data = SHA-256(Solana公開鍵)、
+    ///     guest は SHA-256(user_data) をコミットするので二重ハッシュ）
+    /// 6. WhitelistEntry PDA を作成
     pub fn register_key(
         ctx: Context<RegisterKey>,
         signing_pubkey: [u8; 32],
@@ -58,15 +179,30 @@ pub mod title_whitelist {
         proof: Vec<u8>,
         public_values: Vec<u8>,
     ) -> Result<()> {
-        // Step 1: SP1 Groth16 proof verification
+        // Step 1: vkey allowlist check
+        require!(
+            ctx.accounts.approved_vkeys.vkeys.contains(&sp1_vkey_hash),
+            WhitelistError::VkeyNotApproved
+        );
+
+        // Step 2: SP1 Groth16 proof verification
         verify_sp1_groth16(&sp1_vkey_hash, &proof, &public_values)?;
 
-        // Step 2: Parse and validate public values
+        // Step 3: Parse public values (vendor-neutral, length-prefixed measurement)
         let parsed = parse_public_values(&public_values)?;
 
-        // Step 3: Verify signing_pubkey ↔ user_data_hash binding
-        // Attestation Document: user_data = SHA-256(signing_pubkey)
-        // Guest commits: user_data_hash = SHA-256(user_data) = SHA-256(SHA-256(signing_pubkey))
+        // Step 4: Measurement allowlist check
+        let candidate = StoredMeasurement::from_slice(&parsed.measurement);
+        require!(
+            ctx.accounts
+                .approved_measurements
+                .entries
+                .iter()
+                .any(|e| e == &candidate),
+            WhitelistError::MeasurementNotApproved
+        );
+
+        // Step 5: signing_pubkey ↔ user_data_hash binding
         require!(parsed.has_user_data, WhitelistError::MissingUserData);
 
         let user_data = Sha256::digest(signing_pubkey);
@@ -76,34 +212,41 @@ pub mod title_whitelist {
             WhitelistError::UserDataMismatch
         );
 
-        // Step 4: Create PDA
+        // Step 6: Create PDA
         let clock = Clock::get()?;
         let entry = &mut ctx.accounts.whitelist_entry;
         entry.signing_pubkey = signing_pubkey;
         entry.registered_at = clock.unix_timestamp;
-        entry.expires_at = clock.unix_timestamp + KEY_EXPIRY_SECONDS;
-        entry.pcr0 = parsed.pcr0;
+        entry.expires_at = clock
+            .unix_timestamp
+            .checked_add(KEY_EXPIRY_SECONDS)
+            .ok_or(error!(WhitelistError::TimestampOverflow))?;
+        entry.measurement = StoredMeasurement::from_slice(&parsed.measurement);
+        entry.revoked = false;
         entry.bump = ctx.bumps.whitelist_entry;
 
         emit!(KeyRegistered {
             signing_pubkey: Pubkey::new_from_array(signing_pubkey),
-            pcr0: parsed.pcr0,
+            measurement: parsed.measurement,
             expires_at: entry.expires_at,
         });
 
         Ok(())
     }
 
-    /// ホワイトリストから署名鍵を削除する（管理者の緊急操作のみ）。
+    /// ホワイトリスト鍵を取り消す（管理者の緊急操作のみ）。
     /// Spec §6.2 — TEE の侵害等、特別な事情が発生した場合にのみ
     ///
-    /// 通常運用では鍵の削除は行わない。削除された鍵で過去に発行された
-    /// cNFT はブロックチェーン上に残り続ける。
-    pub fn delete_key(ctx: Context<DeleteKey>) -> Result<()> {
-        emit!(KeyDeleted {
-            signing_pubkey: Pubkey::new_from_array(
-                ctx.accounts.whitelist_entry.signing_pubkey,
-            ),
+    /// PDA は **削除せず**、`revoked = true` を立てるだけにする。
+    /// PDA を close すると `register_key` の `init` constraint を素通りして
+    /// 同じ proof+public_values で再登録できてしまい、admin の取消操作が
+    /// 巻き戻されてしまうため。
+    pub fn revoke_key(ctx: Context<RevokeKey>) -> Result<()> {
+        let entry = &mut ctx.accounts.whitelist_entry;
+        require!(!entry.revoked, WhitelistError::AlreadyRevoked);
+        entry.revoked = true;
+        emit!(KeyRevoked {
+            signing_pubkey: Pubkey::new_from_array(entry.signing_pubkey),
         });
         Ok(())
     }
@@ -160,56 +303,74 @@ fn verify_sp1_groth16(
 // Public values parser
 // ---------------------------------------------------------------------------
 
-/// Structure committed by the SP1 attestation-program guest.
-/// See sandbox/03-sp1-attestation/program/src/main.rs.
+/// Decoded subset of the SP1 guest's public values that this program needs.
+/// The guest's full layout is documented in
+/// `sp1-guests/attestation-aws-nitro/program/src/main.rs`; here we only
+/// retain the fields used for the four register_key checks.
 struct ParsedPublicValues {
-    #[allow(dead_code)]
-    module_id_len: usize,
-    pcr0: [u8; 48],
+    measurement: Vec<u8>,
     has_user_data: bool,
     user_data_hash: Vec<u8>,
 }
 
-/// Parse the public values byte array.
+/// Parse the SP1 public values.
 ///
-/// Layout (Borsh-encoded by SP1):
-///   module_id: String (len: u32 + utf8 bytes)
-///   timestamp: u64
-///   pcr0: [u8; 48]
-///   has_user_data: u8
-///   user_data_hash: [u8; 32] (if has_user_data == 1)
-///   has_public_key: u8
-///   public_key_hash: [u8; 32] (if has_public_key == 1)
+/// Layout (matches what every Title Protocol attestation guest emits):
+///   instance_id      : Borsh String (u32 length + UTF-8 bytes)
+///   timestamp_ms     : u64 LE
+///   measurement_len  : u32 LE
+///   measurement      : measurement_len bytes
+///   has_user_data    : u8
+///   user_data_hash   : 32 bytes (only if has_user_data == 1)
+///   has_public_key   : u8
+///   public_key_hash  : 32 bytes (only if has_public_key == 1)
 fn parse_public_values(data: &[u8]) -> Result<ParsedPublicValues> {
     let mut offset = 0;
 
-    // module_id: String (u32 len prefix + bytes)
+    // instance_id: String (u32 len + bytes) — skipped, length-validated only.
     require!(data.len() >= offset + 4, WhitelistError::InvalidPublicValues);
-    let module_id_len =
-        u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-    offset += 4 + module_id_len;
+    let id_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+    offset += 4;
+    require!(
+        data.len() >= offset + id_len,
+        WhitelistError::InvalidPublicValues
+    );
+    offset += id_len;
 
-    // timestamp: u64
+    // timestamp_ms: u64
     require!(
         data.len() >= offset + 8,
         WhitelistError::InvalidPublicValues
     );
     offset += 8;
 
-    // pcr0: [u8; 48]
+    // measurement_len: u32, then measurement bytes.
     require!(
-        data.len() >= offset + 48,
+        data.len() >= offset + 4,
         WhitelistError::InvalidPublicValues
     );
-    let mut pcr0 = [0u8; 48];
-    pcr0.copy_from_slice(&data[offset..offset + 48]);
-    offset += 48;
+    let measurement_len =
+        u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+    offset += 4;
+    require!(
+        (1..=MAX_MEASUREMENT_LEN).contains(&measurement_len),
+        WhitelistError::InvalidMeasurementLen
+    );
+    require!(
+        data.len() >= offset + measurement_len,
+        WhitelistError::InvalidPublicValues
+    );
+    let measurement = data[offset..offset + measurement_len].to_vec();
+    offset += measurement_len;
 
-    // has_user_data: u8
+    // has_user_data: u8 — must be canonical 0/1. Treating any non-1 value
+    // as `false` would let a SP1 guest with a subtly wrong commit layout
+    // pass on-chain, so we reject anything that isn't a Borsh boolean.
     require!(
         data.len() >= offset + 1,
         WhitelistError::InvalidPublicValues
     );
+    require!(data[offset] <= 1, WhitelistError::InvalidPublicValues);
     let has_user_data = data[offset] == 1;
     offset += 1;
 
@@ -223,8 +384,7 @@ fn parse_public_values(data: &[u8]) -> Result<ParsedPublicValues> {
     }
 
     Ok(ParsedPublicValues {
-        module_id_len,
-        pcr0,
+        measurement,
         has_user_data,
         user_data_hash,
     })
@@ -234,14 +394,65 @@ fn parse_public_values(data: &[u8]) -> Result<ParsedPublicValues> {
 // Account structures
 // ---------------------------------------------------------------------------
 
+/// Maximum allowed TEE measurement length, in bytes.
+///
+/// 64 bytes comfortably accommodates every TEE vendor we plan to support
+/// (AWS Nitro PCR0 = 48B, AMD SEV-SNP report measurement = 48B, Intel TDX
+/// MRTD = 48B; GCP Confidential Space may emit up to 64B in some modes).
+/// A new vendor with a longer measurement requires bumping this constant
+/// and migrating PDAs.
+pub const MAX_MEASUREMENT_LEN: usize = 64;
+
+/// Fixed-size on-chain representation of a vendor-neutral measurement.
+///
+/// Storing as `[u8; 64] + u8 len` (instead of `Vec<u8>`) keeps account sizes
+/// stable and equality comparisons trivial. `bytes[len..]` is zero-padded
+/// but never inspected; `bytes[..len]` carries the actual measurement.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoredMeasurement {
+    pub bytes: [u8; MAX_MEASUREMENT_LEN],
+    pub len: u8,
+}
+
+impl StoredMeasurement {
+    /// Build from a slice. The caller is responsible for length validation
+    /// (instructions enforce `1..=MAX_MEASUREMENT_LEN`); excessive input is
+    /// truncated here as a defensive measure to keep equality well-defined.
+    pub fn from_slice(input: &[u8]) -> Self {
+        // Length should already be validated by the caller
+        // (`parse_public_values` rejects > MAX_MEASUREMENT_LEN). The
+        // `debug_assert` makes the invariant explicit while the runtime
+        // `min` keeps us in-bounds even if a future caller forgets.
+        debug_assert!(
+            input.len() <= MAX_MEASUREMENT_LEN,
+            "StoredMeasurement::from_slice received {} bytes (max {})",
+            input.len(),
+            MAX_MEASUREMENT_LEN
+        );
+        let mut bytes = [0u8; MAX_MEASUREMENT_LEN];
+        let take = input.len().min(MAX_MEASUREMENT_LEN);
+        bytes[..take].copy_from_slice(&input[..take]);
+        Self {
+            bytes,
+            len: take as u8,
+        }
+    }
+
+    /// View as the actual measurement slice (excluding zero padding).
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+}
+
 /// Whitelist PDA. Registration record for a TEE signing key.
 /// Spec §6.2
 ///
 /// Seeds: `[b"whitelist", signing_pubkey.as_ref()]`
 ///
-/// Created only when ZK proof verification succeeds.
-/// Expired signing keys cannot mint new cNFTs, but cNFTs
-/// minted within the validity period remain permanently valid.
+/// Created only when all four register_key checks pass (vkey allowlist,
+/// proof verification, measurement allowlist, user_data binding).
+/// Expired signing keys cannot mint new cNFTs, but cNFTs minted within
+/// the validity period remain permanently valid.
 #[account]
 pub struct WhitelistEntry {
     /// TEE Ed25519 signing public key (32 bytes)
@@ -250,21 +461,135 @@ pub struct WhitelistEntry {
     pub registered_at: i64,
     /// Mint validity expiry (Unix timestamp)
     pub expires_at: i64,
-    /// Attestation Document PCR0 (48 bytes, SHA-384)
-    /// Identifies the TEE enclave image
-    pub pcr0: [u8; 48],
+    /// TEE measurement at the moment of registration. Vendor-neutral
+    /// fixed-size container so this struct's size is constant.
+    pub measurement: StoredMeasurement,
+    /// Set to `true` by `revoke_key` after a TEE compromise; never reset
+    /// to `false`. Applications consulting the whitelist must treat a
+    /// revoked entry as untrusted, even if `expires_at` has not yet passed.
+    pub revoked: bool,
     /// PDA bump seed
     pub bump: u8,
 }
 
 impl WhitelistEntry {
-    /// discriminator(8) + signing_pubkey(32) + registered_at(8) + expires_at(8) + pcr0(48) + bump(1)
-    pub const SIZE: usize = 8 + 32 + 8 + 8 + 48 + 1;
+    /// discriminator(8) + signing_pubkey(32) + registered_at(8)
+    ///   + expires_at(8) + measurement(64 + 1) + revoked(1) + bump(1)
+    pub const SIZE: usize = 8 + 32 + 8 + 8 + MAX_MEASUREMENT_LEN + 1 + 1 + 1;
+}
+
+/// Registry of SP1 verifying-key hashes that the program will accept proofs for.
+/// Spec §6.2 — admin が SP1 guest コードの更新に合わせて vkey を追加・削除する。
+///
+/// Seeds: `[b"approved_vkeys"]` (singleton)
+#[account]
+pub struct ApprovedVkeys {
+    /// 管理者公開鍵。`ADMIN_AUTHORITY` と同じ値を保持する。
+    pub admin: Pubkey,
+    /// 許容する vkey_hash のリスト。SP1 guest を1つしか持たない通常運用では
+    /// 1 要素だが、guest のバージョン切替時には新旧 2 要素併存させる。
+    pub vkeys: Vec<[u8; 32]>,
+    /// PDA bump seed.
+    pub bump: u8,
+}
+
+impl ApprovedVkeys {
+    /// Upper bound for the registry. Each entry is 32 bytes; 16 entries are
+    /// well within Solana's account-size limit and far above the number of
+    /// SP1 guest versions we expect to track at once.
+    pub const MAX_VKEYS: usize = 16;
+    /// discriminator(8) + admin(32) + vec_len(4) + vkeys(32 * MAX) + bump(1)
+    pub const SIZE: usize = 8 + 32 + 4 + 32 * Self::MAX_VKEYS + 1;
+}
+
+/// Registry of TEE measurements the program will accept attestations from.
+/// Spec §6.2 — admin が TEE バイナリの更新に合わせて measurement を追加・削除する。
+///
+/// Seeds: `[b"approved_measurements"]` (singleton)
+#[account]
+pub struct ApprovedMeasurements {
+    pub admin: Pubkey,
+    pub entries: Vec<StoredMeasurement>,
+    pub bump: u8,
+}
+
+impl ApprovedMeasurements {
+    /// 16 entries is enough for normal operation (rolling 2-3 TEE versions
+    /// concurrently) with plenty of headroom for migrations.
+    pub const MAX_ENTRIES: usize = 16;
+    /// Per-entry serialized size: MAX_MEASUREMENT_LEN bytes + 1 byte length.
+    const ENTRY_SIZE: usize = MAX_MEASUREMENT_LEN + 1;
+    /// discriminator(8) + admin(32) + vec_len(4) + entries(ENTRY_SIZE * MAX) + bump(1)
+    pub const SIZE: usize = 8 + 32 + 4 + Self::ENTRY_SIZE * Self::MAX_ENTRIES + 1;
 }
 
 // ---------------------------------------------------------------------------
 // Context structures
 // ---------------------------------------------------------------------------
+
+/// InitializeApprovedVkeys instruction accounts.
+#[derive(Accounts)]
+pub struct InitializeApprovedVkeys<'info> {
+    #[account(
+        init,
+        payer = admin,
+        space = ApprovedVkeys::SIZE,
+        seeds = [b"approved_vkeys"],
+        bump
+    )]
+    pub approved_vkeys: Account<'info, ApprovedVkeys>,
+    #[account(
+        mut,
+        constraint = admin.key() == admin_authority() @ WhitelistError::Unauthorized
+    )]
+    pub admin: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// AddApprovedVkey / RemoveApprovedVkey instruction accounts.
+#[derive(Accounts)]
+pub struct UpdateApprovedVkeys<'info> {
+    #[account(
+        mut,
+        seeds = [b"approved_vkeys"],
+        bump = approved_vkeys.bump,
+        has_one = admin @ WhitelistError::Unauthorized
+    )]
+    pub approved_vkeys: Account<'info, ApprovedVkeys>,
+    pub admin: Signer<'info>,
+}
+
+/// InitializeApprovedMeasurements instruction accounts.
+#[derive(Accounts)]
+pub struct InitializeApprovedMeasurements<'info> {
+    #[account(
+        init,
+        payer = admin,
+        space = ApprovedMeasurements::SIZE,
+        seeds = [b"approved_measurements"],
+        bump
+    )]
+    pub approved_measurements: Account<'info, ApprovedMeasurements>,
+    #[account(
+        mut,
+        constraint = admin.key() == admin_authority() @ WhitelistError::Unauthorized
+    )]
+    pub admin: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// AddApprovedMeasurement / RemoveApprovedMeasurement instruction accounts.
+#[derive(Accounts)]
+pub struct UpdateApprovedMeasurements<'info> {
+    #[account(
+        mut,
+        seeds = [b"approved_measurements"],
+        bump = approved_measurements.bump,
+        has_one = admin @ WhitelistError::Unauthorized
+    )]
+    pub approved_measurements: Account<'info, ApprovedMeasurements>,
+    pub admin: Signer<'info>,
+}
 
 /// RegisterKey instruction accounts.
 #[derive(Accounts)]
@@ -278,23 +603,35 @@ pub struct RegisterKey<'info> {
         bump
     )]
     pub whitelist_entry: Account<'info, WhitelistEntry>,
+    #[account(
+        seeds = [b"approved_vkeys"],
+        bump = approved_vkeys.bump
+    )]
+    pub approved_vkeys: Account<'info, ApprovedVkeys>,
+    #[account(
+        seeds = [b"approved_measurements"],
+        bump = approved_measurements.bump
+    )]
+    pub approved_measurements: Account<'info, ApprovedMeasurements>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
-/// DeleteKey instruction accounts (admin emergency operation).
+/// RevokeKey instruction accounts (admin emergency operation).
+///
+/// The PDA is updated in-place rather than closed, so the seeds remain
+/// occupied and `register_key` cannot re-create the same entry later by
+/// replaying the original proof.
 #[derive(Accounts)]
-pub struct DeleteKey<'info> {
+pub struct RevokeKey<'info> {
     #[account(
         mut,
-        close = admin,
         seeds = [b"whitelist", whitelist_entry.signing_pubkey.as_ref()],
         bump = whitelist_entry.bump
     )]
     pub whitelist_entry: Account<'info, WhitelistEntry>,
     #[account(
-        mut,
         constraint = admin.key() == admin_authority() @ WhitelistError::Unauthorized
     )]
     pub admin: Signer<'info>,
@@ -311,13 +648,43 @@ fn admin_authority() -> Pubkey {
 #[event]
 pub struct KeyRegistered {
     pub signing_pubkey: Pubkey,
-    pub pcr0: [u8; 48],
+    pub measurement: Vec<u8>,
     pub expires_at: i64,
 }
 
 #[event]
-pub struct KeyDeleted {
+pub struct KeyRevoked {
     pub signing_pubkey: Pubkey,
+}
+
+#[event]
+pub struct ApprovedVkeysInitialized {
+    pub admin: Pubkey,
+}
+
+#[event]
+pub struct VkeyApproved {
+    pub vkey_hash: [u8; 32],
+}
+
+#[event]
+pub struct VkeyRevoked {
+    pub vkey_hash: [u8; 32],
+}
+
+#[event]
+pub struct ApprovedMeasurementsInitialized {
+    pub admin: Pubkey,
+}
+
+#[event]
+pub struct MeasurementApproved {
+    pub measurement: Vec<u8>,
+}
+
+#[event]
+pub struct MeasurementRevoked {
+    pub measurement: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -340,4 +707,22 @@ pub enum WhitelistError {
     UserDataMismatch,
     #[msg("Unauthorized: not the admin authority")]
     Unauthorized,
+    #[msg("Provided vkey_hash is not in the approved set")]
+    VkeyNotApproved,
+    #[msg("vkey_hash is already approved")]
+    VkeyAlreadyApproved,
+    #[msg("Approved vkey registry is at capacity")]
+    VkeyRegistryFull,
+    #[msg("Provided measurement is not in the approved set")]
+    MeasurementNotApproved,
+    #[msg("Measurement is already approved")]
+    MeasurementAlreadyApproved,
+    #[msg("Approved measurement registry is at capacity")]
+    MeasurementRegistryFull,
+    #[msg("Measurement length is out of range")]
+    InvalidMeasurementLen,
+    #[msg("Timestamp arithmetic overflow")]
+    TimestampOverflow,
+    #[msg("Key has already been revoked")]
+    AlreadyRevoked,
 }

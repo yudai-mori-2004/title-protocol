@@ -29,7 +29,7 @@ Title Protocol resolves all three by delegating C2PA verification to a TEE and s
 |---|---|---|
 | Verification input | Full original binary | Attestation Document + extracted attributes |
 | Metadata exposure | Entire manifest | Only requested attributes |
-| After metadata loss | Unverifiable | Attestation Document persists |
+| When platforms re-compress content | Embedded manifest is stripped | Output exists independently |
 
 ## How It Works
 
@@ -64,20 +64,20 @@ What happens after — storage, blockchain recording, access control — is outs
 Client --> Gateway --> TEE --> External Storage (user-managed)
 ```
 
-Two components. No intermediate storage, no proxy.
+Two components. No intermediate storage managed by the protocol.
 
 | Component | Role |
 |---|---|
-| **Gateway** | Client authentication, TEE info relay, request proxy |
+| **Gateway** | Client authentication, TEE info relay, request routing |
 | **TEE** | Content fetch, C2PA verification, attribute extraction, Attestation Document generation |
 
 ### Processors
 
-Processors are Rust modules compiled into the TEE binary. Each extracts specific attributes from the content.
+`c2pa-verify` runs on every request and produces the `signature_hash` — the protocol-level content identifier derived from the active manifest's signature. All other processors are optional.
 
 | Processor | Output |
 |---|---|
-| `c2pa-verify` | C2PA signature chain validation (mandatory for all requests) |
+| `c2pa-verify` | C2PA signature chain validation, `signature_hash` |
 | `provenance-graph` | Ingredient relationship DAG |
 | `image-pdq` | PDQ 256-bit perceptual hash |
 | `video-vpdq` | Per-frame vPDQ hash sequence |
@@ -106,9 +106,9 @@ Extensions consume the core output for domain-specific purposes. The initial ext
 One assumption: **the TEE hardware works as specified** (attestation measurements are honest).
 
 Given this:
-- Measurement matches the published source code build hash -> the correct program ran
-- user_data hash matches the results -> the results are untampered
-- TEE memory isolation -> the operator never saw the content
+- Measurement matches the published source code build hash → the correct program ran
+- user_data hash matches the results → the results are untampered
+- TEE memory isolation → the operator never saw the content
 
 No trust in the Gateway, storage provider, or protocol operator is required.
 

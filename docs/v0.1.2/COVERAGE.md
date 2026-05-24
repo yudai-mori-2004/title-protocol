@@ -17,12 +17,13 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
 | §1.2 | Attestation Document integration (user_data embedding) | [x] | crates/tee/src/orchestrator.rs (JCS hash → user_data binding, 2 tests) | 04 |
+| §1.2 | Vendor root CA fingerprint pinning | [x] | crates/attestation-aws-nitro/src/constants.rs (AWS_NITRO_ROOT_CA_SHA256) + doc.rs::authenticate (real Nitro fixture passes) | post-15 |
 | §1.3 | Processor execution framework | [x] | crates/core/src/processor.rs (Processor trait + ProcessorRegistry) + crates/tee/src/orchestrator.rs (process_request pipeline, 9 tests) | 02, 04 |
 | §1.3 | c2pa-verify (mandatory, signature_hash) | [x] | crates/core/src/c2pa_verify.rs (C2paVerifyProcessor, compute_signature_hash utility) | 03 |
 | §1.3 | Input type: single file | [~] | crates/core/src/request.rs (InputData::Single type defined) | 02 |
 | §1.3 | Input type: fragmented (CMAF) | [~] | crates/core/src/request.rs (InputData::Fragmented type defined) | 02 |
 | §1.3 | Input type: sidecar | [~] | crates/core/src/request.rs (InputData::Sidecar type defined) | 02 |
-| §1.4 | Encryption (optional, x25519/p256/ml-kem-768) | [x] | crates/core/src/request.rs (EncryptionSuite enum) + crates/crypto/ (KEM×3, HKDF, AES-256-GCM, wire format, sealed channel, 27 tests) | 02, 11 |
+| §1.4 | Encryption (optional, x25519/p256/ml-kem-768) | [x] | crates/core/src/request.rs (EncryptionSuite enum) + crates/crypto/ (KEM×3, HKDF, AES-256-GCM, wire format, sealed channel, 27 tests) + crates/tee/src/orchestrator.rs (sealed channel wired into request pipeline, 3 e2e tests) | 02, 11, post-15 |
 | §1.5 | Verification model (JCS + hash comparison) | [x] | crates/tee/src/orchestrator.rs (compute_jcs_hash, serde_json_canonicalizer, 3 tests) | 04 |
 | §1.7 | Gateway role definition | [x] | crates/gateway/src/ (Axum HTTP server: 6 endpoints, API key auth, rate limiting, TEE info caching, restart detection, 38 tests) | 10 |
 
@@ -77,8 +78,9 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
-| §5.2 | TEE startup sequence (key generation → server start) | [x] | crates/tee/src/main.rs (runtime selection → KeyBundle generate → SolanaSigningKey generate → ProcessorRegistry → ResourcePool → Axum :4000) + crates/tee/src/server.rs (TeeAppState, router: 6 endpoints, 9 tests) | 02, 13 |
-| §5.2 | Mock TeeRuntime | [x] | crates/tee/src/runtime/mock.rs (MockRuntime: OsRng random_bytes, "mock-attestation:" attestation, 7 tests) | 13 |
+| §5.2 | TEE startup sequence (key generation → self-attestation → server start) | [x] | crates/tee/src/main.rs (runtime selection → KeyBundle generate → SolanaSigningKey generate → ProcessorRegistry → ResourcePool → self-attestation capture (fatal on failure) → Axum :4000) + crates/tee/src/server.rs (TeeAppState with attestation_verifier + expected_measurement, router: 6 endpoints, 9 tests) | 02, 13, post-15 |
+| §5.2 | Mock TeeRuntime | [x] | crates/tee/src/runtime/mock.rs (MockRuntime: OsRng random_bytes, "mock-attestation:" attestation, 7 tests) gated by `runtime-mock` feature | 13 |
+| §5.2 | AWS Nitro TeeRuntime | [x] | crates/tee/src/vendor/aws.rs (NitroRuntime via aws-nitro-enclaves-nsm-api 0.4: nsm_init, GetRandom loop, Attestation request, FakeNsm test backend, 4 tests). Build: `cargo build --features title-tee/vendor-aws` | post-15 |
 | §5.2 | TEE HTTP endpoints | [x] | crates/tee/src/server.rs (GET /health, /keys, /processors, /solana-keys; POST /process, /extension/solana; spawn_blocking for sync orchestrator, 9 tests) | 13 |
 | §5.2 | TEE request processing flow | [x] | crates/tee/src/orchestrator.rs (process_request: fetch → signature_hash → processors → JCS → attestation → ProcessResponse, 9 tests) | 04 |
 | §5.2 | Content fetch: single (HTTP GET + ETag) | [x] | crates/tee/src/content_fetch.rs (HttpContentFetcher + ContentFetcher trait, 3 tests) + sandbox/01-c2pa-range-request/ (Range Request sandbox) | 01, 04 |
@@ -90,7 +92,7 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | §5.3 | Gateway: TEE restart detection + key refresh | [x] | crates/gateway/src/state.rs (check_and_refresh: polls TEE health, detects key change or recovery, refreshes cache; spawn_health_check background task, 2 tests) | 10, 14 |
 | §5.3 | Gateway: binary + startup sequence | [x] | crates/gateway/src/main.rs (env config → HttpTeeClient → GatewayConfig → server::run; TEE_ENDPOINT, API_KEYS env vars) + crates/gateway/Cargo.toml ([[bin]]) | 14 |
 | §5.3 | Gateway ↔ TEE HTTP integration (HttpTeeClient) | [x] | crates/gateway/src/tee_client.rs (HttpTeeClient: reqwest-based, 6 endpoints) + crates/gateway/tests/e2e.rs (8 E2E tests: health, keys, processors, solana-keys, process signed/unsigned, API key auth, TEE restart detection) | 10, 14 |
-| §5.4 | Reproducible build (Dockerfile, Cargo.lock, toolchain pinning) | [ ] | | |
+| §5.4 | Reproducible build (Dockerfile, Cargo.lock, toolchain pinning) | [x] | docker/tee-mock.Dockerfile + docker/gateway.Dockerfile (multi-stage, rust:1.93-bookworm → debian:bookworm-slim) + docker-compose.yml (TEE healthcheck → Gateway depends_on) + rust-toolchain.toml (1.93.1) + docker/smoke-test.sh (5 checks) | 15 |
 
 ### 6. Extension (§6)
 
@@ -100,8 +102,8 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | §6.2 | Solana Extension: Ed25519 signing key generation | [x] | crates/solana/src/signing_key.rs (SolanaSigningKey: generate, pubkey/pubkey_base58/pubkey_hash, sign, sign_transaction, 6 tests) | 12 |
 | §6.2 | Solana Extension: Attestation Document for signing key | [x] | crates/solana/src/signing_key.rs (pubkey_hash: SHA-256(pubkey) for user_data) + crates/solana/src/extension.rs (verify_attestation_binding: JCS hash matching, mock + production paths, 3 tests) | 12 |
 | §6.2 | Solana Extension: ZK proof generation (SP1 zkVM) | [~] | sandbox/03-sp1-attestation/ (sandbox verified: cert chain verify, core proof gen/verify, tamper detect 3/3 — all PASS. 96M cycles, 169B public values, Groth16 ~479B fits Solana 1,232B. Attestation verify internalized, zero git deps). Production integration: prover runs externally (shell script / standalone binary) | 01 |
-| §6.2 | Solana Extension: Whitelist PDA + ZK proof verification | [x] | programs/title-whitelist/ (Anchor program: RegisterKey with real SP1 Groth16 verification via sp1-solana + embedded v6.2 VK + public values parsing → PDA creation, devnet deployed at 43y8E..., 6 devnet integration tests) + crates/solana/src/whitelist.rs (client-side WhitelistEntry, derive_whitelist_pda, WhitelistInstruction, 7 tests) | 12 |
+| §6.2 | Solana Extension: Whitelist PDA + four-step register_key verification | [x] | programs/title-whitelist/ (Anchor program: RegisterKey with vkey allowlist + SP1 Groth16 verification + measurement allowlist + user_data binding; ApprovedVkeys & ApprovedMeasurements PDAs; vendor-neutral StoredMeasurement type; devnet redeployed 43y8E..., 10 devnet integration tests including new initialize/add helpers) + crates/solana/src/whitelist.rs (client-side mirrors + derive_approved_vkeys_pda + derive_approved_measurements_pda, 8 tests) | 12, post-15 |
 | §6.2 | Solana Extension: Developer collection setup + delegate | [x] | crates/solana/src/cnft.rs (build_mint_v2_ix: Optional core_collection/collection_authority/mpl_core_cpi_signer, 2 tests). Collection is developer's choice, not part of trust model | 12 |
 | §6.2 | Solana Extension: cNFT mint (partial signing) | [x] | crates/solana/src/cnft.rs (build_create_tree_tx, build_mint_v2_ix, build_v0_tx, build_and_sign_mint_tx, serialize_transaction, 6 unit tests + devnet e2e: tree creation → cNFT mint → on-chain verify) | 12 |
 | §6.2 | Solana Extension: Signing key expiry (90-day rotation) | [x] | programs/title-whitelist/ (KEY_EXPIRY_SECONDS, expires_at set on registration) + crates/solana/src/whitelist.rs (is_valid_at/is_expired_at, 2 tests) | 12 |
-| §6.2 | Solana Extension: Whitelist key deletion (emergency) | [x] | programs/title-whitelist/ (DeleteKey instruction: admin-only PDA close with KeyDeleted event) + crates/solana/src/whitelist.rs (WhitelistInstruction::DeleteKey) | 12 |
+| §6.2 | Solana Extension: Whitelist key revocation (emergency, replay-resistant) | [x] | programs/title-whitelist/ (RevokeKey instruction: admin-only `revoked = true` flag flip, PDA stays in place so the original proof cannot re-create the entry; `WhitelistEntry.revoked: bool` field with `AlreadyRevoked` guard; KeyRevoked event) + crates/solana/src/whitelist.rs (`WhitelistEntry.revoked` mirrored, `is_valid_at` treats revoked as invalid, `WhitelistInstruction::RevokeKey`); devnet redeployed and revoke_key tests pass | 12, post-15 |

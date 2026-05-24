@@ -28,6 +28,9 @@
 //! recorded and sent in subsequent If-Match headers. A 412 response means
 //! the file changed during transfer, and the request is aborted.
 
+use std::io::Read;
+use std::time::Duration;
+
 use title_core::InputData;
 
 use crate::limits::{self, LimitsError};
@@ -91,6 +94,7 @@ pub enum FetchError {
 // ---------------------------------------------------------------------------
 
 /// Response from a single HTTP fetch.
+#[derive(Debug)]
 pub struct FetchResponse {
     /// Response body bytes.
     pub body: Vec<u8>,
@@ -113,19 +117,54 @@ pub trait ContentFetcher: Send + Sync {
 }
 
 /// HTTP-based content fetcher using `reqwest::blocking::Client`.
-/// Spec SS5.2
+/// Spec §5.2, §4.4
+///
+/// Enforces the size and timeout limits that Spec §4.4 specifies for the
+/// fetch layer: every connection has a chunk-level read timeout, an overall
+/// wall-clock deadline, and a hard body-size ceiling. These prevent a
+/// malicious or misbehaving origin from stalling the TEE or exhausting its
+/// memory.
 pub struct HttpContentFetcher {
     client: reqwest::blocking::Client,
+    max_body_bytes: usize,
 }
 
 impl HttpContentFetcher {
-    /// Creates a new HTTP content fetcher with default settings.
+    /// Connect-timeout: detect unreachable origins quickly.
+    pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Per-fetch wall-clock budget. Spec §4.4 specifies a 60-second chunk
+    /// timeout enforced by `ResourcePool::Ticket` between successive
+    /// data-arrival callbacks. Here we apply a single overall timeout on the
+    /// blocking client as the floor protection: a non-responsive origin
+    /// cannot stall a fetch beyond this duration even if `Ticket::extend`
+    /// is never reached. Large legitimate fetches must use the Range Request
+    /// path (a future addition) rather than a single multi-minute bulk GET.
+    pub const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// Default body-size ceiling. Matches the largest single-fragment limit
+    /// the protocol allows (`MAX_FRAGMENT_SIZE = 100 MB`); single files that
+    /// genuinely exceed this size must be fetched via Range Requests, which
+    /// is a separate code path.
+    pub const DEFAULT_MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
+
+    /// Construct with default size/timeout limits.
     pub fn new() -> Self {
+        Self::with_max_body_bytes(Self::DEFAULT_MAX_BODY_BYTES)
+    }
+
+    /// Construct with a custom maximum body size (in bytes).
+    /// Tests use small values to exercise the size cap.
+    pub fn with_max_body_bytes(max_body_bytes: usize) -> Self {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("title-tee/0.1.2")
+            .connect_timeout(Self::CONNECT_TIMEOUT)
+            .timeout(Self::FETCH_TIMEOUT)
+            .build()
+            .expect("Failed to build HTTP client");
         Self {
-            client: reqwest::blocking::Client::builder()
-                .user_agent("title-tee/0.1.2")
-                .build()
-                .expect("Failed to build HTTP client"),
+            client,
+            max_body_bytes,
         }
     }
 }
@@ -156,6 +195,20 @@ impl ContentFetcher for HttpContentFetcher {
             });
         }
 
+        // Bail early if the server advertised a Content-Length that already
+        // exceeds the cap. Avoids streaming gigabytes only to drop them.
+        if let Some(len) = resp.content_length() {
+            if len as usize > self.max_body_bytes {
+                return Err(FetchError::HttpError {
+                    url: url.to_string(),
+                    reason: format!(
+                        "Body too large: Content-Length={len} > max={}",
+                        self.max_body_bytes
+                    ),
+                });
+            }
+        }
+
         let content_type = resp
             .headers()
             .get("content-type")
@@ -168,13 +221,34 @@ impl ContentFetcher for HttpContentFetcher {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        let body = resp.bytes().map_err(|e| FetchError::HttpError {
-            url: url.to_string(),
-            reason: format!("Body read error: {e}"),
-        })?;
+        // Stream the body with an explicit size cap so a server that lies
+        // about (or omits) Content-Length still can't OOM the TEE.
+        let mut body = Vec::new();
+        let mut reader = resp;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = reader.read(&mut buf).map_err(|e| FetchError::HttpError {
+                url: url.to_string(),
+                reason: format!("Body read error: {e}"),
+            })?;
+            if n == 0 {
+                break;
+            }
+            if body.len() + n > self.max_body_bytes {
+                return Err(FetchError::HttpError {
+                    url: url.to_string(),
+                    reason: format!(
+                        "Body exceeds max size {} after streaming {} bytes",
+                        self.max_body_bytes,
+                        body.len() + n
+                    ),
+                });
+            }
+            body.extend_from_slice(&buf[..n]);
+        }
 
         Ok(FetchResponse {
-            body: body.to_vec(),
+            body,
             content_type,
             etag,
         })
@@ -212,7 +286,7 @@ pub struct FetchedContent {
 
 /// Detect MIME type from magic bytes, server Content-Type, and URL extension.
 /// Priority: magic bytes > server header > URL extension > fallback.
-fn detect_content_type(bytes: &[u8], url: &str, server_type: Option<&str>) -> String {
+pub fn detect_content_type(bytes: &[u8], url: &str, server_type: Option<&str>) -> String {
     // Magic bytes (highest priority -- most reliable)
     if bytes.len() >= 12 {
         // JPEG: FF D8 FF

@@ -30,18 +30,21 @@ fn extract_api_key(req: &Request) -> Option<String> {
 /// Spec §5.3
 ///
 /// Validates the `Authorization: Bearer <key>` header against the
-/// configured API key set. Skips authentication for GET /health.
+/// configured API key set. Skips authentication for GET /health, and
+/// short-circuits when no API keys are configured (development mode).
+///
+/// Rate limiting is handled by a separate middleware
+/// (`crate::rate_limit::rate_limit_middleware`) so that throttling stays
+/// active even when authentication is disabled.
 pub async fn api_key_auth(
     axum::extract::State(state): axum::extract::State<Arc<GatewayState>>,
     req: Request,
     next: Next,
 ) -> Result<Response, GatewayError> {
-    // Skip auth for health check
     if req.uri().path() == "/health" && req.method() == axum::http::Method::GET {
         return Ok(next.run(req).await);
     }
 
-    // Skip auth if no API keys are configured (development mode)
     if state.api_keys.is_empty() {
         return Ok(next.run(req).await);
     }
@@ -51,11 +54,6 @@ pub async fn api_key_auth(
 
     if !state.api_keys.contains(&key) {
         return Err(GatewayError::Unauthorized("Invalid API key".into()));
-    }
-
-    // Rate limit check
-    if !state.rate_limiter.check_rate_limit(&key) {
-        return Err(GatewayError::RateLimited);
     }
 
     Ok(next.run(req).await)
@@ -85,20 +83,36 @@ impl ApiKeySet {
         self.keys.is_empty()
     }
 
-    /// Constant-time API key validation to prevent timing attacks.
+    /// API key validation with constant-time per-entry comparison.
+    ///
+    /// Walks every configured key (never short-circuits on a match) and uses
+    /// a XOR-accumulator inner comparison. Length-mismatched entries still
+    /// consume a constant number of comparisons against a fixed zero buffer
+    /// so the total time depends on the configured set size and the longest
+    /// stored key length, not on which (if any) entry matched.
+    ///
+    /// Note: candidates whose length doesn't appear in the configured set
+    /// will leak that fact via overall execution time differences (no entry
+    /// performs a same-length compare). API keys are typically high-entropy
+    /// fixed-length tokens, making this leak negligible in practice.
     pub fn contains(&self, candidate: &str) -> bool {
         let candidate_bytes = candidate.as_bytes();
-        self.keys.iter().any(|stored| {
+        let mut matched: u8 = 0;
+        for stored in self.keys.iter() {
             let stored_bytes = stored.as_bytes();
             if stored_bytes.len() != candidate_bytes.len() {
-                return false;
+                continue;
             }
-            let mut diff = 0u8;
+            let mut diff: u8 = 0;
             for (a, b) in stored_bytes.iter().zip(candidate_bytes.iter()) {
                 diff |= a ^ b;
             }
-            diff == 0
-        })
+            // `is_zero = 1` iff diff == 0. Computed branchlessly so we never
+            // short-circuit on the first match.
+            let is_zero = ((diff as u16).wrapping_sub(1) >> 8) as u8 & 1;
+            matched |= is_zero;
+        }
+        matched != 0
     }
 }
 

@@ -38,12 +38,15 @@ use base64::Engine;
 use sha2::{Digest, Sha256};
 
 use title_core::{
-    compute_signature_hash, compute_signature_hash_from_manifest_data, ProcessRequest,
-    ProcessResponse, ProcessorOutput, ProcessorRegistry, VerifiableResponse,
+    compute_signature_hash, compute_signature_hash_from_manifest_data, EncryptionSuite, InputData,
+    ProcessRequest, ProcessResponse, ProcessorOutput, ProcessorRegistry, VerifiableResponse,
     C2PA_VERIFY_PROCESSOR_ID,
 };
+use title_crypto::key_bundle::KeyBundle;
+use title_crypto::payload;
+use title_crypto::sealed_channel::{open_request, ResponseChannel};
 
-use crate::content_fetch::{fetch_content, ContentFetcher, FetchError};
+use crate::content_fetch::{detect_content_type, fetch_content, ContentFetcher, FetchError};
 use crate::resource_pool::ResourcePool;
 use crate::TeeRuntime;
 
@@ -82,29 +85,76 @@ pub enum OrchestratorError {
     /// JSON serialization error.
     #[error("JSON serialization error: {0}")]
     JsonError(#[from] serde_json::Error),
+
+    /// Encryption is requested but for an input type that does not (yet)
+    /// support encrypted payloads. Spec §2.4 currently defines the encrypted
+    /// wire format only for `input_type: "single"`.
+    #[error(
+        "encryption is only supported for input_type=\"single\" in this protocol version"
+    )]
+    EncryptionUnsupportedForInputType,
+
+    /// Decryption (KEM / HKDF / AES-GCM) of the fetched payload failed.
+    #[error("payload decryption failed: {0}")]
+    DecryptionFailed(String),
+
+    /// The encryption suite declared on `ProcessRequest.encryption` does
+    /// not match the suite encoded in the wire payload header.
+    #[error("encryption suite mismatch: request declared {declared:?}, wire payload says {wire:?}")]
+    EncryptionSuiteMismatch {
+        declared: EncryptionSuite,
+        wire: EncryptionSuite,
+    },
+
+    /// Decrypted payload's metadata header could not be parsed or did not
+    /// contain the expected fields.
+    #[error("encrypted payload metadata invalid: {0}")]
+    PayloadMetadataInvalid(String),
+
+    /// The signature_hash declared inside the encrypted payload does not
+    /// match the value computed from the actual content. Spec §2.4 step 8.
+    #[error(
+        "signature_hash mismatch between encrypted payload metadata and decrypted content"
+    )]
+    SignatureHashMismatch,
+
+    /// Encrypting the response with the negotiated response key failed.
+    #[error("response encryption failed: {0}")]
+    ResponseSealFailed(String),
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
+/// The TEE's response to a `ProcessRequest`.
+///
+/// Plaintext requests return a JSON [`ProcessResponse`]; encrypted requests
+/// return the wire-format ciphertext (Spec §2.4 response wire format:
+/// `nonce(12B) || ciphertext`) that only the requesting client can decrypt.
+#[derive(Debug)]
+pub enum ProcessOutcome {
+    Plaintext(ProcessResponse),
+    Encrypted(Vec<u8>),
+}
+
 /// Process a request through the full TEE pipeline.
-/// Spec SS5.2 -- TEE request processing flow
+/// Spec §5.2 — TEE request processing flow
 ///
 /// # Arguments
-/// * `request` -- Client request with content URL and processor IDs
-/// * `fetcher` -- Content fetcher (HTTP client or mock)
-/// * `registry` -- Processor registry with registered processors
-/// * `runtime` -- TEE runtime for Attestation Document retrieval
-/// * `pool` -- ResourcePool for memory management (SS4.1)
-///
-/// # Returns
-/// `ProcessResponse` containing processor results and Base64-encoded
-/// Attestation Document.
+/// * `request`      — Client request (with optional `encryption` field, §2.4)
+/// * `fetcher`      — Content fetcher (HTTP client or mock)
+/// * `registry`     — Processor registry with registered processors
+/// * `runtime`      — TEE runtime for Attestation Document retrieval
+/// * `pool`         — ResourcePool for memory management (§4.1)
+/// * `key_bundle`   — TEE's per-suite encryption key bundle (§2.4). Only used
+///                    when `request.encryption` is set.
 ///
 /// # Errors
-/// - `AdmissionRejected` -- ResourcePool admission limit exceeded
+/// - `AdmissionRejected` — ResourcePool admission limit exceeded
 /// - Content fetch failure (network, HTTP error, empty content, memory limit)
+/// - For encrypted requests: decryption / payload-format / signature_hash
+///   mismatch failures (§2.4)
 /// - No valid C2PA signature in content (signature_hash computation fails)
 /// - JCS canonicalization failure
 /// - Attestation Document retrieval failure
@@ -114,56 +164,139 @@ pub fn process_request(
     registry: &ProcessorRegistry,
     runtime: &dyn TeeRuntime,
     pool: &Arc<ResourcePool>,
-) -> Result<ProcessResponse, OrchestratorError> {
+    key_bundle: &KeyBundle,
+) -> Result<ProcessOutcome, OrchestratorError> {
     // Step 1: Admit request
-    // Spec SS4.1 -- check admission_limit, issue Ticket
+    // Spec §4.1 — check admission_limit, issue Ticket
     let ticket = pool
         .try_admit(0)
         .ok_or(OrchestratorError::AdmissionRejected)?;
 
     // Step 2: Fetch content from URL(s) with memory tracking
-    // Spec SS5.2, SS4.2 -- input type determines fetch strategy,
-    // Ticket.extend() tracks memory usage
-    let content = fetch_content(fetcher, &request.input, &ticket)?;
+    // Spec §5.2, §4.2
+    let fetched = fetch_content(fetcher, &request.input, &ticket)?;
 
-    // Step 3: Compute signature_hash
-    // Spec SS1.3 -- SHA-256(Active Manifest's COSE signature)
-    let signature_hash = if let Some(ref manifest_data) = content.manifest_bytes {
-        // Sidecar: compute from manifest JUMBF data directly
+    // Step 3: Decrypt if the request declares an encryption suite (§2.4).
+    // The fetched body is the encrypted wire payload; after decryption we
+    // obtain `metadata + raw content` and the response channel used to seal
+    // the eventual reply.
+    let (content_bytes, content_type, manifest_bytes, response_channel, declared_signature_hash) =
+        if let Some(suite) = request.encryption {
+            decrypt_single_payload(suite, &request.input, &fetched, key_bundle)?
+        } else {
+            (
+                fetched.content_bytes,
+                fetched.content_type,
+                fetched.manifest_bytes,
+                None,
+                None,
+            )
+        };
+
+    // Step 4: Compute signature_hash from the (decrypted) content/manifest.
+    // Spec §1.3 — SHA-256(Active Manifest's COSE signature)
+    let signature_hash = if let Some(ref manifest_data) = manifest_bytes {
         compute_signature_hash_from_manifest_data(manifest_data)
             .map_err(|e| OrchestratorError::SignatureHashFailed(e.to_string()))?
     } else {
-        // Single / Fragmented: compute from embedded C2PA in content
-        compute_signature_hash(&content.content_bytes, &content.content_type)
+        compute_signature_hash(&content_bytes, &content_type)
             .map_err(|e| OrchestratorError::SignatureHashFailed(e.to_string()))?
     };
 
-    // Step 4: Build processor ID list with c2pa-verify always included
-    // Spec SS1.3 -- c2pa-verify is mandatory, implicitly added if not specified
+    // Step 5: For encrypted requests, verify the declared signature_hash
+    // matches what we just computed (§2.4 step 8).
+    if let Some(declared) = declared_signature_hash {
+        if declared != signature_hash {
+            return Err(OrchestratorError::SignatureHashMismatch);
+        }
+    }
+
+    // Step 6: Build processor ID list with c2pa-verify always included
     let processor_ids = ensure_c2pa_verify(&request.processor_ids);
 
-    // Step 5: Execute processors via registry
-    // Spec SS3.1 -- each processor runs independently; one failure does not
-    // affect others. Currently sequential; parallel execution is a future
-    // optimization.
-    let results = execute_processors(
-        registry,
-        &processor_ids,
-        &content.content_bytes,
-        &content.content_type,
-    );
+    // Step 7: Execute processors via registry
+    let results = execute_processors(registry, &processor_ids, &content_bytes, &content_type);
 
-    // Step 6: Build VerifiableResponse
-    // Spec SS2.3 -- signature_hash + results
     let verifiable = VerifiableResponse {
         signature_hash,
         results,
     };
 
-    // Steps 7-9: JCS hash, Attestation Document, build ProcessResponse
-    build_attested_response(verifiable, runtime)
+    // Step 8-10: JCS hash, Attestation Document, ProcessResponse.
+    let response = build_attested_response(verifiable, runtime)?;
 
-    // Ticket is dropped here, releasing all reserved memory
+    // Step 11: Seal the response if this was an encrypted request, else
+    // return the plaintext JSON response unchanged.
+    match response_channel {
+        None => Ok(ProcessOutcome::Plaintext(response)),
+        Some(channel) => {
+            let response_json = serde_json::to_vec(&response)?;
+            let wire = channel
+                .seal(&response_json)
+                .map_err(|e| OrchestratorError::ResponseSealFailed(format!("{e:?}")))?;
+            Ok(ProcessOutcome::Encrypted(wire))
+        }
+    }
+    // Ticket is dropped here, releasing all reserved memory.
+}
+
+/// Decrypt a single-file encrypted payload and surface its inner content.
+///
+/// Returns `(content_bytes, content_type, manifest_bytes, response_channel,
+/// declared_signature_hash)`. `manifest_bytes` is always `None` for `single`
+/// because §2.2 only allows manifest-as-sidecar with `input_type=sidecar`,
+/// and encryption is restricted to `single` here (§2.4).
+fn decrypt_single_payload(
+    suite: EncryptionSuite,
+    input: &InputData,
+    fetched: &crate::content_fetch::FetchedContent,
+    key_bundle: &KeyBundle,
+) -> Result<
+    (
+        Vec<u8>,
+        String,
+        Option<Vec<u8>>,
+        Option<ResponseChannel>,
+        Option<String>,
+    ),
+    OrchestratorError,
+> {
+    let content_url = match input {
+        InputData::Single { content_url } => content_url.as_str(),
+        _ => return Err(OrchestratorError::EncryptionUnsupportedForInputType),
+    };
+
+    let opened = open_request(key_bundle, &fetched.content_bytes)
+        .map_err(|e| OrchestratorError::DecryptionFailed(format!("{e:?}")))?;
+
+    // Reject mismatches between the suite the client declared on the JSON
+    // request and the suite embedded in the wire payload header. Without
+    // this check the declared field would be ignored, leaving the API
+    // semantics confusingly loose.
+    if opened.suite != suite {
+        return Err(OrchestratorError::EncryptionSuiteMismatch {
+            declared: suite,
+            wire: opened.suite,
+        });
+    }
+
+    let parsed = payload::parse_payload(&opened.plaintext)
+        .map_err(|e| OrchestratorError::PayloadMetadataInvalid(format!("{e:?}")))?;
+
+    // The fetched bytes were the encrypted wire payload, so `fetched.content_type`
+    // describes the ciphertext (typically `application/octet-stream`). Re-detect
+    // the type from the decrypted content bytes so c2pa-verify and the rest of
+    // the pipeline see the actual media type.
+    let plaintext_content_type =
+        detect_content_type(parsed.content, content_url, Some(&fetched.content_type));
+
+    Ok((
+        parsed.content.to_vec(),
+        plaintext_content_type,
+        None,
+        Some(opened.response_channel),
+        Some(parsed.metadata.signature_hash),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -385,6 +518,20 @@ mod tests {
         Arc::new(ResourcePool::with_single_limit(1_000_000_000)) // 1 GB
     }
 
+    /// Fresh KeyBundle for tests. The encryption path isn't exercised in the
+    /// plaintext-pipeline tests, but the orchestrator now requires one.
+    fn test_key_bundle() -> KeyBundle {
+        KeyBundle::generate(&mut rand::rngs::OsRng).expect("KeyBundle gen")
+    }
+
+    /// Convenience: unwrap a `ProcessOutcome::Plaintext` or panic.
+    fn unwrap_plaintext(outcome: ProcessOutcome) -> ProcessResponse {
+        match outcome {
+            ProcessOutcome::Plaintext(r) => r,
+            ProcessOutcome::Encrypted(_) => panic!("expected plaintext outcome"),
+        }
+    }
+
     // ---- ensure_c2pa_verify ----
 
     #[test]
@@ -485,7 +632,7 @@ mod tests {
         let runtime = MockRuntime::new();
         let pool = test_pool();
 
-        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
+        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
 
         // Verify signature_hash is present and has correct format
         assert!(response.verifiable.signature_hash.starts_with("sha256:"));
@@ -536,7 +683,7 @@ mod tests {
         let runtime = MockRuntime::new();
         let pool = test_pool();
 
-        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
+        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
 
         // c2pa-verify should be in results even though not requested
         assert!(
@@ -572,7 +719,7 @@ mod tests {
         let pool = test_pool();
 
         // Unsigned content should fail at signature_hash computation
-        let result = process_request(&request, &fetcher, &registry, &runtime, &pool);
+        let result = process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle());
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -596,7 +743,7 @@ mod tests {
         let runtime = MockRuntime::new();
         let pool = test_pool();
 
-        let result = process_request(&request, &fetcher, &registry, &runtime, &pool);
+        let result = process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle());
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -627,7 +774,7 @@ mod tests {
         let pool = test_pool();
 
         // Pipeline should succeed even though one processor is unknown
-        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
+        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
 
         // c2pa-verify should succeed
         assert_eq!(
@@ -663,7 +810,7 @@ mod tests {
         let runtime = MockRuntime::new();
         let pool = test_pool();
 
-        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
+        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
 
         // Recompute JCS hash from the response's verifiable part
         let recomputed_hash = compute_jcs_hash(&response.verifiable).unwrap();
@@ -706,22 +853,24 @@ mod tests {
 
         let registry = create_registry();
 
-        let response1 = process_request(
+        let response1 = unwrap_plaintext(process_request(
             &request,
             &fetcher,
             &registry,
             &MockRuntime::new(),
             &test_pool(),
+            &test_key_bundle(),
         )
-        .unwrap();
-        let response2 = process_request(
+        .unwrap());
+        let response2 = unwrap_plaintext(process_request(
             &request,
             &fetcher,
             &registry,
             &MockRuntime::new(),
             &test_pool(),
+            &test_key_bundle(),
         )
-        .unwrap();
+        .unwrap());
 
         assert_eq!(
             response1.verifiable.signature_hash,
@@ -751,7 +900,7 @@ mod tests {
         let registry = create_registry();
         let runtime = MockRuntime::new();
         let pool = test_pool();
-        let response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
+        let response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
 
         // Serialize and verify structure matches spec SS2.3
         let json = serde_json::to_value(&response).unwrap();
@@ -797,7 +946,7 @@ mod tests {
         // Pool with admission_limit=0 -- rejects all new requests
         let pool = Arc::new(ResourcePool::new(0, 1000));
 
-        let result = process_request(&request, &fetcher, &registry, &runtime, &pool);
+        let result = process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle());
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -832,7 +981,7 @@ mod tests {
         // Before: pool is empty
         assert_eq!(pool.total_used(), 0);
 
-        let _response = process_request(&request, &fetcher, &registry, &runtime, &pool).unwrap();
+        let _response = unwrap_plaintext(process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle()).unwrap());
 
         // After: Ticket dropped, pool should be empty again
         assert_eq!(pool.total_used(), 0, "Memory must be released after request completes");
@@ -861,10 +1010,176 @@ mod tests {
         let pool = test_pool();
 
         // This will fail at signature_hash (unsigned content)
-        let result = process_request(&request, &fetcher, &registry, &runtime, &pool);
+        let result = process_request(&request, &fetcher, &registry, &runtime, &pool, &test_key_bundle());
         assert!(result.is_err());
 
         // Memory should still be released despite the error
         assert_eq!(pool.total_used(), 0, "Memory must be released even on error");
+    }
+
+    // ---- Encryption pipeline (§2.4) ----
+
+    /// End-to-end roundtrip: client encrypts a C2PA-signed file using the
+    /// TEE's published public key, uploads the wire payload, the TEE decrypts
+    /// it, runs c2pa-verify, encrypts the response, and the client decrypts
+    /// and verifies the response binds to the same content.
+    #[test]
+    fn encrypted_pipeline_x25519_roundtrip() {
+        use title_core::{EncryptedPayloadMetadata, EncryptionSuite};
+        use title_crypto::{payload as crypto_payload, sealed_channel};
+
+        // 1. Server side: bring up a TEE key bundle + mock fetcher.
+        let key_bundle = test_key_bundle();
+        let tee_pub = key_bundle.public_key_bytes(EncryptionSuite::X25519);
+        let signed = create_signed_jpeg();
+        let signature_hash =
+            compute_signature_hash(&signed, "image/jpeg").expect("signed content has sig");
+
+        // 2. Client side: build the inner plaintext payload exactly as Spec §2.4
+        //    prescribes, then encrypt for the TEE.
+        let metadata = EncryptedPayloadMetadata {
+            signature_hash: signature_hash.clone(),
+        };
+        let inner_payload = crypto_payload::build_payload(&metadata, &signed);
+        let (wire, response_channel) =
+            sealed_channel::seal_for(EncryptionSuite::X25519, &tee_pub, &inner_payload)
+                .expect("seal_for");
+
+        // 3. Mock the storage endpoint to return the encrypted wire payload.
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/encrypted.bin",
+            wire,
+            Some("application/octet-stream"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/encrypted.bin".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: Some(EncryptionSuite::X25519),
+        };
+
+        // 4. Run the TEE pipeline.
+        let outcome = process_request(
+            &request,
+            &fetcher,
+            &create_registry(),
+            &MockRuntime::new(),
+            &test_pool(),
+            &key_bundle,
+        )
+        .expect("process_request");
+
+        // 5. The outcome must be sealed, decryptable only by the client's
+        //    response_channel.
+        let ciphertext = match outcome {
+            ProcessOutcome::Encrypted(bytes) => bytes,
+            ProcessOutcome::Plaintext(_) => panic!("encrypted request must return Encrypted"),
+        };
+        let plaintext_response = response_channel.open(&ciphertext).expect("open response");
+
+        let response: ProcessResponse =
+            serde_json::from_slice(&plaintext_response).expect("response is JSON");
+        assert_eq!(response.verifiable.signature_hash, signature_hash);
+        let c2pa_result = &response.verifiable.results["c2pa-verify"];
+        assert_eq!(
+            c2pa_result.status,
+            title_core::response::ProcessorStatus::Ok
+        );
+    }
+
+    /// If the client lies about `signature_hash` in the encrypted payload's
+    /// metadata, the TEE must reject (§2.4 step 8).
+    #[test]
+    fn encrypted_pipeline_signature_hash_mismatch_rejected() {
+        use title_core::{EncryptedPayloadMetadata, EncryptionSuite};
+        use title_crypto::{payload as crypto_payload, sealed_channel};
+
+        let key_bundle = test_key_bundle();
+        let tee_pub = key_bundle.public_key_bytes(EncryptionSuite::X25519);
+        let signed = create_signed_jpeg();
+
+        // Lie: declare a different signature_hash than the content actually has.
+        let lying_metadata = EncryptedPayloadMetadata {
+            signature_hash: "sha256:deadbeef".into(),
+        };
+        let inner = crypto_payload::build_payload(&lying_metadata, &signed);
+        let (wire, _channel) =
+            sealed_channel::seal_for(EncryptionSuite::X25519, &tee_pub, &inner).unwrap();
+
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/encrypted.bin",
+            wire,
+            Some("application/octet-stream"),
+        );
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Single {
+                content_url: "https://storage.example.com/encrypted.bin".to_string(),
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: Some(EncryptionSuite::X25519),
+        };
+
+        let err = process_request(
+            &request,
+            &fetcher,
+            &create_registry(),
+            &MockRuntime::new(),
+            &test_pool(),
+            &key_bundle,
+        )
+        .expect_err("mismatched declared signature_hash must error");
+
+        assert!(matches!(err, OrchestratorError::SignatureHashMismatch));
+    }
+
+    /// `encryption` with fragmented/sidecar input is explicitly out of scope
+    /// for this protocol version and must be rejected with a clear error.
+    #[test]
+    fn encrypted_pipeline_rejects_fragmented_input() {
+        use title_core::EncryptionSuite;
+
+        let request = ProcessRequest {
+            input: title_core::InputData::Fragmented {
+                init_url: "https://example.com/init.mp4".into(),
+                fragment_urls: vec!["https://example.com/seg-0.m4s".into()],
+            },
+            processor_ids: vec!["c2pa-verify".into()],
+            encryption: Some(EncryptionSuite::X25519),
+        };
+
+        // Empty fetcher is fine — we should bail before any fetch attempt
+        // for unsupported input types. Actually fetcher gets called first;
+        // give it a stub response so the test reaches the encryption gate.
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://example.com/init.mp4",
+            vec![0u8; 16],
+            Some("video/mp4"),
+        );
+        fetcher.add(
+            "https://example.com/seg-0.m4s",
+            vec![0u8; 16],
+            Some("video/iso.segment"),
+        );
+
+        let err = process_request(
+            &request,
+            &fetcher,
+            &create_registry(),
+            &MockRuntime::new(),
+            &test_pool(),
+            &test_key_bundle(),
+        )
+        .expect_err("fragmented + encryption must error");
+
+        assert!(matches!(
+            err,
+            OrchestratorError::EncryptionUnsupportedForInputType
+        ));
     }
 }

@@ -18,6 +18,11 @@ use crate::{aead, hkdf, wire, CryptoError};
 
 /// Result of TEE-side decryption.
 pub struct OpenedRequest {
+    /// Encryption suite parsed from the wire header. Callers should check
+    /// this against any suite declared out-of-band (e.g. the `encryption`
+    /// field on `ProcessRequest`) — mismatch indicates a malformed or
+    /// adversarial wire payload.
+    pub suite: EncryptionSuite,
     pub plaintext: Vec<u8>,
     pub response_channel: ResponseChannel,
 }
@@ -85,6 +90,7 @@ pub fn open_request(
     let plaintext = aead::decrypt(&request_key, parsed.nonce, parsed.ciphertext)?;
 
     Ok(OpenedRequest {
+        suite: parsed.suite,
         plaintext,
         response_channel: ResponseChannel { response_key },
     })

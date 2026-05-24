@@ -13,6 +13,7 @@ use axum::middleware;
 use axum::Router;
 
 use crate::auth::{api_key_auth, ApiKeySet};
+use crate::rate_limit::rate_limit_middleware;
 use crate::endpoints;
 use crate::rate_limit::RateLimiter;
 use crate::state::{self, GatewayState};
@@ -84,7 +85,13 @@ pub fn router(state: Arc<GatewayState>) -> Router {
             "/extension/solana",
             axum::routing::post(endpoints::handle_solana_extension),
         )
+        // Layer order: outermost runs first. We want rate limiting to gate
+        // even unauthenticated requests, so it sits *outside* the auth layer.
         .layer(middleware::from_fn_with_state(state.clone(), api_key_auth))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ))
         .with_state(state)
 }
 
@@ -626,6 +633,45 @@ pub(crate) mod tests {
         assert_eq!(s1, StatusCode::OK);
         assert_eq!(s2, StatusCode::OK);
         assert_eq!(s3, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// Rate limiting must remain active when authentication is disabled
+    /// (empty API key set). Unauthenticated requests share an anonymous
+    /// bucket so a runaway client cannot stampede the TEE.
+    #[tokio::test]
+    async fn rate_limit_active_when_auth_disabled() {
+        let state = Arc::new(GatewayState::new(
+            Box::new(MockTeeClient::new()),
+            ApiKeySet::empty(),
+            RateLimiter::new(2, 60),
+        ));
+        state.refresh_tee_info().await.unwrap();
+        let app = router(state);
+
+        let (s1, _) = send_get(&app, "/keys").await;
+        let (s2, _) = send_get(&app, "/keys").await;
+        let (s3, _) = send_get(&app, "/keys").await;
+        assert_eq!(s1, StatusCode::OK);
+        assert_eq!(s2, StatusCode::OK);
+        assert_eq!(s3, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// `GET /health` must never be rate limited — used by Gateway's own
+    /// health checker and load balancer probes.
+    #[tokio::test]
+    async fn rate_limit_skips_health() {
+        let state = Arc::new(GatewayState::new(
+            Box::new(MockTeeClient::new()),
+            ApiKeySet::empty(),
+            RateLimiter::new(1, 60), // 1 request per minute
+        ));
+        state.refresh_tee_info().await.unwrap();
+        let app = router(state);
+
+        for _ in 0..5 {
+            let (status, _) = send_get(&app, "/health").await;
+            assert_eq!(status, StatusCode::OK);
+        }
     }
 
     // ---- TEE restart detection ----

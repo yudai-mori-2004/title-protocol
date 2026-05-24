@@ -30,6 +30,7 @@ image = { workspace = true }
 title-tee = { path = "../tee" }
 title-crypto = { workspace = true }
 title-solana = { workspace = true }
+title-attestation = { workspace = true, features = ["mock"] }
 rand = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }

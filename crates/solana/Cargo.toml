@@ -9,6 +9,7 @@ description = "Title Protocol Solana Extension (Ed25519 signing, cNFT mint, whit
 
 [dependencies]
 title-core = { workspace = true }
+title-attestation = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -25,3 +26,5 @@ bincode = "1.3"
 [dev-dependencies]
 hex = { workspace = true }
 solana-client = "2.2"
+title-attestation = { workspace = true, features = ["mock"] }
+title-attestation-aws-nitro = { workspace = true }

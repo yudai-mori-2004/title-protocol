@@ -1,0 +1,13 @@
+# Pinned Rust compiler version for reproducible builds (Spec §5.4).
+#
+# Verifiers reproduce the TEE binary from source and compare its hash against
+# the measurement in the Attestation Document. That comparison only holds if
+# everyone builds with the same compiler — rustup reads this file on every
+# `cargo` invocation in this workspace and installs / selects 1.93.1.
+#
+# Update this constant only when consciously taking a new compiler version;
+# coordinate with anyone who has whitelisted measurements built from the
+# previous version (see docs/v0.1.2/OPERATIONS_JA.md §6.2).
+
+[toolchain]
+channel = "1.93.1"

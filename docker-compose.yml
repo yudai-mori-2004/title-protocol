@@ -1,0 +1,34 @@
+# Title Protocol — Local Development
+# Spec §5.1 — Gateway + TEE (2 components)
+#
+# Usage:
+#   docker compose up --build
+#   curl localhost:3000/health
+
+services:
+  tee:
+    build:
+      context: .
+      dockerfile: docker/tee-mock.Dockerfile
+    ports:
+      - "127.0.0.1:4000:4000"
+    environment:
+      TEE_RUNTIME: mock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/gateway.Dockerfile
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      TEE_ENDPOINT: http://tee:4000
+    depends_on:
+      tee:
+        condition: service_healthy

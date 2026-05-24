@@ -30,11 +30,11 @@ fn whitelist_program() -> Pubkey {
 
 fn load_authority_keypair() -> Keypair {
     let key_path = format!(
-        "{}/legacy/v0.1.0/keys/authority.json",
+        "{}/keys/admin.json",
         env!("CARGO_MANIFEST_DIR").replace("/crates/solana", "")
     );
     let key_data = std::fs::read_to_string(&key_path)
-        .unwrap_or_else(|_| panic!("Authority key not found at {key_path}"));
+        .unwrap_or_else(|_| panic!("Admin key not found at {key_path}"));
     let bytes: Vec<u8> = serde_json::from_str(&key_data).unwrap();
     Keypair::from_bytes(&bytes).unwrap()
 }
@@ -57,11 +57,15 @@ fn build_register_key_ix(
 ) -> Instruction {
     let program_id = whitelist_program();
 
-    // Derive PDA
+    // Derive PDAs
     let (whitelist_pda, _bump) = Pubkey::find_program_address(
         &[b"whitelist", signing_pubkey.as_ref()],
         &program_id,
     );
+    let (approved_vkeys_pda, _) =
+        Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
+    let (approved_measurements_pda, _) =
+        Pubkey::find_program_address(&[b"approved_measurements"], &program_id);
 
     // Build instruction data
     let disc = anchor_discriminator("register_key");
@@ -78,6 +82,8 @@ fn build_register_key_ix(
         program_id,
         accounts: vec![
             AccountMeta::new(whitelist_pda, false),
+            AccountMeta::new_readonly(approved_vkeys_pda, false),
+            AccountMeta::new_readonly(approved_measurements_pda, false),
             AccountMeta::new(*payer, true),
             AccountMeta::new_readonly(system_program::id(), false),
         ],
@@ -85,8 +91,38 @@ fn build_register_key_ix(
     }
 }
 
-/// Build a delete_key instruction.
-fn build_delete_key_ix(
+/// Build an `initialize_approved_vkeys` instruction.
+fn build_initialize_approved_vkeys_ix(admin: &Pubkey) -> Instruction {
+    let program_id = whitelist_program();
+    let (pda, _) = Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
+    Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(pda, false),
+            AccountMeta::new(*admin, true),
+            AccountMeta::new_readonly(system_program::id(), false),
+        ],
+        data: anchor_discriminator("initialize_approved_vkeys").to_vec(),
+    }
+}
+
+/// Build an `initialize_approved_measurements` instruction.
+fn build_initialize_approved_measurements_ix(admin: &Pubkey) -> Instruction {
+    let program_id = whitelist_program();
+    let (pda, _) = Pubkey::find_program_address(&[b"approved_measurements"], &program_id);
+    Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(pda, false),
+            AccountMeta::new(*admin, true),
+            AccountMeta::new_readonly(system_program::id(), false),
+        ],
+        data: anchor_discriminator("initialize_approved_measurements").to_vec(),
+    }
+}
+
+/// Build a `revoke_key` instruction.
+fn build_revoke_key_ix(
     admin: &Pubkey,
     signing_pubkey: &[u8; 32],
 ) -> Instruction {
@@ -97,13 +133,13 @@ fn build_delete_key_ix(
         &program_id,
     );
 
-    let disc = anchor_discriminator("delete_key");
+    let disc = anchor_discriminator("revoke_key");
 
     Instruction {
         program_id,
         accounts: vec![
             AccountMeta::new(whitelist_pda, false),
-            AccountMeta::new(*admin, true),
+            AccountMeta::new_readonly(*admin, true),
         ],
         data: disc.to_vec(),
     }
@@ -196,14 +232,14 @@ fn register_key_rejects_invalid_proof() {
 
 #[test]
 #[ignore]
-fn delete_key_rejects_nonexistent_pda() {
+fn revoke_key_rejects_nonexistent_pda() {
     let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
     let admin = load_authority_keypair();
 
     // A key that was never registered
     let signing_pubkey = [99u8; 32];
 
-    let ix = build_delete_key_ix(&admin.pubkey(), &signing_pubkey);
+    let ix = build_revoke_key_ix(&admin.pubkey(), &signing_pubkey);
 
     let blockhash = client.get_latest_blockhash().unwrap();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&admin.pubkey()), &[&admin], blockhash);
@@ -216,7 +252,7 @@ fn delete_key_rejects_nonexistent_pda() {
 
 #[test]
 #[ignore]
-fn delete_key_rejects_non_admin() {
+fn revoke_key_rejects_non_admin() {
     let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
 
     // Use operator key instead of admin (authority)
@@ -231,7 +267,7 @@ fn delete_key_rejects_non_admin() {
 
     let signing_pubkey = [88u8; 32];
 
-    let ix = build_delete_key_ix(&non_admin.pubkey(), &signing_pubkey);
+    let ix = build_revoke_key_ix(&non_admin.pubkey(), &signing_pubkey);
 
     let blockhash = client.get_latest_blockhash().unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -408,4 +444,158 @@ fn cnft_full_flow_devnet() {
 
     println!("\n=== cNFT Full Flow: SUCCESS ===");
     println!("Explorer: https://explorer.solana.com/tx/{mint_sig}?cluster=devnet");
+}
+
+// ===========================================================================
+// Registry initialization (one-shot operational tests)
+// ===========================================================================
+//
+// These tests perform admin-only setup of the on-chain registries. Run each
+// exactly once per deployed program version, in this order:
+//
+//   1. `initialize_registries_devnet`     — create both PDAs
+//   2. `add_placeholder_vkey_devnet`      — populate ApprovedVkeys with a
+//                                           placeholder for test purposes;
+//                                           replace with the real SP1 guest
+//                                           vkey_hash once available
+//   3. `add_placeholder_measurement_devnet` — same for ApprovedMeasurements
+//
+// Re-running #1 after success will fail with `already in use` — that's
+// expected. Re-running #2/#3 after success will fail with
+// `VkeyAlreadyApproved` / `MeasurementAlreadyApproved`.
+
+/// Initialize both registry PDAs. Run once per deployed program.
+#[test]
+#[ignore]
+fn initialize_registries_devnet() {
+    let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
+    let admin = load_authority_keypair();
+
+    let init_vkeys = build_initialize_approved_vkeys_ix(&admin.pubkey());
+    let init_meas = build_initialize_approved_measurements_ix(&admin.pubkey());
+
+    let blockhash = client.get_latest_blockhash().unwrap();
+    let tx = Transaction::new_signed_with_payer(
+        &[init_vkeys, init_meas],
+        Some(&admin.pubkey()),
+        &[&admin],
+        blockhash,
+    );
+
+    match client.send_and_confirm_transaction(&tx) {
+        Ok(sig) => {
+            println!("Initialized both registry PDAs in {sig}");
+            println!(
+                "Explorer: https://explorer.solana.com/tx/{sig}?cluster=devnet"
+            );
+        }
+        Err(e) => {
+            let msg = format!("{e:?}");
+            // Both PDAs init in a single tx; partial-init isn't possible here,
+            // so the only legitimate failure mode is "already initialized".
+            assert!(
+                msg.contains("already in use") || msg.contains("0x0"),
+                "unexpected init error: {msg}"
+            );
+            println!("Registries already initialized (idempotent skip)");
+        }
+    }
+}
+
+/// Add an SP1 verifying-key hash to the approved set. Until the real SP1
+/// guest is built and its vkey captured, this registers a placeholder so the
+/// devnet pipeline can be exercised. Replace the placeholder before production.
+#[test]
+#[ignore]
+fn add_placeholder_vkey_devnet() {
+    let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
+    let admin = load_authority_keypair();
+    let program_id = whitelist_program();
+    let (registry_pda, _) =
+        Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
+
+    // Placeholder: deterministic non-zero bytes so it's recognizable.
+    // Real value comes from `sp1-guests/attestation-aws-nitro/host: cargo run --bin vkey`.
+    let placeholder: [u8; 32] = [0xAA; 32];
+
+    let mut data = anchor_discriminator("add_approved_vkey").to_vec();
+    data.extend_from_slice(&(placeholder.len() as u32).to_le_bytes());
+    data.extend_from_slice(&placeholder);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(registry_pda, false),
+            AccountMeta::new_readonly(admin.pubkey(), true),
+        ],
+        data,
+    };
+
+    let blockhash = client.get_latest_blockhash().unwrap();
+    let tx = Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&admin.pubkey()),
+        &[&admin],
+        blockhash,
+    );
+
+    match client.send_and_confirm_transaction(&tx) {
+        Ok(sig) => println!("Added placeholder vkey in {sig}"),
+        Err(e) => {
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("0x1775") || msg.contains("VkeyAlreadyApproved"),
+                "unexpected error: {msg}"
+            );
+            println!("Placeholder vkey already approved (idempotent skip)");
+        }
+    }
+}
+
+/// Add a TEE measurement to the approved set. Placeholder for now —
+/// replace with the real Nitro PCR0 once the EIF is built.
+#[test]
+#[ignore]
+fn add_placeholder_measurement_devnet() {
+    let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
+    let admin = load_authority_keypair();
+    let program_id = whitelist_program();
+    let (registry_pda, _) =
+        Pubkey::find_program_address(&[b"approved_measurements"], &program_id);
+
+    // Placeholder 48-byte measurement, matching AWS Nitro PCR0 size.
+    let placeholder: Vec<u8> = vec![0xBB; 48];
+
+    let mut data = anchor_discriminator("add_approved_measurement").to_vec();
+    data.extend_from_slice(&(placeholder.len() as u32).to_le_bytes());
+    data.extend_from_slice(&placeholder);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(registry_pda, false),
+            AccountMeta::new_readonly(admin.pubkey(), true),
+        ],
+        data,
+    };
+
+    let blockhash = client.get_latest_blockhash().unwrap();
+    let tx = Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&admin.pubkey()),
+        &[&admin],
+        blockhash,
+    );
+
+    match client.send_and_confirm_transaction(&tx) {
+        Ok(sig) => println!("Added placeholder measurement in {sig}"),
+        Err(e) => {
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("0x1778") || msg.contains("MeasurementAlreadyApproved"),
+                "unexpected error: {msg}"
+            );
+            println!("Placeholder measurement already approved (idempotent skip)");
+        }
+    }
 }

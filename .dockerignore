@@ -1,0 +1,5 @@
+target/
+legacy/
+programs/
+docs/
+.git/

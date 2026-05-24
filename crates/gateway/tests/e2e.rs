@@ -73,6 +73,10 @@ fn build_tee_state(fetcher: TestFetcher) -> Arc<TeeAppState> {
         registry,
         pool: Arc::new(ResourcePool::with_single_limit(1_000_000_000)),
         fetcher: Box::new(fetcher),
+        attestation_verifier: Box::new(
+            title_attestation::MockAttestationVerifier::new(),
+        ),
+        expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT.to_vec(),
         started_at: Instant::now(),
     })
 }

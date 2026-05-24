@@ -23,6 +23,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
+use title_attestation::AttestationVerifier;
 use title_core::{ProcessRequest, ProcessorRegistry};
 use title_crypto::key_bundle::KeyBundle;
 use title_solana::extension::{self, ExtensionRequest};
@@ -55,6 +56,14 @@ pub struct TeeAppState {
     pub pool: Arc<ResourcePool>,
     /// HTTP content fetcher for external storage.
     pub fetcher: Box<dyn ContentFetcher>,
+    /// Vendor-specific Attestation Document verifier (Spec §6.2).
+    /// Mock runtime pairs with `MockAttestationVerifier`; Nitro pairs with
+    /// `AwsNitroVerifier`. Used by the Solana Extension to authenticate
+    /// off-chain data before partial signing.
+    pub attestation_verifier: Box<dyn AttestationVerifier + Send + Sync>,
+    /// The TEE's own measurement, captured at boot from its self-attestation.
+    /// Spec §6.2 — "measurement が自分自身のものと一致するか確認".
+    pub expected_measurement: Vec<u8>,
     /// Server start time for uptime calculation.
     pub started_at: Instant,
 }
@@ -105,10 +114,15 @@ async fn handle_processors(State(state): State<Arc<TeeAppState>>) -> impl IntoRe
 
 /// POST /process — core processing pipeline.
 /// Spec §2.5, §5.2
+///
+/// Plaintext requests get a JSON `ProcessResponse`. Encrypted requests
+/// (§2.4) get back `application/octet-stream` containing the
+/// `nonce || ciphertext` wire payload; only the requesting client holds
+/// the response key needed to decrypt it.
 async fn handle_process(
     State(state): State<Arc<TeeAppState>>,
     Json(request): Json<ProcessRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
     let result = tokio::task::spawn_blocking({
         let state = Arc::clone(&state);
         move || {
@@ -118,6 +132,7 @@ async fn handle_process(
                 &state.registry,
                 state.runtime.as_ref(),
                 &state.pool,
+                &state.key_bundle,
             )
         }
     })
@@ -130,7 +145,18 @@ async fn handle_process(
     })?;
 
     match result {
-        Ok(response) => Ok(Json(response)),
+        Ok(orchestrator::ProcessOutcome::Plaintext(response)) => {
+            Ok(Json(response).into_response())
+        }
+        Ok(orchestrator::ProcessOutcome::Encrypted(bytes)) => {
+            use axum::http::header;
+            Ok((
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/octet-stream")],
+                bytes,
+            )
+                .into_response())
+        }
         Err(orchestrator::OrchestratorError::AdmissionRejected) => Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({ "error": "Service busy, try again later" })),
@@ -201,15 +227,37 @@ async fn handle_solana_extension(
             )
         })?;
 
-    // Process extension (verify attestation + build & sign TX)
-    let tx_bytes =
-        extension::process_extension(&state.solana_key, &offchain_data, &ext_request, None)
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({ "error": e.to_string() })),
-                )
-            })?;
+    // Process extension (verify attestation + build & sign TX).
+    // System clock failure here is fatal for this request: attestation
+    // verifiers use `now_unix_secs` as the upper bound for cert validity,
+    // so a silent 0 fallback would either accept everything or reject
+    // everything depending on chain timing. Return 500 to surface it.
+    let now_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("System clock unavailable: {e}")
+                })),
+            )
+        })?;
+
+    let tx_bytes = extension::process_extension(
+        state.attestation_verifier.as_ref(),
+        &state.solana_key,
+        &offchain_data,
+        &ext_request,
+        Some(&state.expected_measurement),
+        now_unix_secs,
+    )
+    .map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+    })?;
 
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &tx_bytes);
 
@@ -278,6 +326,10 @@ mod tests {
             registry,
             pool: Arc::new(ResourcePool::with_single_limit(1_000_000_000)),
             fetcher: Box::new(fetcher),
+            attestation_verifier: Box::new(
+                title_attestation::MockAttestationVerifier::new(),
+            ),
+            expected_measurement: title_attestation::MockAttestationVerifier::MEASUREMENT.to_vec(),
             started_at: Instant::now(),
         })
     }

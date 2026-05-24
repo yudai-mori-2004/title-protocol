@@ -1,0 +1,18 @@
+[package]
+name = "title-attestation"
+description = "Title Protocol attestation verifier trait — vendor-agnostic interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# Enables `MockAttestationVerifier`. Dev / test only — production builds for a
+# real TEE should leave this disabled so the mock can never be selected at
+# runtime by mistake.
+mock = []
+
+[dependencies]
+thiserror = { workspace = true }

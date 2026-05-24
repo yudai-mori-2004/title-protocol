@@ -1,0 +1,28 @@
+[package]
+name = "title-sp1-attestation-aws-nitro-host"
+description = "Host CLI: print SP1 vkey_hash, or generate a Groth16 proof from an AWS Nitro Attestation Document"
+version = "0.1.2"
+edition = "2021"
+license = "Apache-2.0"
+
+# Host crate is also outside the main workspace because the build script invokes
+# the SP1 toolchain to compile the guest program.
+[workspace]
+
+[[bin]]
+name = "vkey"
+path = "src/bin/vkey.rs"
+
+[[bin]]
+name = "prove"
+path = "src/bin/prove.rs"
+
+[dependencies]
+sp1-sdk = "6.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+hex = "0.4"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[build-dependencies]
+sp1-build = "6.2"

@@ -21,6 +21,7 @@ docs/
 ├── v0.1.2/                <- Full rewrite (current)
 │   ├── SPECS_JA.md        <- Technical specification (written by humans)
 │   ├── COVERAGE.md        <- Spec-to-implementation mapping
+│   ├── OPERATIONS_JA.md   <- Deploy + lifecycle + troubleshooting guide
 │   └── tasks/             <- Work units (AI development tasks + notes)
 └── README.md              <- This file
 ```

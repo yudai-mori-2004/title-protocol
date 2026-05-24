@@ -47,6 +47,9 @@ impl CoseSign1 {
             None | Some(18) => (),
             Some(tag) => return Err(anyhow!("tag error: {:?}", tag)),
         }
+        // protected が well-formed な CBOR map であることを早期確認する。
+        // ここでは map の存在のみ検証し、key の validity (alg のみ許可など)
+        // は `verify_signature` 側で実施するため戻り値は捨てる。
         let protected = cosesign1.value.protected.as_slice();
         let _: HeaderMap = serde_cbor::from_slice(protected)
             .map_err(|err| anyhow!("deserialization failed: {:?}", err))?;
@@ -141,6 +144,16 @@ impl<'de> Deserialize<'de> for CoseSign1 {
                     Some(v) => v,
                     None => return Err(A::Error::missing_field("signature")),
                 };
+                // RFC 8152 §4.2: COSE_Sign1 は正確に 4 要素の CBOR array。
+                // 5 要素目以降は仕様違反として reject する (現実装の
+                // SeqAccess 既定挙動は silently 無視するため、攻撃面は
+                // 限定的だが defense-in-depth として明示チェック)。
+                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(A::Error::invalid_length(
+                        5,
+                        &"COSE_Sign1 must have exactly 4 elements",
+                    ));
+                }
                 Ok(CoseSign1 {
                     protected,
                     unprotected,

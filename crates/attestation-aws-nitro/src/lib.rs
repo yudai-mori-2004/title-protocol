@@ -23,6 +23,9 @@ mod cose;
 mod doc;
 mod sign;
 
+// `authenticate()` の戻り値型として外部に露出する。downstream で
+// leaf cert やチェーン情報を inspect する用途を想定した API surface
+// であり、現状は内部利用のみ。
 pub use cert::CertChain;
 pub use doc::{AttestationDocument, AttestationReport};
 pub use sign::{PubKey, SigAlgo};

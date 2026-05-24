@@ -309,7 +309,11 @@ mod tests {
         };
 
         let result = process_extension(&verifier(), &key, &response, &request, None, 0);
-        assert!(result.is_err());
+        // signature_hash 改ざんは user_data binding (Spec §6.2 確認 3) で
+        // 弾かれる経路を pin する。「単に Err になる」だけでなく、どの
+        // variant が発火したかを固定して、将来 verify_attestation_binding
+        // の戻り値を別 variant にすり替えるリグレッションを catch する。
+        assert!(matches!(result, Err(ExtensionError::UserDataMismatch)));
     }
 
     #[test]

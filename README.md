@@ -89,7 +89,7 @@ Two components. No intermediate storage managed by the protocol.
 
 | Type | Use case |
 |---|---|
-| `single` | JPEG, PNG, MP4 — large files processed via HTTP Range Request |
+| `single` | JPEG, PNG, MP4 (full-body fetch; HTTP Range Request streaming is on the roadmap) |
 | `fragmented` | CMAF streaming segments (init.mp4 + seg-*.m4s) |
 | `sidecar` | Detached C2PA manifest (.c2pa) + content file |
 
@@ -123,9 +123,12 @@ No trust in the Gateway, storage provider, or protocol operator is required.
 
 ## Status
 
-**v0.1.2 — Implementation in progress.**
+**v0.1.2 — Core implementation complete; AWS Nitro verification ongoing.**
 
-See [Technical Specification (Japanese)](docs/v0.1.2/SPECS_JA.md) for the full design.
+Gateway, TEE, Solana Extension, and SP1 attestation guest are all implemented
+and exercised end-to-end on devnet. Remaining work tracked in
+[`docs/v0.1.2/COVERAGE.md`](docs/v0.1.2/COVERAGE.md). See
+[Technical Specification (Japanese)](docs/v0.1.2/SPECS_JA.md) for the full design.
 
 ## Documentation
 

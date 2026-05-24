@@ -214,7 +214,7 @@ mod tests {
     fn health_response_roundtrip() {
         let resp = HealthResponse {
             status: "ok".into(),
-            tee_type: Some("aws_nitro".into()),
+            tee_type: Some("aws-nitro".into()),
         };
         let json_str = serde_json::to_string(&resp).unwrap();
         let restored: HealthResponse = serde_json::from_str(&json_str).unwrap();

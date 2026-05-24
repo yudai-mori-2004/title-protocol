@@ -146,7 +146,7 @@ Attestation Document（構成証明書）とは、TEEのハードウェアが自
 
 | 含まれる情報 | 意味 |
 |---|---|
-| measurement（測定値） | TEE内で実行されているプログラムのハッシュ。AWS Nitroでは PCR0 と呼ばれる48バイトのSHA-384ハッシュ。ベンダーごとに長さと算出方法が異なる |
+| measurement（測定値） | TEE内で実行されているプログラムのハッシュ。AWS Nitroでは PCR0（enclave image、48 バイト SHA-384）が主要な照合対象だが、より厳格な検証では PCR1（カーネル/initrd）や PCR2（アプリケーション）も合わせて比較できる。ベンダーごとに長さと算出方法が異なる |
 | user_data | TEE内のプログラムが任意に指定できるデータ領域 |
 | ベンダー証明書チェーン | ハードウェアベンダー（AWS等）のルート証明書に連鎖する署名 |
 
@@ -293,17 +293,21 @@ TEEは起動時に複数の暗号スイートに対応する鍵ペアを生成�
 
 ## 1.6 信頼の前提
 
-検証者が受け入れる必要がある前提は一つだけである。
+検証者が受け入れる必要があるコア処理の前提は、最小限以下の 3 つに整理される。
 
-**TEEのハードウェアが仕様通りに動作していること。** 具体的には、TEEベンダー（AWS、AMD、Intel等）が提供するハードウェアとファームウェアが、Attestation Documentの測定値を正直に報告していること。
+1. **TEE ハードウェア**: ベンダー（AWS、AMD、Intel 等）が提供するハードウェアとファームウェアが、Attestation Document の測定値を正直に報告すること。
+2. **C2PA ベンダールート CA**: c2pa-verify が連鎖を確認するルート証明書（Google / Sony / Leica 等）が当該ベンダーの正規署名鍵を反映していること。これは C2PA 規格自体への前提でもある。
+3. **リプロデューシブルビルド**: 公開ソースから誰でも同じバイナリ measurement を再現できる ＝ measurement を見れば「どのコードが動いたか」が独立に検証可能であること。Rust toolchain / OS / 依存ピンの決定性が担保されていることに依存する。
 
-この前提のもとで、以下が成り立つ。
+この 3 前提のもとで、以下が成り立つ。
 
 - 測定値がソースコードのビルドハッシュと一致する → 正規のプログラムが実行されていた
 - TEEの内部処理はハードウェアレベルで保護されている → 運営者を含む誰も処理中のデータを閲覧・改ざんできない
 - user_data内のハッシュが処理結果と一致する → 処理結果は改ざんされていない
 
 プロトコルの運営者、Gateway、ストレージの提供者、その他いかなる主体への信頼も不要である。
+
+ただし、本節の信頼モデルはコア処理に限る。Extension（§6）は追加の信頼前提を持つ場合がある（例: Solana Extension は whitelist 管理者を信頼前提に加える）。
 
 ## 1.7 Gatewayの位置づけ
 
@@ -314,12 +318,12 @@ GatewayはTEEの手前に配置される薄い管理層であり、以下を担�
 - 対応しているprocessorの一覧の提供
 - リクエストのTEEへの中継
 
-Gatewayはプロトコルの信頼モデルには関与しない。処理結果を改ざんすることはできない（改ざんするとAttestation Document内のハッシュと一致しなくなる）。
+Gateway は信頼されない構成要素である。リクエスト内容（content_url、processor_ids 等）と返却結果いずれも改変する能力を物理的には持つが、改変は以下のいずれかで検知される。具体的なエンドポイントとフレーム定義は §2.5 を参照。
 
-Gatewayはリクエスト内容（content_url、processor_ids等）を改変する能力を物理的に持つ。これに対する保護は利用形態によって異なる。
-
-- **サーバーサイド利用（非暗号化）**: クライアントとGatewayが同一の運営者であり、改変のリスクは存在しない
-- **クライアントサイド利用（暗号化）**: コンテンツとsignature_hashが暗号化ペイロードに封入される。Gatewayがcontent_urlを差し替えた場合、返却されるsignature_hashが変わるため、クライアントがレスポンスのsignature_hashをローカルで算出した値と照合することで攻撃を検知できる
+- **処理結果の改変**: Attestation Document 内の user_data（= `JCS(signature_hash + results)` の SHA-256）と一致しなくなるため検知される。
+- **リクエスト内容の改変**: 利用形態に応じて検知レイヤが変わる:
+  - **サーバーサイド利用（非暗号化）**: クライアントと Gateway を同一運営者が運用する前提。改変は意図的ではないため対象外。
+  - **クライアントサイド利用（暗号化）**: コンテンツと signature_hash が暗号化ペイロードに封入される。Gateway が content_url を別ペイロードに差し替えた攻撃は TEE 内では検知不能だが、クライアントが事前計算した signature_hash をレスポンスと照合することで検知される（詳細は §2.4 ステップ 12）。
 
 # 2. 通信モデル
 
@@ -345,7 +349,7 @@ Client                 Gateway                TEE                  外部スト�
   │    Attestation Doc)    │                    │                        │
 ```
 
-Gatewayはリクエストをそのままにするか拒否するかだけであり、内容の改変はできない。TEEは、クライアントが指定した外部ストレージのURLからコンテンツを直接取得する。コンテンツがGatewayを経由することはない。
+Gateway はリクエストを物理的には改変可能だが、改変は §1.7 で述べた経路で検知される。TEE は、クライアントが指定した外部ストレージの URL からコンテンツを直接取得し、コンテンツ本体は Gateway を経由しない。
 
 ## 2.2 リクエスト形式
 
@@ -387,7 +391,8 @@ Gatewayはリクエストをそのままにするか拒否するかだけであ�
 | `init_url` | String | Yes | 初期化セグメントのURL |
 | `fragment_urls` | Array\<String\> | Yes | メディアセグメントのURL一覧（順序保持） |
 | `processor_ids` | Array\<String\> | Yes | 実行するprocessorのID一覧 |
-| `encryption` | String | No | 暗号化スイート名（後述） |
+
+> `encryption` フィールドは fragmented 形式では指定できない（後述 §2.4）。
 
 ### サイドカー
 
@@ -406,7 +411,8 @@ Gatewayはリクエストをそのままにするか拒否するかだけであ�
 | `manifest_url` | String | Yes | C2PAマニフェスト（.c2pa）のURL |
 | `content_url` | String | Yes | コンテンツ本体のURL |
 | `processor_ids` | Array\<String\> | Yes | 実行するprocessorのID一覧 |
-| `encryption` | String | No | 暗号化スイート名（後述） |
+
+> `encryption` フィールドは sidecar 形式では指定できない（後述 §2.4）。
 
 ### 暗号化あり
 
@@ -438,7 +444,7 @@ TEEは、全processorの結果をまとめた処理結果と、その処理結�
     "c2pa-verify": {
       "status": "ok",
       "validation": "valid",
-      "signer": "Google",
+      "signer": { "issuer": "Google LLC", "cert_serial": "..." },
       "timestamp": "2026-01-15T10:30:00Z"
     },
     "image-pdq": {
@@ -455,6 +461,8 @@ TEEは、全processorの結果をまとめた処理結果と、その処理結�
 | `signature_hash` | String | Active ManifestのC2PA署名のSHA-256ハッシュ。`"sha256:"` プレフィクス付き。処理結果を特定のコンテンツにバインドする |
 | `results` | Object | processor IDをキー、各processorの出力を値とするマップ。内部構造はprocessorごとに異なる（セクション3参照） |
 | `attestation` | String | Attestation DocumentのバイナリをBase64エンコードしたもの |
+
+各 processor の出力構造はセクション3を Source of Truth とする。本節の `results` 例は概念図であり、フィールド形式の正典は §3.2 にある。
 
 検証者は、レスポンスの `signature_hash` + `results` をJCS（JSON Canonicalization Scheme, RFC 8785）で正規化した上でSHA-256ハッシュを計算し、Attestation Document内の`user_data`と照合することで、結果の完全性を確認できる。
 
@@ -629,7 +637,7 @@ TEE再起動時に鍵は更新される。クライアントは暗号化の直�
 
 **Response:** セクション2.3で定義したレスポンス形式。
 
-Gatewayはリクエストとレスポンスをそのまま中継する。内容の改変は行わない。
+Gateway はリクエストとレスポンスを中継する。改変能力は持つが、検知レイヤは §1.7 のとおり。
 
 ---
 
@@ -1084,7 +1092,7 @@ TEEは外部ストレージのURLに対してHTTPリクエストを発行して�
 
 **単一ファイル**: URLに対してHTTPリクエストを発行する。c2pa-rsのReaderはランダムアクセス（Read+Seek）を要求する。大容量ファイルの場合、HTTP Range Requestを用いてファイルの任意の位置にシークすることで、ファイル全体をメモリに保持せずに処理できる。C2PAのMerkle treeベースのハッシュ検証により、必要なチャンクだけを取得して検証を進めることが可能である。
 
-Range Requestを用いる場合、初回リクエストで取得したETagを以降のリクエストのIf-Matchヘッダに含める。取得の途中でストレージ上のファイルが変更された場合、412 Precondition Failedが返され、処理を中断する。これにより、異なるバージョンのファイルからチャンクを混在して読み取ることを防ぐ。
+Range Request を用いる場合、初回リクエストで取得した ETag を以降のリクエストの If-Match ヘッダに含める。取得の途中でストレージ上のファイルが変更された場合、412 Precondition Failed が返され、処理を中断する。これは性能上のフェイルファスト目的の defense-in-depth であり、整合性の根拠は C2PA の Merkle ハッシュ照合（§4.3）と TEE 内ハッシュ照合にある。If-Match を返さないストレージでは省略可。
 
 **フラグメント**: 初期化セグメントのURLを最初に取得し、その後メディアセグメントのURLを順に取得する。各セグメントは処理後にメモリから解放できる。
 
@@ -1139,6 +1147,10 @@ Extensionはコアとは別のリクエストとして実行される。コア�
 
 コアとExtensionを別リクエストにすることで、コア処理の結果を確認してからExtensionに進むかどうかを判断できる。Extensionを使わない場合、コア処理の成果物がそのまま最終成果物となる。
 
+### Extension の有効/無効
+
+Extension の有効化は **TEE バイナリのビルド時点で固定される**。Solana Extension を有効化したビルドと無効化したビルドは別個の TEE バイナリであり、measurement も異なる。Gateway はその TEE バイナリの構成に応じて、対応する Extension エンドポイント（例: `POST /extension/solana`）の存在を判断し、未対応構成では 404 を返す。実装側では `cargo build --features solana-ext` 相当のフラグで切り替える。
+
 ## 6.2 Solana Extension
 
 Solana Extensionは、コア処理の成果物をSolanaブロックチェーン上にcNFT（Compressed NFT）として記録するための仕組みである。
@@ -1174,19 +1186,20 @@ Attestation Documentからゼロ知識証明（ZK proof）を生成
   │
   ▼
 ZK proofをSolanaプログラムに提出
-  → プログラムが二段の照合を実施
+  → プログラムが三段の照合を実施
     1. 検証回路が正規のものか（verifying_key_hash 照合）
     2. TEE 実体が正規のものか（measurement 照合）
-  → 両方を通過し、かつ ZK proof の数学的検証に成功した場合のみ、署名鍵をホワイトリストPDAに登録
+    3. ZK proof の対象が今登録する署名鍵に紐づくか（user_data bind 確認）
+  → すべて通過し、かつ ZK proof の数学的検証に成功した場合のみ、署名鍵をホワイトリストPDAに登録
 ```
 
-ホワイトリストPDAはSolanaプログラムが管理するオンチェーンアカウントである。更新権限はプログラムのみが持ち、後述する三つの確認をすべて通過した ZK proof でのみ新しい署名鍵を追加できる。人手による管理は介在しない。
+ホワイトリストPDAはSolanaプログラムが管理するオンチェーンアカウントである。更新権限はプログラムのみが持ち、後述する三段の同一性確認をすべて通過した ZK proof でのみ新しい署名鍵を追加できる。人手による管理は介在しない。
 
 Solana上でAttestation Documentの証明書チェーンを直接検証するのは計算コストが高いため、ゼロ知識証明を用いる。ZKスキームにはSP1（Succinct）を採用する。SP1はRustプログラムをそのままzkVM上で実行し、実行結果のゼロ知識証明を生成する汎用zkVMであり、Solana上での証明検証をサポートしている（`sp1_solana` crate）。Attestation Documentの検証ロジック（証明書チェーン検証、measurement照合）を通常のRustコードとして記述し、SP1がゼロ知識証明にコンパイルする。カスタム回路の設計は不要である。
 
-#### 二段の同一性確認
+#### 三段の同一性確認
 
-ZK proof は「あるプログラムが、ある入力に対して、ある出力を返した」ことを数学的に保証するだけで、「そのプログラムが何だったか」「その入力が何だったか」は proof の中身を見ても分からない。Title Protocol の信頼を成立させるには、Solana プログラム側で二つの「正規性」を別々に確認する必要がある。
+ZK proof は「あるプログラムが、ある入力に対して、ある出力を返した」ことを数学的に保証するだけで、「そのプログラムが何だったか」「その入力が何だったか」は proof の中身を見ても分からない。Title Protocol の信頼を成立させるには、Solana プログラム側で三つの「正規性」を別々に確認する必要がある。
 
 **確認1: 検証回路の正規性 — verifying_key_hash**
 
@@ -1206,7 +1219,7 @@ measurement は TEE バイナリのビルド結果から決まる固定値であ
 
 **確認3: 鍵と Attestation の bind 確認**
 
-二段の正規性が確認できた上で、最後に「Attestation Document の user_data フィールドが、今登録しようとしている署名鍵の公開鍵から導出される値と一致するか」を確認する。これにより、攻撃者が別の Attestation Document の proof を流用して別の鍵を登録することを防ぐ。
+確認 1・確認 2 で正規性が担保された上で、最後に「Attestation Document の user_data フィールドが、今登録しようとしている署名鍵の公開鍵から導出される値と一致するか」を確認する。これにより、攻撃者が別の Attestation Document の proof を流用して別の鍵を登録することを防ぐ。
 
 **集合の運用**
 

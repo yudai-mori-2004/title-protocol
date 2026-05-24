@@ -13,7 +13,7 @@ Task 01（サンドボックス技術検証）で3領域の技術的実現性を
 ## 読むべきファイル
 
 1. `CLAUDE.md` — プロジェクト規約（Key Design Decisions にクレート構成方針あり）
-2. `docs/v0.1.2/SPECS_JA.md` — 全文（1177行）。特に:
+2. `docs/v0.1.2/SPECS_JA.md` — 全文。特に:
    - §1.3 Processor実行フレームワーク
    - §2.2 リクエスト形式（3種の入力タイプ）
    - §2.3 レスポンス形式（signature_hash + results + attestation）

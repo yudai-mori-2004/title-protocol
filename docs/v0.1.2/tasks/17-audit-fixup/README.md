@@ -269,7 +269,7 @@ OSS 成熟度（H）:
 | 17c gateway+core | done | 約 42 |
 | 17d solana+sp1 | done | 約 58 |
 | 17e コメント+デッドコード | done | 約 97 |
-| 17f ドキュメント+仕様 | pending | 約 67 |
+| 17f ドキュメント+仕様 | done | 約 67 |
 | 17g ビルド+テスト+OSS | pending | 約 67 |
 
 ### 17a 完了内訳

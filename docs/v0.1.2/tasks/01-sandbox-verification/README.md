@@ -7,7 +7,7 @@ v0.1.2 仕様の実装に入る前に、技術的不確実性が高い3領域を
 
 ## 読むべきファイル
 
-1. `docs/v0.1.2/SPECS_JA.md` — 全文（1177行）
+1. `docs/v0.1.2/SPECS_JA.md` — 全文
 2. `legacy/v0.1.0/crates/core/src/lib.rs` — v0.1.0 の c2pa-rs 統合パターン（参考）
 3. `legacy/v0.1.0/crates/crypto/src/attestation/nitro.rs` — Nitro Attestation Document パース（参考）
 

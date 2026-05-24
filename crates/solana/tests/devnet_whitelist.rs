@@ -6,7 +6,7 @@
 //!
 //! Prerequisites:
 //! - Whitelist program deployed to devnet at 43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs
-//! - Authority key at legacy/v0.1.0/keys/authority.json with SOL balance
+//! - Admin keypair at <repo-root>/keys/admin.json with devnet SOL balance
 
 use sha2::{Digest, Sha256};
 use solana_client::rpc_client::RpcClient;

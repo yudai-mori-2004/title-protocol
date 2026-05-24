@@ -24,6 +24,11 @@ pub const KEY_EXPIRY_SECONDS: i64 = 90 * 24 * 60 * 60;
 /// length byte that tells callers how much of `bytes` is meaningful.
 /// Mirrors `programs/title-whitelist::StoredMeasurement` exactly so a
 /// future `AnchorDeserialize` flow walks the same wire bytes.
+///
+/// **Authoritative source is on-chain `MAX_MEASUREMENT_LEN = 64`** in
+/// `programs/title-whitelist/src/lib.rs`. このバッファ長を変更する際は
+/// 両方を同時に更新すること (host crate からは program crate を path 依存
+/// できないためハードコード必須)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredMeasurement {
     pub bytes: [u8; 64],

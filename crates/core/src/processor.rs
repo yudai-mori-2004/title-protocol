@@ -84,13 +84,16 @@ pub enum ProcessorError {
 ///
 /// TEEが対応しているprocessorの一覧を管理し、
 /// リクエストの `processor_ids` に応じてprocessorをディスパッチする。
-#[derive(Default)]
 pub struct ProcessorRegistry {
     processors: Vec<Box<dyn Processor>>,
 }
 
 impl ProcessorRegistry {
     /// 空のレジストリを作成する。
+    ///
+    /// `.default()` 呼出ゼロの dead surface を再追加しないため
+    /// `clippy::new_without_default` を抑制する。
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             processors: Vec::new(),

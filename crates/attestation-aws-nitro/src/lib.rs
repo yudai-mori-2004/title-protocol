@@ -41,10 +41,14 @@ pub const VENDOR: &str = "aws-nitro";
 /// The chain root is pinned to [`constants::AWS_NITRO_ROOT_CA_SHA256`]; a
 /// cabundle whose first certificate does not match the fingerprint is
 /// rejected.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug)]
 pub struct AwsNitroVerifier;
 
 impl AwsNitroVerifier {
+    // `clippy::new_without_default` を抑制する。Default を派生させると
+    // 「.default() 呼出ゼロ」の dead surface が公開 API として再追加される
+    // (B-round 由来の dead code 整理方針に反する)。
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self
     }

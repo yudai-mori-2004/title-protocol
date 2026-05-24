@@ -97,12 +97,6 @@ mod mock {
     #[derive(Debug, Clone, Copy)]
     pub struct MockAttestationVerifier;
 
-    impl Default for MockAttestationVerifier {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
     impl MockAttestationVerifier {
         pub const VENDOR: &'static str = "mock";
         pub const PREFIX: &'static [u8] = b"mock-attestation:";
@@ -112,6 +106,9 @@ mod mock {
         /// into `add_approved_measurement` is obviously approving the mock.
         pub const MEASUREMENT: [u8; 48] = *b"TITLE-PROTOCOL-MOCK-MEASUREMENT-DO-NOT-APPROVE!!";
 
+        // `.default()` 呼出ゼロの dead surface を再追加しないため
+        // `clippy::new_without_default` を抑制する。
+        #[allow(clippy::new_without_default)]
         pub fn new() -> Self {
             Self
         }

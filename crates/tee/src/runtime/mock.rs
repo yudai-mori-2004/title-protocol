@@ -19,10 +19,12 @@ use crate::{TeeError, TeeRuntime};
 /// - `get_attestation_document`: returns `"mock-attestation:" + user_data`.
 ///   This is NOT cryptographically meaningful — it exists solely so that
 ///   downstream code can exercise the attestation flow without TEE hardware.
-#[derive(Default)]
 pub struct MockRuntime;
 
 impl MockRuntime {
+    // `.default()` 呼出ゼロの dead surface を再追加しないため
+    // `clippy::new_without_default` を抑制する。
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self
     }

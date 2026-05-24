@@ -97,6 +97,12 @@ mod mock {
     #[derive(Debug, Clone, Copy)]
     pub struct MockAttestationVerifier;
 
+    impl Default for MockAttestationVerifier {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl MockAttestationVerifier {
         pub const VENDOR: &'static str = "mock";
         pub const PREFIX: &'static [u8] = b"mock-attestation:";

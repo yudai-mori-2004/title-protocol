@@ -196,7 +196,7 @@ impl ContentFetcher for ProxyContentFetcher {
             });
         }
 
-        if status < 200 || status >= 300 {
+        if !(200..300).contains(&status) {
             return Err(FetchError::HttpStatus {
                 status: status as u16,
                 url: url.to_string(),

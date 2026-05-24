@@ -88,7 +88,7 @@ pub fn router(state: Arc<TeeAppState>) -> Router {
         .route("/health", get(handle_health))
         .route("/keys", get(handle_keys))
         .route("/processors", get(handle_processors))
-        .route("/process", post(handle_process).layer(post_limit.clone()))
+        .route("/process", post(handle_process).layer(post_limit))
         .route("/solana-keys", get(handle_solana_keys))
         .route(
             "/extension/solana",
@@ -636,7 +636,7 @@ mod tests {
         let mut output = std::io::Cursor::new(Vec::new());
 
         c2pa::Builder::from_context(c2pa::Context::default())
-            .with_definition(&definition.to_string())
+            .with_definition(definition.to_string())
             .expect("Builder definition failed")
             .sign(&signer, "image/jpeg", &mut source, &mut output)
             .expect("Signing failed");

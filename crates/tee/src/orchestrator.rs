@@ -149,8 +149,8 @@ pub enum ProcessOutcome {
 /// * `registry`     — Processor registry with registered processors
 /// * `runtime`      — TEE runtime for Attestation Document retrieval
 /// * `pool`         — ResourcePool for memory management (§4.1)
-/// * `key_bundle`   — TEE's per-suite encryption key bundle (§2.4). Only used
-///                    when `request.encryption` is set.
+/// * `key_bundle`   — TEE's per-suite encryption key bundle (§2.4).
+///   Only used when `request.encryption` is set.
 ///
 /// # Errors
 /// - `AdmissionRejected` — ResourcePool admission limit exceeded
@@ -514,7 +514,7 @@ mod tests {
         let mut output = std::io::Cursor::new(Vec::new());
 
         c2pa::Builder::from_context(c2pa::Context::default())
-            .with_definition(&definition.to_string())
+            .with_definition(definition.to_string())
             .expect("Builder definition failed")
             .sign(&signer, "image/jpeg", &mut source, &mut output)
             .expect("Signing failed");

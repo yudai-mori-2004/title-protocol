@@ -36,7 +36,7 @@ fn load_authority_keypair() -> Keypair {
     let key_data = std::fs::read_to_string(&key_path)
         .unwrap_or_else(|_| panic!("Admin key not found at {key_path}"));
     let bytes: Vec<u8> = serde_json::from_str(&key_data).unwrap();
-    Keypair::from_bytes(&bytes).unwrap()
+    Keypair::try_from(bytes.as_slice()).unwrap()
 }
 
 /// Compute Anchor instruction discriminator: SHA-256("global:<name>")[0..8]
@@ -317,8 +317,8 @@ fn cnft_mint_tx_construction() {
     let num_signers = tx.message.header().num_required_signatures as usize;
 
     let mut tee_signed = false;
-    for i in 0..num_signers.min(static_keys.len()) {
-        if static_keys[i] == tee_pubkey {
+    for (i, key) in static_keys.iter().take(num_signers).enumerate() {
+        if *key == tee_pubkey {
             assert_ne!(
                 tx.signatures[i],
                 solana_sdk::signature::Signature::default(),
@@ -372,10 +372,10 @@ fn cnft_full_flow_devnet() {
         let static_keys = create_tree_tx.message.static_account_keys().to_vec();
         let num_signers = create_tree_tx.message.header().num_required_signatures as usize;
         let message_bytes = create_tree_tx.message.serialize();
-        for i in 0..num_signers.min(static_keys.len()) {
-            if static_keys[i] == payer.pubkey() {
+        for (i, key) in static_keys.iter().take(num_signers).enumerate() {
+            if *key == payer.pubkey() {
                 create_tree_tx.signatures[i] = payer.sign_message(&message_bytes);
-            } else if static_keys[i] == tree_keypair.pubkey() {
+            } else if *key == tree_keypair.pubkey() {
                 create_tree_tx.signatures[i] = tree_keypair.sign_message(&message_bytes);
             }
         }
@@ -412,8 +412,8 @@ fn cnft_full_flow_devnet() {
         let mint_message_bytes = mint_tx.message.serialize();
         let mint_static_keys = mint_tx.message.static_account_keys().to_vec();
         let mint_num_signers = mint_tx.message.header().num_required_signatures as usize;
-        for i in 0..mint_num_signers.min(mint_static_keys.len()) {
-            if mint_static_keys[i] == payer.pubkey() {
+        for (i, key) in mint_static_keys.iter().take(mint_num_signers).enumerate() {
+            if *key == payer.pubkey() {
                 mint_tx.signatures[i] = payer.sign_message(&mint_message_bytes);
             }
         }

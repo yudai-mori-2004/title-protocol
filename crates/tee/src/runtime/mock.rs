@@ -19,6 +19,7 @@ use crate::{TeeError, TeeRuntime};
 /// - `get_attestation_document`: returns `"mock-attestation:" + user_data`.
 ///   This is NOT cryptographically meaningful — it exists solely so that
 ///   downstream code can exercise the attestation flow without TEE hardware.
+#[derive(Default)]
 pub struct MockRuntime;
 
 impl MockRuntime {

@@ -163,7 +163,7 @@ fn create_signed_jpeg() -> Vec<u8> {
     let mut output = std::io::Cursor::new(Vec::new());
 
     c2pa::Builder::from_context(c2pa::Context::default())
-        .with_definition(&definition.to_string())
+        .with_definition(definition.to_string())
         .expect("Builder definition failed")
         .sign(&signer, "image/jpeg", &mut source, &mut output)
         .expect("Signing failed");

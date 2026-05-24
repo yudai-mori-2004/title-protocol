@@ -375,7 +375,7 @@ mod tests {
         });
 
         let mut builder = c2pa::Builder::from_context(c2pa::Context::default())
-            .with_definition(&definition.to_string())
+            .with_definition(definition.to_string())
             .expect("Builder creation");
 
         let mut source = Cursor::new(&test_jpeg);
@@ -411,7 +411,7 @@ mod tests {
         });
 
         let mut builder = c2pa::Builder::from_context(c2pa::Context::default())
-            .with_definition(&definition.to_string())
+            .with_definition(definition.to_string())
             .expect("Builder creation");
 
         let mut source = Cursor::new(&test_jpeg);

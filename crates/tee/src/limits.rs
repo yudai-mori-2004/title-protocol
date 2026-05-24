@@ -103,7 +103,7 @@ pub fn validate_fragment_size(size: usize) -> Result<(), LimitsError> {
 /// Estimate decoded memory size from image header information.
 /// Spec §4.4 — decode memory protection.
 pub fn estimate_decoded_size(width: u32, height: u32, channels: u32, bit_depth: u32) -> u64 {
-    let bytes_per_pixel = (channels * bit_depth + 7) / 8;
+    let bytes_per_pixel = (channels * bit_depth).div_ceil(8);
     u64::from(width) * u64::from(height) * u64::from(bytes_per_pixel)
 }
 
@@ -237,7 +237,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn constants_are_consistent() {
+        // Asserts on consts so a future tweak that swaps the ordering
+        // (e.g. setting CHUNK_TIMEOUT > MAX_GLOBAL_TIMEOUT) is caught.
+        // Duration's `<` isn't const, so this stays a runtime test.
         assert!(CHUNK_TIMEOUT < MAX_GLOBAL_TIMEOUT);
         assert!(BASE_TIMEOUT <= MAX_GLOBAL_TIMEOUT);
         assert!(MIN_TRANSFER_SPEED > 0);

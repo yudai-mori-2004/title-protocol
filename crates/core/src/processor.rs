@@ -84,6 +84,7 @@ pub enum ProcessorError {
 ///
 /// TEEが対応しているprocessorの一覧を管理し、
 /// リクエストの `processor_ids` に応じてprocessorをディスパッチする。
+#[derive(Default)]
 pub struct ProcessorRegistry {
     processors: Vec<Box<dyn Processor>>,
 }

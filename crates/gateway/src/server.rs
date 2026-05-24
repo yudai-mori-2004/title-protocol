@@ -66,7 +66,7 @@ pub fn router(state: Arc<GatewayState>) -> Router {
         )
         .route(
             "/process",
-            axum::routing::post(endpoints::handle_process).layer(post_limit.clone()),
+            axum::routing::post(endpoints::handle_process).layer(post_limit),
         )
         .route("/health", axum::routing::get(endpoints::handle_health))
         .route(

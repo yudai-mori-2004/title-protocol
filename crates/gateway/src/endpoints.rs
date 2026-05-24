@@ -37,14 +37,16 @@ fn tee_err(e: TeeClientError) -> GatewayError {
     match e {
         TeeClientError::Unreachable(msg) => GatewayError::TeeUnavailable(msg),
         TeeClientError::HttpError { status, body } => {
-            // Log the upstream body for debugging but don't leak it to the
-            // caller — clients see only the status code class.
             tracing::warn!(status, body = %body, "TEE returned HTTP error");
+            // body は client にも透過する (Round 3 J should-fix-r3-001)。
+            // 上流 TEE が返した詳細メッセージ (例: "Base58 decode failed: ...")
+            // を Gateway 側で固定文字列に潰すと debug 不能になるため、
+            // IntoResponse 側で `detail` フィールドに包んで返す。
             match status {
                 503 => GatewayError::TeeUnavailable(format!("TEE upstream returned HTTP {status}")),
                 429 => GatewayError::RateLimited,
-                400..=499 => GatewayError::TeeRejected { status },
-                500..=599 => GatewayError::TeeUpstreamError { status },
+                400..=499 => GatewayError::TeeRejected { status, body },
+                500..=599 => GatewayError::TeeUpstreamError { status, body },
                 _ => GatewayError::TeeError(format!("TEE upstream returned HTTP {status}")),
             }
         }

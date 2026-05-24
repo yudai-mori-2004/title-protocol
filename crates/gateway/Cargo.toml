@@ -27,7 +27,7 @@ async-trait = "0.1"
 serde_json = { workspace = true }
 c2pa = { workspace = true }
 image = { workspace = true }
-title-tee = { path = "../tee" }
+title-tee = { workspace = true }
 title-crypto = { workspace = true }
 title-solana = { workspace = true }
 title-attestation = { workspace = true, features = ["mock"] }

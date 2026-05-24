@@ -6,6 +6,17 @@
 //! retrieval, entropy). Vendor backends are selected at compile time via
 //! the `vendor-aws` / `runtime-mock` features.
 
+// `runtime-mock` と `vendor-aws` は意味的に排他で、両方同時に有効化された
+// バイナリは仕様 §6.2 / §5.4 の「TEE バイナリは ON/OFF 2 値で固定」前提に反する
+// (Cargo features は additive のため、依存 crate から `runtime-mock` が裏で
+// 引き込まれて vendor-aws バイナリに mock 経路が混入する事故を防ぐ)。
+#[cfg(all(feature = "runtime-mock", feature = "vendor-aws"))]
+compile_error!(
+    "features `runtime-mock` and `vendor-aws` are mutually exclusive — \
+     they select different TeeRuntime impls and a reproducible build \
+     must pick exactly one (Spec §5.4)."
+);
+
 pub mod content_fetch;
 pub mod limits;
 pub mod orchestrator;

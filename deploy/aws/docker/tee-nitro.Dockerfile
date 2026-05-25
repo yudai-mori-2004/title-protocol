@@ -1,5 +1,5 @@
 # Title Protocol TEE — AWS Nitro Enclave build
-# Spec §5.2, §5.4
+# Spec §5.2, §5.4 — Reproducible Build
 #
 # Same multi-stage layout as docker/tee-mock.Dockerfile, but:
 #   - builds with `--no-default-features --features vendor-aws` so the
@@ -7,10 +7,20 @@
 #   - targets linux/amd64 explicitly (Nitro Enclaves require x86_64)
 #   - bakes no entrypoint env vars: `TEE_RUNTIME=nitro` is set by the
 #     EC2 launch script so a misconfigured run cannot fall back to mock
+#
+# Reproducibility: images pinned by digest, apt versions pinned, timestamps
+# fixed via SOURCE_DATE_EPOCH. To update pins, see docs/v0.1.2/OPERATIONS_JA.md.
 
-FROM --platform=linux/amd64 rust:1.93-bookworm AS builder
+# --- Pin base images by digest for byte-reproducible builds ---
+# rust:1.93-bookworm linux/amd64 (2025-05)
+FROM --platform=linux/amd64 rust:1.93-bookworm@sha256:1d33950f982ca6411f5e0ee4850be46e03f066f1a9efaeb41922a0e59497c9c2 AS builder
 
 WORKDIR /build
+
+# Reproducibility: strip host paths from panic strings and DWARF info,
+# fix embedded timestamps.
+ENV SOURCE_DATE_EPOCH=0
+ENV RUSTFLAGS="--remap-path-prefix=/usr/local/cargo=/cargo --remap-path-prefix=/usr/local/rustup=/rustup"
 
 # Manifests + lock first (dependency cache layer)
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
@@ -38,27 +48,33 @@ RUN mkdir -p crates/attestation/src && echo "" > crates/attestation/src/lib.rs \
  && mkdir -p crates/cli/src && echo "fn main() {}" > crates/cli/src/main.rs
 
 # Warm dep cache (no-op if all deps are unchanged across builds)
-RUN cargo build --release --bin title-tee \
+RUN cargo build --release --locked --bin title-tee \
       --no-default-features \
       --features title-tee/vendor-aws
 
 # Real source
 COPY crates/ crates/
 RUN find crates -name "*.rs" -exec touch {} + \
- && cargo build --release --bin title-tee \
+ && cargo build --release --locked --bin title-tee \
       --no-default-features \
       --features title-tee/vendor-aws
 
 # --- Runtime stage ---
-FROM --platform=linux/amd64 debian:bookworm-slim
+# debian:bookworm-slim linux/amd64 (2025-05)
+FROM --platform=linux/amd64 debian:bookworm-slim@sha256:b29f74a267526ae6ea104eed6c46133b0ca70ce812525df8cd5817698f0a624a
+
+# Reproducibility: fix filesystem timestamps to a known epoch so layer
+# hashes are deterministic regardless of build time.
+ENV SOURCE_DATE_EPOCH=0
 
 # CA certificates for TLS to external upstreams (terminated in title-proxy
 # on the host, but the trust store lives in the enclave for header checks).
 # socat + iproute2 provide the vsock<->TCP inbound bridge.
+# Versions pinned for reproducibility (Debian bookworm).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    socat \
-    iproute2 \
+    ca-certificates=20230311+deb12u1 \
+    socat=1.7.4.4-2 \
+    iproute2=6.1.0-3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee

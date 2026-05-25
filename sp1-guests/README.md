@@ -49,10 +49,9 @@ cargo run --release --bin vkey
 cargo run --release --bin prove -- /path/to/attestation.bin
 ```
 
-> `prove` peaks at roughly 30 GiB resident memory during the Groth16 wrap.
-> Use an instance with at least 64 GiB RAM (EC2 `r5.4xlarge` or larger).
-> Run `cargo run --release --bin prove -- --help` for the full output-file
-> layout and a recap of the resource requirements.
+> `prove` peaks at roughly 95 GiB resident memory during the Groth16 wrap.
+> EC2 `c5.12xlarge` (96 GiB) + 16 GiB swap 推奨。Mac (16 GiB) でも swap
+> 経由で動作するが 90 分かかる。
 
 > Always build with `cargo build --locked` (or `cargo prove build --locked`).
 > The committed `Cargo.lock` pins the SP1 SDK to the exact version that
@@ -60,5 +59,7 @@ cargo run --release --bin prove -- /path/to/attestation.bin
 > would silently change the vkey hash and invalidate every existing
 > `register_key` on-chain.
 
-See [docs/v0.1.2/OPERATIONS_JA.md](../docs/v0.1.2/OPERATIONS_JA.md) §2.4 / §4
-for the full SP1 + on-chain lifecycle.
+EC2 でのゼロからの proof 生成手順は
+[attestation-aws-nitro/README.md](./attestation-aws-nitro/README.md) を参照。
+on-chain ライフサイクルは
+[docs/v0.1.2/OPERATIONS_JA.md](../docs/v0.1.2/OPERATIONS_JA.md) §4 を参照。

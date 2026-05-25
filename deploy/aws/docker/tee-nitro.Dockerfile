@@ -78,11 +78,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2=6.1.0-3 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /var/cache/ldconfig/aux-cache \
-    && rm -rf /var/log/dpkg.log /var/log/apt /var/log/alternatives.log
+    && rm -rf /var/log/dpkg.log /var/log/apt /var/log/alternatives.log \
+    && find / -newermt '@0' ! -path '/proc/*' ! -path '/sys/*' \
+         -exec touch -h -d '@0' {} + 2>/dev/null || true
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee
 COPY deploy/aws/docker/tee-entrypoint.sh /usr/local/bin/tee-entrypoint.sh
-RUN chmod +x /usr/local/bin/tee-entrypoint.sh
+RUN chmod +x /usr/local/bin/tee-entrypoint.sh \
+    && touch -h -d '@0' /usr/local/bin/title-tee /usr/local/bin/tee-entrypoint.sh
 
 # Production defaults for Nitro:
 #   TEE_RUNTIME=nitro       — pick the AWS Nitro runtime explicitly. Without

@@ -144,15 +144,9 @@ impl ResourcePool {
 /// Spec §4.2
 ///
 /// `Send + Sync`: 所有権の move も、`&Ticket` を `Arc` で複数スレッドに共有
-/// するのも可能。仕様 §4.3 のフラグメントメモリパターンを実装する
-/// [`crate::fragmented_source::FragmentedReader`] や、Range Request reader が
-/// 内部 buffer rotation 時に `ticket.shrink` を呼ぶケースで `Arc<Ticket>` を
-/// 持てる構造。
-///
-/// 旧設計は `Cell<Instant>` で `!Sync` だったが、`last_activity_nanos` を
-/// `AtomicU64` (created_at からのナノ秒) に置き換えて Sync 化した。
-/// atomic 化のオーバーヘッドは extend 1 回あたり 1 atomic store (~ns) で、
-/// admission control の精度向上に比べ無視できる。
+/// するのも可能。Sync 化のため `last_activity_nanos` は `AtomicU64`
+/// (created_at からのナノ秒) で保持する。extend 1 回あたり 1 atomic store
+/// (~ns) のオーバーヘッドのみ。
 pub struct Ticket {
     pool: Arc<ResourcePool>,
     reserved: AtomicUsize,
@@ -263,8 +257,10 @@ impl Ticket {
     }
 
     /// Extend without timeout checks.
-    /// For internal use where timeout enforcement is handled at a higher level,
-    /// or in concurrent tests where timing is unpredictable.
+    /// 並行テストで timing が unpredictable な場合の hook。production code は
+    /// 必ず timeout 込みの `extend` を使う。`#[cfg(test)]` でテストビルドにのみ
+    /// 公開し、本体ビルドから消えるようにする (= dead_code 警告も発生しない)。
+    #[cfg(test)]
     pub(crate) fn extend_unchecked(&self, additional: usize) -> Result<(), TicketError> {
         if additional == 0 {
             return Ok(());

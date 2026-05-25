@@ -24,7 +24,6 @@
 //!
 
 use std::io::Read;
-use std::sync::Arc;
 use std::time::Duration;
 
 use title_core::{ContentSource, InMemorySource, InputData};
@@ -234,10 +233,9 @@ impl ContentFetcher for HttpContentFetcher {
                 })
             }
             Err(reason) => {
-                // warn レベルで残す。Range 非対応サーバーへの fallback は仕様
-                // §4.3 のメモリ上限 (典型 64 KB) より大きいバッファを要求する
-                // 経路で、運用者が「なぜ大きなファイルが reject されるか」を
-                // 追える視認性が必要 (audit round 3 監査での指摘箇所)。
+                // Range 非対応サーバーへの fallback は仕様 §4.3 のメモリ上限を
+                // 超えるバッファ確保に化けうるため、運用者が「なぜ大きな
+                // ファイルが reject されるか」を追えるよう warn で出す。
                 tracing::warn!(
                     url,
                     %reason,
@@ -357,10 +355,15 @@ impl ContentFetcher for HttpContentFetcher {
 /// - Single: 1 ファイル分のソース。HTTP Range Request 経由なら
 ///   [`crate::range_source::HttpRangeSource`] / [`crate::proxy_fetcher::ProxyRangeSource`]
 ///   が入る。mock / 全 fetch fallback 経路では [`InMemorySource`] が入る。
-/// - Fragmented: init + 全 segment を concat したバイト列を InMemorySource で
-///   保持。fragment-by-fragment streaming (c2pa::Reader::with_fragment 経路) は
-///   v0.1.3 持ち越し。
+/// - Fragmented: [`crate::fragmented_source::FragmentedSource`] が入る。init を
+///   `Arc<[u8]>` で常駐、各 fragment を `ContentSource` で lazy 保持。
+///   orchestrator が probe loop 内で各 fragment 取得直後に `ticket.extend` を
+///   漸進呼びし、loop 完了後に `peak_memory_hint = init + (in-memory 常駐合計)
+///   + (active Range バッファ最大)` 確定値まで `shrink` で正味化する (= 漸進
+///   予約モード、仕様 §4.3 のメモリバウンドを満たす)。
 /// - Sidecar: コンテンツ本体のソースに加え、`manifest_source` が別途付く。
+///   manifest は小さいので `InMemorySource` で full fetch、content は single と
+///   同じ Range Request streaming 経路を再利用。
 pub struct FetchedContent {
     /// コンテンツ本体の reader factory。
     pub source: Box<dyn ContentSource>,
@@ -446,14 +449,23 @@ pub fn detect_content_type(bytes: &[u8], url: &str, server_type: Option<&str>) -
 /// Fetch content based on input data type, tracking memory via Ticket.
 /// Spec §5.2, §4.2, §4.3
 ///
-/// Each fetch operation calls `ticket.extend()` as data arrives, enforcing
-/// memory limits and timeouts. Fragmented input passes `Arc<Ticket>` down to
-/// [`crate::fragmented_source::FragmentedSource`] so that fragment swap can do
-/// dynamic `extend` / `shrink` (仕様 §4.3 の shrink ループ)。
+/// Memory accounting policy by input type:
+/// - **Single** / **Sidecar**: `ticket.extend()` is called once for the source's
+///   `peak_memory_hint`. Range Request streaming reserves only the per-reader
+///   buffer (`min_req_size`); full-fetch fallback reserves the full body.
+/// - **Fragmented**: `fetch_fragmented` uses **incremental reservation** — each
+///   fragment is `ticket.extend()`-ed right after `fetch_streaming` returns
+///   (with `size` for in-memory fallback or `peak_memory_hint` for Range), then
+///   a final `ticket.shrink()` reduces over-reservation down to the
+///   `FragmentedSource::peak_memory_hint` confirmed value.
+///
+/// In all cases the orchestrator's admission gate sees a conservative reservation
+/// at every step, so concurrent requests are throttled before they can
+/// collectively OOM the TEE.
 pub fn fetch_content(
     fetcher: &dyn ContentFetcher,
     input: &InputData,
-    ticket: &Arc<Ticket>,
+    ticket: &Ticket,
 ) -> Result<FetchedContent, FetchError> {
     match input {
         InputData::Single { content_url } => fetch_single(fetcher, content_url, ticket),
@@ -483,14 +495,14 @@ pub fn fetch_content(
 /// メモリ予約 (`ticket.extend`) は [`title_core::ContentSource::peak_memory_hint`]
 /// が示す**実ピークメモリ**で行う:
 /// - In-memory ソース: ファイル全長 (= 既にメモリ上)
-/// - Range Request ソース: reader バッファサイズ (典型 64 KB)
+/// - Range Request ソース: reader バッファサイズ (典型 数 MiB、min_req_size 連動)
 ///
 /// この区別を `size_hint` ベースにすると、50 GB の Range Request リクエストが
 /// admission_limit で reject されてしまい §4.3 のストリーミング前提が崩れる。
 fn fetch_single(
     fetcher: &dyn ContentFetcher,
     url: &str,
-    ticket: &Arc<Ticket>,
+    ticket: &Ticket,
 ) -> Result<FetchedContent, FetchError> {
     let resp = fetcher.fetch_streaming(url)?;
 
@@ -529,29 +541,56 @@ fn fetch_single(
 }
 
 /// Fetch fragmented content (CMAF init + segments).
-/// Spec §5.2, §4.3 -- 仕様 §4.3 のフラグメントメモリパターンに準拠。
+/// Spec §5.2, §4.3 -- 仕様 §4.3 のフラグメントメモリパターンに準拠 (漸進予約モード)。
 ///
 /// BMFF/ISO-14496-12 fragmented MP4 は ftyp + moov (init.mp4) + moof + mdat
 /// (各 segment) という構造。本実装は [`FragmentedSource`] を通じて
 /// 「init は in-memory 常駐 + fragments は lazy load (1 個ずつ)」の経路を作る。
 ///
-/// ## Memory pattern (§4.3)
+/// ## Memory pattern (§4.3) — 漸進予約モード
 ///
-/// 旧実装は全 fragment を `Vec<u8>` に concat していたためピーク = `init + Σ fragments`。
-/// 新実装はピーク = `init + max(fragment_sizes)` で固定 (`FragmentedSource::peak_memory_hint`)。
-/// 50K fragments × 5 MB の long-form ストリームでも 5 MB + init のみで処理可能。
+/// probe loop 内で各 fragment 取得直後に `ticket.extend` を呼び、loop 完了後に
+/// `peak_memory_hint = init + (in-memory 常駐合計) + (active Range バッファ
+/// 最大)` 確定値まで `shrink` で正味化する。これにより:
 ///
-/// `fetch_streaming` を使うことで、各 fragment 自体も Range Request 対応なら
-/// 内部的に streaming される (typical fragment = 数 MB なので影響は限定的)。
+/// - admission gate は loop 中の任意の時点で正確な `pool.used` を観測でき、
+///   並列リクエストを throttle できる
+/// - in-memory fallback fragment (Range 非対応サーバー) でも実 RAM が pool に
+///   申告される
+/// - 50K fragments × 5 MB の long-form ストリームでも 5 MB + init のみで処理可能
+///   (Range 対応サーバーの場合)
+///
+/// 参考: `legacy/v0.1.0/crates/tee/src/endpoints/verify/handler.rs:91-127` に
+/// 同思想の漸進予約パターンがある。
 fn fetch_fragmented(
     fetcher: &dyn ContentFetcher,
     init_url: &str,
     fragment_urls: &[String],
-    ticket: &Arc<Ticket>,
+    ticket: &Ticket,
 ) -> Result<FetchedContent, FetchError> {
     if fragment_urls.is_empty() {
         return Err(FetchError::NoFragments);
     }
+
+    // 仕様 §4.3 のフラグメントメモリパターン (漸進予約モード):
+    //
+    // 各 fragment を順に fetch_streaming で probe しながら、その時点で確定する
+    // 実 RAM 消費量を ticket に逐次 extend する。これにより admission gate は
+    // loop 中の任意の時点で正確な `pool.used` を見ることができ、並列リクエスト
+    // を本物のピーク値で throttle できる:
+    //
+    // - Range 対応サーバー: probe は HEAD のみ、source は常駐ゼロ → extend は
+    //   `peak_memory_hint()` (例: 4 MiB reader バッファ) で控えめに計上
+    // - Range 非対応 fallback: source は fragment 全体を `InMemorySource` で
+    //   確保 → extend は `size` 全量で正確に計上
+    //
+    // loop 完了後に `FragmentedSource::peak_memory_hint()` (= init + in-memory
+    // 常駐合計 + active Range バッファ最大) と現 reserved の差分を `shrink`
+    // して正味のピークまで縮める。これで Range fragments の場合に「active 1
+    // reader 分」より大きく取った仮予約 (∵ probe 中は全 fragment 分まとめて
+    // 計上した) を返却できる。
+    //
+    // legacy v0.1.0 (verify handler の漸進 extend → 確定後 shrink) と同思想。
 
     // ── init segment (数 KB〜数十 KB、in-memory 常駐) ──
     let init_resp = fetcher.fetch(init_url)?;
@@ -560,21 +599,17 @@ fn fetch_fragmented(
     }
     let init_len = init_resp.body.len();
     let init_bytes = init_resp.body;
+    ticket.extend(init_len)?;
 
-    // ── 各 fragment の ContentSource + size を収集 ──
-    //
-    // 全 fragment を fetch_streaming で probe する (HEAD でサイズだけ確定、
-    // 実バイトはまだ取らない)。HttpRangeSource なら HEAD のみ、in-memory fallback
-    // 経路だと full fetch が発生するため fragment が大きい場合は注意。
+    // ── 各 fragment を漸進的に probe + extend ──
     let mut fragment_sources: Vec<Box<dyn ContentSource>> = Vec::with_capacity(fragment_urls.len());
     let mut fragment_sizes: Vec<u64> = Vec::with_capacity(fragment_urls.len());
+    let mut reserved_during_probe: u64 = 0;
     for url in fragment_urls {
         let resp = fetcher.fetch_streaming(url)?;
         let size = match resp.size_hint {
             Some(s) if s > 0 => s,
             Some(_) => return Err(FetchError::EmptyContent(url.clone())),
-            // size_hint が None だとピークメモリ計算ができない。実装上は
-            // fetch_streaming default は size_hint を返すはず (Mock fetcher 含む)。
             None => {
                 return Err(FetchError::HttpError {
                     url: url.clone(),
@@ -584,23 +619,50 @@ fn fetch_fragmented(
         };
         // 仕様 §4.4 — 1 fragment の最大サイズ check。
         limits::validate_fragment_size(size as usize)?;
+
+        // 実 RAM 消費量を即時申告:
+        // - in-memory fallback: source 内に `Arc<[u8]>` で確保された size 分
+        // - Range 対応: 将来 reader が確保する `peak_memory_hint` 分のみ
+        //   (probe 時点では実 RAM はゼロだが、保守的に reader バッファ分を取る)
+        let extend_now = if resp.source.is_in_memory_resident() {
+            size
+        } else {
+            resp.source.peak_memory_hint().unwrap_or(size)
+        };
+        if let Err(e) = ticket.extend(extend_now as usize) {
+            // 失敗の理由 (どの fragment URL でメモリが尽きたか) は debug 用に
+            // tracing で出す。error 自体は `MemoryLimit` のまま伝播 (caller の
+            // 既存マッチを壊さない)。
+            tracing::warn!(
+                fragment_url = %url,
+                extend_bytes = extend_now,
+                "ticket extend for fragment failed",
+            );
+            return Err(FetchError::MemoryLimit(e));
+        }
+        reserved_during_probe = reserved_during_probe.saturating_add(extend_now);
+
         fragment_sources.push(resp.source);
         fragment_sizes.push(size);
     }
-
-    // 仕様 §4.3 のフラグメントメモリパターン (動的モード):
-    // - init.len を事前予約 (常駐分)
-    // - fragments は FragmentedReader が動的に extend/shrink (swap ごと)
-    // これにより同時 reserved は「init + 現在ロード中 1 fragment」ぴったり。
-    // fragment サイズが不均一でも厳密に admission control できる。
-    ticket.extend(init_len)?;
 
     let source = crate::fragmented_source::FragmentedSource::new(
         init_bytes,
         fragment_sources,
         fragment_sizes,
-    )
-    .with_ticket(Arc::clone(ticket));
+    );
+
+    // ── 確定した peak まで shrink ──
+    // probe 中は Range fragments を 1 個ずつ extend したが、active 1 reader
+    // しか同時に動かないので max() だけが本来必要。差分を返却する。
+    // in-memory fragments は extend した量 = peak への寄与 と一致するので
+    // shrink は発生しない。
+    let final_peak = source.peak_memory_hint().unwrap_or(init_len as u64);
+    let current_reserved = (init_len as u64).saturating_add(reserved_during_probe);
+    let surplus = current_reserved.saturating_sub(final_peak);
+    if surplus > 0 {
+        ticket.shrink(surplus as usize);
+    }
 
     Ok(FetchedContent {
         source: Box::new(source),
@@ -623,7 +685,7 @@ fn fetch_sidecar(
     fetcher: &dyn ContentFetcher,
     manifest_url: &str,
     content_url: &str,
-    ticket: &Arc<Ticket>,
+    ticket: &Ticket,
 ) -> Result<FetchedContent, FetchError> {
     // ── Manifest (.c2pa file = raw JUMBF data, 数 KB〜数十 KB) ──
     // 小さいので Range Request は不要、full fetch + InMemorySource で十分。
@@ -876,8 +938,6 @@ mod tests {
     /// および `size_hint` / `peak_memory_hint` が body 長と一致することを確認。
     #[test]
     fn default_fetch_streaming_wraps_full_body_as_in_memory_source() {
-        use title_core::ContentSource;
-
         let mut fetcher = MockFetcher::new();
         fetcher.add(
             "https://storage.example.com/photo.jpg",
@@ -1058,25 +1118,25 @@ mod tests {
             &seg0[..]
         );
         assert!(result.manifest_source.is_none());
-        // Verify memory tracking — 仕様 §4.3 フラグメントパターン (動的モード):
-        // fetch_fragmented 直後は init 分のみ予約。fragments は FragmentedReader が
-        // 読む際に動的に extend / drop 時に shrink するので、source を read しない
-        // この時点では reserved = init.len のみ。
-        assert_eq!(ticket.reserved(), init_bytes.len());
+        // Verify memory tracking — 仕様 §4.3 フラグメントパターン (漸進予約モード):
+        // MockFetcher は InMemorySource fallback を返す → 全 fragment が常駐扱い。
+        // 1. init を extend (init.len)
+        // 2. probe loop で各 fragment を順に extend (in-memory なので size 全量)
+        // 3. 最終 peak = init + Σ in-memory = 現 reserved と一致 → shrink なし
+        // ticket は probe 完了時点で expected に固定。FragmentedReader の内部
+        // swap は peak バウンド内で完結するので reader read/drop でも不変。
+        let expected = init_bytes.len() + seg0.len() + seg1.len();
+        assert_eq!(ticket.reserved(), expected);
 
-        // 実際に reader を使って read_to_end したときは init + 現在ロード中
-        // fragment が reserved されることを確認。read 完了後 (reader drop) で
-        // shrink され、reserved = init に戻る。
+        // reader を read_to_end / drop しても ticket は不変
+        // (FragmentedReader 内部 swap は peak バウンド内で完結)。
         use std::io::Read as _;
         let mut reader = result.source.open().unwrap();
         let mut buf = Vec::new();
         reader.read_to_end(&mut buf).unwrap();
-        // 最後に読んだ fragment が current_fragment として残っている状態
-        let last_frag_size = seg1.len();
-        assert_eq!(ticket.reserved(), init_bytes.len() + last_frag_size);
-        // reader drop で fragment 分が shrink される
+        assert_eq!(ticket.reserved(), expected);
         drop(reader);
-        assert_eq!(ticket.reserved(), init_bytes.len());
+        assert_eq!(ticket.reserved(), expected);
     }
 
     #[test]
@@ -1151,25 +1211,75 @@ mod tests {
         };
 
         // Pool can hold init (8 bytes) + 50 bytes、fragment は 100 bytes。
-        // 動的モード:
-        //   - fetch_fragmented 自体は init のみ extend で成功 (8 bytes 予約)
-        //   - reader.read() で fragment 分 (100 bytes) extend を試み MemoryLimit
+        //   1. ticket.extend(init=8) 成功 → reserved = 8
+        //   2. probe loop で fragment fetch_streaming → in-memory fallback で
+        //      `Arc<[u8]>` 確保 + ticket.extend(100) を試行
+        //   3. 8 + 100 = 108 > pool limit (58) で MemoryLimit 失敗
+        //   4. 失敗時、init 分の reserved (8) は維持される (atomic extend は
+        //      success/fail 二択で、成功した分は手動 shrink 待ち)
+        // admission gate は loop 中の任意の時点で正確な pool.used を見られる
+        // (= 並列リクエストが loop 中に reject される) ことの確認。
         let pool = Arc::new(ResourcePool::with_single_limit(init_bytes.len() + 50));
-        let ticket = Arc::new(pool.ticket(Some(0)));
-        let fetched = fetch_content(&fetcher, &input, &ticket).expect("init fetch ok");
+        let ticket = pool.ticket(Some(0));
+        let result = fetch_content(&fetcher, &input, &ticket);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FetchError::MemoryLimit(_)));
+        // init 分の予約は維持 (fragment extend だけが失敗)。これにより並列
+        // リクエストの admission control に loop 進行中の状態が反映される。
         assert_eq!(ticket.reserved(), init_bytes.len());
+    }
 
-        use std::io::Read as _;
-        let mut reader = fetched.source.open().unwrap();
-        let mut buf = Vec::new();
-        let read_err = reader
-            .read_to_end(&mut buf)
-            .expect_err("fragment extend should hit memory limit");
-        assert_eq!(read_err.kind(), std::io::ErrorKind::OutOfMemory);
-        // extend が失敗したので current_fragment はセットされず、reader drop でも
-        // 余分な shrink は走らない。init 分の reserved は維持。
-        drop(reader);
-        assert_eq!(ticket.reserved(), init_bytes.len());
+    /// 大量の in-memory fragments で probe loop の途中で memory limit reject
+    /// される経路。N 個目の fragment 取得時点で reject が走り、その時点までの
+    /// 中間 reserved が ticket に維持されることを assert する。
+    ///
+    /// この性質により admission gate は loop 中の中間状態を観測でき、別 thread
+    /// の並列リクエストが loop 進行中に reject される (= bypass されない)。
+    #[test]
+    fn fetch_fragmented_adversarial_in_memory_fragments_reject_mid_loop() {
+        let mut fetcher = MockFetcher::new();
+        let init_bytes = vec![0x00, 0x00, 0x00, 0x08, b'f', b't', b'y', b'p'];
+        fetcher.add(
+            "https://storage.example.com/video/init.mp4",
+            init_bytes.clone(),
+            Some("video/mp4"),
+        );
+
+        // 各 fragment = 100 bytes。10 個用意する。
+        let frag_size = 100usize;
+        let fragment_count = 10;
+        let mut urls = Vec::with_capacity(fragment_count);
+        for i in 0..fragment_count {
+            let url = format!("https://storage.example.com/video/seg-{i}.m4s");
+            fetcher.add(&url, vec![0u8; frag_size], Some("video/mp4"));
+            urls.push(url);
+        }
+
+        let input = InputData::Fragmented {
+            init_url: "https://storage.example.com/video/init.mp4".to_string(),
+            fragment_urls: urls,
+        };
+
+        // Pool は init (8) + 3 fragments (300) しか持てない。4 個目で reject される。
+        let pool = Arc::new(ResourcePool::with_single_limit(
+            init_bytes.len() + frag_size * 3 + 10,
+        ));
+        let ticket = pool.ticket(Some(0));
+        let result = fetch_content(&fetcher, &input, &ticket);
+
+        assert!(result.is_err(), "fetch should fail mid-loop");
+        assert!(matches!(result.unwrap_err(), FetchError::MemoryLimit(_)));
+
+        // reject 時点で init + 成功した 3 fragments 分の予約 (308) が ticket に
+        // 残る。4 個目の extend は atomic 失敗で reserved は 308 のまま。
+        // この中間予約が pool.used に反映されるので、別 thread の並列リクエストは
+        // この時点で admission gate で reject される。
+        let expected_reserved = init_bytes.len() + frag_size * 3;
+        assert_eq!(
+            ticket.reserved(),
+            expected_reserved,
+            "loop 中に成功した extend は維持される (= admission gate に反映)"
+        );
     }
 
     #[test]

@@ -30,32 +30,45 @@
 //!
 //! ## メモリ会計
 //!
-//! `peak_memory_hint()` は `init.len() + max(fragment_sizes)` を返す。
-//! orchestrator はこの値を `ticket.extend` 1 回で予約する。FragmentedReader 内部
-//! の fragment swap はこのバウンド以内で完結するので、追加 extend/shrink は不要。
+//! `peak_memory_hint()` は `init.len() + (in-memory 常駐合計) + (active Range
+//! バッファ最大)` を返す:
 //!
-//! 仕様 §4.4 の `MAX_FRAGMENT_SIZE = 100 MB` × N fragments の理論上限を真に
-//! 受けても、ピークは `init + 100 MB` で固定される (concat 方式なら N × 100 MB
-//! まで膨らむ)。
+//! - **in-memory 常駐 fragment** (`is_in_memory_resident() == true`、例:
+//!   `InMemorySource` や fetch_streaming の Range 非対応 fallback): source 自体
+//!   が `Arc<[u8]>` でバイト列を保持しており、source が drop されるまで size 分
+//!   が常駐。peak 寄与は **Σ size**。
+//! - **Range fragment** (`is_in_memory_resident() == false`、例: `HttpRangeSource` /
+//!   `ProxyRangeSource`): source 自体は URL とメタデータだけで常駐ゼロ。
+//!   FragmentedReader が active 1 個だけロードするため peak 寄与は **max(peak)**。
+//!
+//! orchestrator (`fetch_fragmented`) は probe loop 内で各 fragment 取得直後に
+//! `ticket.extend` を漸進呼びし、loop 完了後に `peak_memory_hint` 確定値まで
+//! `shrink` で正味化する。これにより admission gate は loop 中の任意の時点で
+//! 正確な `pool.used` を見て並列リクエストを throttle できる。
+//! 参考: `legacy/v0.1.0/crates/tee/src/endpoints/verify/handler.rs:91-127`。
+//!
+//! ## なぜ reader 内で動的 extend/shrink しないか
+//!
+//! 仕様 §4.3 の擬似コードは「extend → 検証 → shrink」のループを示すが、
+//! reader 側に `Arc<Ticket>` を渡して swap ごとに動的会計させると (a) probe 中の
+//! admission gate が `init` 分しか見えないため並列 N リクエストで一気に
+//! `N × max_fragment` まで積まれる、(b) extend 失敗時の reader 状態整合 vs
+//! 一時的 pool.used 多重持ちで別のトレードオフが発生する。
+//!
+//! fetch 側 (`fetch_fragmented`) で漸進予約することで (a) を解消し、reader は
+//! 確定 peak のバウンド内で fragment swap を完結させるので (b) も発生しない。
 
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use title_core::{ContentSource, ContentStream};
 
-use crate::resource_pool::Ticket;
-
 /// 連結された fragmented MP4 を lazy に表現する `ContentSource`。
 ///
 /// 構築時に init は full fetch (in-memory)、各 fragment は HEAD 等で size を
 /// 確認して `ContentSource` だけ保持する (実バイト列は open() で必要時にロード)。
-///
-/// ## Ticket 連携 (仕様 §4.3 の shrink ループ)
-///
-/// `with_ticket(Arc<Ticket>)` を呼ぶと、reader 内部の fragment swap で
-/// `ticket.extend` / `ticket.shrink` を呼んで動的に実体メモリ使用量を反映する。
-/// 呼ばれない場合は orchestrator 側で `peak_memory_hint` 分を一括予約する前提
-/// (= 静的予約モード) で動作する。
+/// メモリ会計は orchestrator (`fetch_fragmented`) が漸進予約モードで管理し、
+/// reader 側は静的バウンド内で fragment swap を完結させる (モジュール doc 参照)。
 pub struct FragmentedSource {
     init: Arc<[u8]>,
     fragments: Arc<[FragmentEntry]>,
@@ -63,10 +76,6 @@ pub struct FragmentedSource {
     /// `fragments[i]` は `fragment_offsets[i]` から `fragment_offsets[i] + fragments[i].size` まで。
     fragment_offsets: Arc<[u64]>,
     total_size: u64,
-    max_fragment_size: u64,
-    /// オプションの ticket。指定された場合、reader が fragment swap 時に
-    /// `extend` / `shrink` を呼ぶ。
-    ticket: Option<Arc<Ticket>>,
 }
 
 struct FragmentEntry {
@@ -92,7 +101,6 @@ impl FragmentedSource {
         );
 
         let init_len = init.len() as u64;
-        let max_fragment_size = fragment_sizes.iter().copied().max().unwrap_or(0);
 
         let mut fragment_offsets = Vec::with_capacity(fragment_sources.len());
         let mut acc = init_len;
@@ -113,27 +121,7 @@ impl FragmentedSource {
             fragments: Arc::from(fragments),
             fragment_offsets: Arc::from(fragment_offsets),
             total_size,
-            max_fragment_size,
-            ticket: None,
         }
-    }
-
-    /// 仕様 §4.3 の「extend → 検証 → shrink」ループを動的に駆動する ticket を
-    /// バインドする。指定された ticket は reader の fragment swap で
-    /// `extend(new_fragment_size)` / `shrink(old_fragment_size)` を呼ばれ、
-    /// 実体メモリに即した予約が `pool.used` に反映される。
-    ///
-    /// 呼ばれない場合は orchestrator が `peak_memory_hint` 相当を一括予約する
-    /// 静的モード。動的モードでは orchestrator は init 分のみ先行予約し、
-    /// fragment 分は reader が動的に管理する。
-    pub fn with_ticket(mut self, ticket: Arc<Ticket>) -> Self {
-        self.ticket = Some(ticket);
-        self
-    }
-
-    /// 連結後の論理サイズ。テスト/監視用。
-    pub fn total_size(&self) -> u64 {
-        self.total_size
     }
 }
 
@@ -146,7 +134,6 @@ impl ContentSource for FragmentedSource {
             total_size: self.total_size,
             current_fragment: None,
             pos: 0,
-            ticket: self.ticket.as_ref().map(Arc::clone),
         }))
     }
 
@@ -154,13 +141,48 @@ impl ContentSource for FragmentedSource {
         Some(self.total_size)
     }
 
-    /// 仕様 §4.3 — ピークメモリ = init + フラグメント 1 個分。
+    /// 仕様 §4.3 — ピークメモリ = init + (in-memory fragments の常駐合計) +
+    /// (active 1 reader の Range バッファ最大)。
     ///
-    /// `max_fragment_size` を保守的に採用 (実際は現在ロード中の fragment が
-    /// より小さいケースが大半だが、orchestrator の admission control は上限で
-    /// 予約する必要がある)。
+    /// FragmentedReader は内部に 1 fragment しか保持しないが、各 fragment の
+    /// `ContentSource` は構築時点でメモリを消費している場合がある:
+    ///
+    /// - **Range Request 経路** (`is_in_memory_resident() == false`): source
+    ///   自体は URL とメタデータだけで常駐ゼロ。active reader が
+    ///   `peak_memory_hint()` (典型 `min_req_size` = 4 MiB) のバッファを
+    ///   1 つ持つだけ。FragmentedReader が同時にロードするのは 1 fragment
+    ///   なので、peak への寄与は max(Range fragments の peak) のみ。
+    /// - **In-memory 経路** (`is_in_memory_resident() == true`、`InMemorySource`
+    ///   や fetch_streaming の Range 非対応 fallback): `Arc<[u8]>` を source 内に
+    ///   保持しており、source が drop されるまで size 分が常駐する。peak への
+    ///   寄与は合計 (Σ in-memory sizes)。
+    ///
+    /// この計算により、Range 非対応サーバーで全 fragments が in-memory fallback
+    /// しても `peak = init + Σ all_sizes` で実 RAM を正確に申告できる。
+    /// `is_in_memory_resident()` の明示判定を使うことで「peak と size が偶然
+    /// 一致する Range source」での誤判定 (heuristic 脆さ) を構造的に防ぐ。
     fn peak_memory_hint(&self) -> Option<u64> {
-        Some(self.init.len() as u64 + self.max_fragment_size)
+        let mut in_memory_resident = 0u64;
+        let mut active_reader_buf = 0u64;
+        for entry in &*self.fragments {
+            if entry.source.is_in_memory_resident() {
+                in_memory_resident = in_memory_resident.saturating_add(entry.size);
+            } else {
+                let peak = entry.source.peak_memory_hint().unwrap_or(entry.size);
+                active_reader_buf = active_reader_buf.max(peak);
+            }
+        }
+        Some(self.init.len() as u64 + in_memory_resident + active_reader_buf)
+    }
+
+    /// `FragmentedSource` 自体は init を `Arc<[u8]>` で常駐させ、各 fragment は
+    /// `is_in_memory_resident()` がそれぞれの常駐性を持つ。全 fragment が
+    /// 常駐 (= in-memory) かつ init も常駐 (常に true) ならこの source 全体も
+    /// 常駐扱い。1 つでも Range fragment があれば streaming 経路扱い。
+    fn is_in_memory_resident(&self) -> bool {
+        self.fragments
+            .iter()
+            .all(|e| e.source.is_in_memory_resident())
     }
 }
 
@@ -180,10 +202,11 @@ struct FragmentedReader {
     total_size: u64,
     /// `Some((fragment_idx, bytes))` で現在ロード中の fragment。
     /// 別 fragment にアクセスが行ったら置き換える (古い Vec は drop される)。
+    /// orchestrator (`fetch_fragmented` の漸進予約) が `peak_memory_hint` 確定
+    /// 値まで ticket を予約済みなので、内部 swap は ticket と通信せず Vec drop
+    /// だけで完結する (peak バウンド内で動作)。
     current_fragment: Option<(usize, Vec<u8>)>,
     pos: u64,
-    /// 動的 ticket 連携 (optional)。fragment swap 時に extend/shrink を呼ぶ。
-    ticket: Option<Arc<Ticket>>,
 }
 
 impl FragmentedReader {
@@ -215,10 +238,11 @@ impl FragmentedReader {
     /// 必要な fragment がまだロードされていなければロードする。
     /// 既存の current_fragment は drop される (Vec が解放される)。
     ///
-    /// 仕様 §4.3 の「extend → 検証 → shrink」ループに従い、ticket が bind
-    /// されている場合は古い fragment 分を shrink してから新 fragment 分を
-    /// extend する。順序は (shrink → extend) で、admission_limit を一時的に
-    /// 越える状態を作らない。
+    /// orchestrator が事前に `peak_memory_hint` (init + in-memory 常駐分 +
+    /// active Range バッファ最大) で
+    /// ticket を予約しているため、内部 swap は ticket と通信しない。古い Vec を
+    /// drop してから新 Vec を確保すれば、瞬間ピークは `init + max_fragment` で
+    /// 安定する (`Vec` のヒープ解放は drop 時点)。
     fn ensure_fragment_loaded(&mut self, fragment_idx: usize) -> std::io::Result<()> {
         if let Some((cur_idx, _)) = &self.current_fragment {
             if *cur_idx == fragment_idx {
@@ -226,43 +250,17 @@ impl FragmentedReader {
             }
         }
 
-        // 古い fragment があれば shrink + drop。新 fragment の extend が
-        // 失敗しても古いメモリは解放される (リソース leak 防止)。
-        if let Some((old_idx, _)) = &self.current_fragment {
-            if let Some(ticket) = &self.ticket {
-                let old_size = self.fragments[*old_idx].size as usize;
-                ticket.shrink(old_size);
-            }
-        }
+        // 古い fragment を drop してから新規ロード (peak メモリ抑制)。
         self.current_fragment = None;
 
         let entry = &self.fragments[fragment_idx];
-
-        // 新 fragment 分を extend (ticket 連携モード時のみ)。
-        if let Some(ticket) = &self.ticket {
-            ticket.extend(entry.size as usize).map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::OutOfMemory,
-                    format!("ticket extend for fragment {fragment_idx} failed: {e}"),
-                )
-            })?;
-        }
-
         let mut reader = entry.source.open()?;
         let mut bytes = Vec::with_capacity(entry.size as usize);
-        if let Err(e) = reader.read_to_end(&mut bytes) {
-            // read 失敗時は extend した分を即 shrink して整合性を保つ。
-            if let Some(ticket) = &self.ticket {
-                ticket.shrink(entry.size as usize);
-            }
-            return Err(e);
-        }
+        reader.read_to_end(&mut bytes)?;
 
-        // 宣言サイズと実取得サイズの check。
+        // 宣言サイズと実取得サイズの check (Range Request 経由で size が変動
+        // した場合を検出)。
         if (bytes.len() as u64) != entry.size {
-            if let Some(ticket) = &self.ticket {
-                ticket.shrink(entry.size as usize);
-            }
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -276,18 +274,6 @@ impl FragmentedReader {
 
         self.current_fragment = Some((fragment_idx, bytes));
         Ok(())
-    }
-}
-
-impl Drop for FragmentedReader {
-    /// reader を捨てるときに最後にロード中の fragment 分を shrink する。
-    /// orchestrator が `peak_memory_hint` で予約した分は ticket drop で解放されるが、
-    /// 動的 ticket モードでは extend した fragment 分を明示的に戻す必要がある。
-    fn drop(&mut self) {
-        if let (Some((idx, _)), Some(ticket)) = (&self.current_fragment, &self.ticket) {
-            let size = self.fragments[*idx].size as usize;
-            ticket.shrink(size);
-        }
     }
 }
 
@@ -338,15 +324,35 @@ impl Read for FragmentedReader {
 }
 
 impl Seek for FragmentedReader {
+    /// `std::io::Seek` 規約: negative offset への seek は `InvalidInput` で
+    /// reject する。`SeekFrom::End` / `SeekFrom::Current` の計算で overflow や
+    /// 負位置になる場合は silent な巨大値設定にせず明示エラー。
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         let new_pos = match pos {
             SeekFrom::Start(p) => p,
-            SeekFrom::End(p) => ((self.total_size as i64) + p) as u64,
-            SeekFrom::Current(p) => ((self.pos as i64) + p) as u64,
+            SeekFrom::End(p) => add_signed_offset(self.total_size, p)?,
+            SeekFrom::Current(p) => add_signed_offset(self.pos, p)?,
         };
         self.pos = new_pos;
         Ok(new_pos)
     }
+}
+
+/// `base + offset` を u64 で計算する。負結果は `InvalidInput`、overflow も同様。
+/// `std::io::Cursor::seek` と同じセマンティクス。
+fn add_signed_offset(base: u64, offset: i64) -> std::io::Result<u64> {
+    let result = if offset >= 0 {
+        base.checked_add(offset as u64)
+    } else {
+        let abs = offset.unsigned_abs();
+        base.checked_sub(abs)
+    };
+    result.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("seek to negative or overflow position (base={base}, offset={offset})"),
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -373,14 +379,156 @@ mod tests {
     fn size_hint_equals_init_plus_all_fragments() {
         let src = build_source(b"INIT", &[b"AAAA", b"BBBB", b"CCCC"]);
         assert_eq!(src.size_hint(), Some(4 + 4 + 4 + 4)); // 16
-        assert_eq!(src.total_size(), 16);
     }
 
     #[test]
-    fn peak_memory_hint_is_init_plus_max_fragment() {
-        // init = 4, max fragment = 12
+    fn peak_memory_hint_with_in_memory_fragments_sums_all_sizes() {
+        // build_source は InMemorySource を使う → fragments は in-memory 常駐。
+        // peak = init + Σ fragments = 4 + (2 + 12 + 2) = 20
         let src = build_source(b"INIT", &[b"AA", b"BBBBBBBBBBBB", b"CC"]);
-        assert_eq!(src.peak_memory_hint(), Some(4 + 12));
+        assert_eq!(src.peak_memory_hint(), Some(4 + 2 + 12 + 2));
+    }
+
+    /// Mock Range Request source — `is_in_memory_resident = false`、
+    /// `peak_memory_hint < size_hint` (= reader 1 個分のバッファのみ常駐)。
+    /// FragmentedSource の Range fragment 経路の peak 計算を test するため。
+    struct MockRangeSource {
+        bytes: Arc<[u8]>,
+        peak_buf: u64,
+    }
+
+    impl ContentSource for MockRangeSource {
+        fn open(&self) -> std::io::Result<Box<dyn ContentStream>> {
+            Ok(Box::new(std::io::Cursor::new(Arc::clone(&self.bytes))))
+        }
+        fn size_hint(&self) -> Option<u64> {
+            Some(self.bytes.len() as u64)
+        }
+        fn peak_memory_hint(&self) -> Option<u64> {
+            Some(self.peak_buf)
+        }
+        fn is_in_memory_resident(&self) -> bool {
+            false // Range Request 想定 = 常駐ゼロ
+        }
+    }
+
+    /// `is_in_memory_resident()` 直接検証: 全 fragment が InMemorySource なら
+    /// true。peak_memory_hint と独立に契約を検証することで、合算/Max 分岐の
+    /// 入力条件が明示的にテストされる。
+    #[test]
+    fn is_in_memory_resident_all_in_memory_returns_true() {
+        let src = build_source(b"INIT", &[b"AA", b"BB", b"CC"]);
+        assert!(src.is_in_memory_resident());
+    }
+
+    /// `is_in_memory_resident()` 直接検証: 1 つでも Range fragment が混ざれば
+    /// false。混在パターンでも streaming 経路扱いになることを保証。
+    #[test]
+    fn is_in_memory_resident_with_any_range_fragment_returns_false() {
+        let sources: Vec<Box<dyn ContentSource>> = vec![
+            Box::new(InMemorySource::new(b"AA".to_vec())),
+            Box::new(MockRangeSource {
+                bytes: Arc::from(vec![0u8; 16]),
+                peak_buf: 8,
+            }),
+            Box::new(InMemorySource::new(b"CC".to_vec())),
+        ];
+        let sizes = vec![2u64, 16, 2];
+        let src = FragmentedSource::new(b"INIT".to_vec(), sources, sizes);
+        assert!(!src.is_in_memory_resident());
+    }
+
+    /// Range fragment 経路 (`is_in_memory_resident = false`) では、active 1
+    /// reader 分の peak のみが寄与する (合計ではなく max)。
+    #[test]
+    fn peak_memory_hint_with_range_fragments_takes_active_max() {
+        let init = vec![0u8; 100];
+        // 3 Range fragments (各 size 10 MB、reader buf 4 MiB)
+        let make = |peak_buf: u64| {
+            Box::new(MockRangeSource {
+                bytes: Arc::from(vec![0u8; 10 * 1024 * 1024]),
+                peak_buf,
+            }) as Box<dyn ContentSource>
+        };
+        let sizes = vec![10 * 1024 * 1024u64; 3];
+        let sources: Vec<Box<dyn ContentSource>> = vec![
+            make(4 * 1024 * 1024), // 4 MiB reader buf
+            make(2 * 1024 * 1024), // 2 MiB reader buf
+            make(8 * 1024 * 1024), // 8 MiB reader buf — max
+        ];
+
+        let src = FragmentedSource::new(init.clone(), sources, sizes);
+        // peak = init (100) + 0 in-memory + max(4, 2, 8) MiB = 100 + 8 MiB
+        assert_eq!(src.peak_memory_hint(), Some(100 + 8 * 1024 * 1024));
+    }
+
+    /// Range と in-memory の混在ケース: in-memory は合計、Range は active 1 個分。
+    #[test]
+    fn peak_memory_hint_mixed_in_memory_and_range_separates_accounting() {
+        let init = vec![0u8; 100];
+        let in_mem_data = vec![0u8; 5 * 1024 * 1024]; // 5 MiB in-memory
+        let range_buf = 4 * 1024 * 1024u64; // 4 MiB Range buffer
+
+        let sources: Vec<Box<dyn ContentSource>> = vec![
+            Box::new(InMemorySource::new(in_mem_data.clone())),
+            Box::new(MockRangeSource {
+                bytes: Arc::from(vec![0u8; 10 * 1024 * 1024]),
+                peak_buf: range_buf,
+            }),
+            Box::new(InMemorySource::new(in_mem_data.clone())),
+        ];
+        let sizes = vec![
+            5 * 1024 * 1024u64,
+            10 * 1024 * 1024u64,
+            5 * 1024 * 1024u64,
+        ];
+        let src = FragmentedSource::new(init.clone(), sources, sizes);
+        // peak = init (100) + in_mem_total (5+5 MiB) + range_max (4 MiB)
+        assert_eq!(
+            src.peak_memory_hint(),
+            Some(100 + 10 * 1024 * 1024 + 4 * 1024 * 1024)
+        );
+    }
+
+    /// is_in_memory_resident heuristic の境界バグ防止: Range source の
+    /// `peak == size` (= min_req_size が fragment と同サイズ) で誤判定しない
+    /// ことを確認。明示 override (`MockRangeSource::is_in_memory_resident =
+    /// false`) で false-positive を構造的に防ぐ。
+    #[test]
+    fn peak_memory_hint_range_source_with_buf_equal_to_size_not_treated_as_resident() {
+        let init = vec![0u8; 10];
+        // size = 4 MiB、peak = 4 MiB (ぴったり一致)。default heuristic だと
+        // peak >= size で in-memory 扱いされるが、明示 override で false。
+        let sources: Vec<Box<dyn ContentSource>> = vec![Box::new(MockRangeSource {
+            bytes: Arc::from(vec![0u8; 4 * 1024 * 1024]),
+            peak_buf: 4 * 1024 * 1024,
+        })];
+        let sizes = vec![4 * 1024 * 1024u64];
+        let src = FragmentedSource::new(init.clone(), sources, sizes);
+        // 期待: init (10) + Range buf (4 MiB)。in-memory 扱いなら init (10) + 4 MiB に
+        // なるが、size==peak のときは数値的にも同じなので、この test は
+        // 「2 fragment 並べた場合に sum しないこと」で見るのが正確。次のテストで保証。
+        assert_eq!(src.peak_memory_hint(), Some(10 + 4 * 1024 * 1024));
+    }
+
+    /// false-positive の発火条件: 2 つの Range fragments が共に size == peak ==
+    /// 4 MiB。default heuristic だと両方 in-memory 扱いで合計 8 MiB と申告するが、
+    /// 明示 override で各々 false → max(4, 4) = 4 MiB だけ active reader 分。
+    #[test]
+    fn peak_memory_hint_two_range_sources_with_buf_eq_size_take_max_not_sum() {
+        let init = vec![0u8; 10];
+        let make = || {
+            Box::new(MockRangeSource {
+                bytes: Arc::from(vec![0u8; 4 * 1024 * 1024]),
+                peak_buf: 4 * 1024 * 1024,
+            }) as Box<dyn ContentSource>
+        };
+        let sources: Vec<Box<dyn ContentSource>> = vec![make(), make()];
+        let sizes = vec![4 * 1024 * 1024u64, 4 * 1024 * 1024u64];
+        let src = FragmentedSource::new(init.clone(), sources, sizes);
+        // 明示 override により Range 扱い → init + max(4, 4) MiB = init + 4 MiB
+        // (heuristic だと in-memory 扱いで init + 4+4 = init + 8 MiB になっていた)
+        assert_eq!(src.peak_memory_hint(), Some(10 + 4 * 1024 * 1024));
     }
 
     #[test]
@@ -421,6 +569,71 @@ mod tests {
         // 2nd read (inside read_exact): gets f2[0..2] = "CC" (2 bytes)
         // Total: "BBCC"
         assert_eq!(&buf, b"BBCC");
+    }
+
+    /// `std::io::Seek` 規約: 負位置への seek は `InvalidInput` で reject される。
+    #[test]
+    fn seek_to_negative_position_returns_invalid_input() {
+        let src = build_source(b"INIT", &[b"AAAA"]);
+        let mut reader = src.open().unwrap();
+
+        // SeekFrom::Current(-100) で pos=0 から -100 → reject
+        let err = reader
+            .seek(SeekFrom::Current(-100))
+            .expect_err("negative current seek must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // SeekFrom::End(-100) で total_size=8、8-100=-92 → reject
+        let err = reader
+            .seek(SeekFrom::End(-100))
+            .expect_err("negative end seek must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // 正常な負方向 seek (Current(-2) from pos=5) は OK
+        reader.seek(SeekFrom::Start(5)).unwrap();
+        let new_pos = reader.seek(SeekFrom::Current(-2)).unwrap();
+        assert_eq!(new_pos, 3);
+    }
+
+    /// SeekFrom::End / Current の add overflow も InvalidInput。
+    #[test]
+    fn seek_overflow_returns_invalid_input() {
+        let src = build_source(b"INIT", &[b"AAAA"]);
+        let mut reader = src.open().unwrap();
+        reader.seek(SeekFrom::Start(u64::MAX - 1)).unwrap();
+        let err = reader
+            .seek(SeekFrom::Current(i64::MAX))
+            .expect_err("u64 overflow must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    /// i64::MIN 境界 — `offset.unsigned_abs()` で 2^63 を取得し、`checked_sub`
+    /// で正しく処理されること。base < 2^63 なら負位置 reject、base >= 2^63 なら成功。
+    #[test]
+    fn seek_with_i64_min_offset_handles_boundary() {
+        let src = build_source(b"INIT", &[b"AAAA"]);
+        let mut reader = src.open().unwrap();
+
+        // base = 0、i64::MIN を引く → 0 - 2^63 = 負 → InvalidInput
+        let err = reader
+            .seek(SeekFrom::Current(i64::MIN))
+            .expect_err("0 + i64::MIN must be negative");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // base = 2^63 から i64::MIN を引く → 0 (= valid)
+        // Seek::Start(2^63) で base 設定して Current(i64::MIN) で 0 へ。
+        reader.seek(SeekFrom::Start(1u64 << 63)).unwrap();
+        let new_pos = reader
+            .seek(SeekFrom::Current(i64::MIN))
+            .expect("2^63 + i64::MIN should land at 0");
+        assert_eq!(new_pos, 0);
+
+        // i64::MAX も対象に。base = u64::MAX から +1 で overflow。
+        reader.seek(SeekFrom::Start(u64::MAX)).unwrap();
+        let err = reader
+            .seek(SeekFrom::Current(1))
+            .expect_err("u64::MAX + 1 must overflow");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]
@@ -512,79 +725,7 @@ mod tests {
         title_core::content_stream::contract::assert_content_source_contract(&src, &expected);
     }
 
-    // ---- 動的 Ticket 連携テスト (仕様 §4.3 の shrink ループ) ----
-
-    use crate::resource_pool::ResourcePool;
     use title_core::Processor;
-
-    /// `with_ticket` を bind した状態で fragment swap が ticket.extend/shrink を
-    /// 正しく呼ぶことを検証する。仕様 §4.3 の動的メモリパターンの核心。
-    #[test]
-    fn dynamic_ticket_extends_and_shrinks_on_fragment_swap() {
-        use std::io::Read;
-        let pool = std::sync::Arc::new(ResourcePool::with_single_limit(10_000));
-        let ticket = std::sync::Arc::new(pool.ticket(Some(0)));
-
-        // init = 100 bytes, frag0 = 1000, frag1 = 500
-        let init = vec![0u8; 100];
-        let f0 = vec![1u8; 1000];
-        let f1 = vec![2u8; 500];
-
-        // 外側で init 分を予約 (orchestrator が fetch_fragmented で行う相当)
-        ticket.extend(init.len()).unwrap();
-        assert_eq!(ticket.reserved(), 100);
-
-        let src = build_source(&init, &[&f0, &f1]).with_ticket(std::sync::Arc::clone(&ticket));
-        let mut reader = src.open().unwrap();
-
-        // fragment 0 にアクセス: extend(1000)
-        reader.seek(SeekFrom::Start(150)).unwrap();
-        let mut buf = [0u8; 10];
-        reader.read_exact(&mut buf).unwrap();
-        assert_eq!(
-            ticket.reserved(),
-            100 + 1000,
-            "after loading fragment 0, reserved = init + f0"
-        );
-
-        // fragment 1 へ swap: shrink(1000) → extend(500)
-        reader.seek(SeekFrom::Start(1200)).unwrap();
-        reader.read_exact(&mut buf).unwrap();
-        assert_eq!(
-            ticket.reserved(),
-            100 + 500,
-            "after swap to fragment 1, reserved = init + f1 (smaller)"
-        );
-
-        // reader drop: shrink(500)
-        drop(reader);
-        assert_eq!(ticket.reserved(), 100, "reader drop releases f1");
-    }
-
-    /// fragment extend が `total_limit` を超えると `OutOfMemory` エラーが返り、
-    /// reserved は変化しない (atomic な extend 失敗)。
-    #[test]
-    fn dynamic_ticket_rejects_oversized_fragment() {
-        use std::io::Read;
-        let pool = std::sync::Arc::new(ResourcePool::with_single_limit(200));
-        let ticket = std::sync::Arc::new(pool.ticket(Some(0)));
-
-        let init = vec![0u8; 50];
-        let big_frag = vec![1u8; 500]; // 200 - 50 = 150 < 500、limit 超え
-
-        ticket.extend(init.len()).unwrap();
-
-        let src = build_source(&init, &[&big_frag]).with_ticket(std::sync::Arc::clone(&ticket));
-        let mut reader = src.open().unwrap();
-        reader.seek(SeekFrom::Start(60)).unwrap();
-        let mut buf = [0u8; 1];
-        let err = reader
-            .read(&mut buf)
-            .expect_err("fragment extend should fail with OOM");
-        assert_eq!(err.kind(), std::io::ErrorKind::OutOfMemory);
-        // extend 失敗後の reserved は init.len のまま
-        assert_eq!(ticket.reserved(), init.len());
-    }
 
     // ---- 実 C2PA データを使う end-to-end テスト ----
     //

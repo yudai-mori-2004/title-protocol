@@ -16,13 +16,15 @@
 |---|---|---|
 | `single` | `min_req_size` (4 MiB) | `HttpRangeSource` / `ProxyRangeSource` が Range Request 対応サーバーから必要部分だけ取得 |
 | `sidecar` | manifest (~数十 KB) + `min_req_size` (4 MiB) | manifest は full fetch (small)、content は single と同じ Range Request 経路 |
-| `fragmented` | `init + 1 fragment` | `FragmentedSource` が init を常駐、fragments を 1 個ずつ lazy load (swap 時に shrink) |
+| `fragmented` | `init + (in-memory 常駐合計) + (active Range バッファ最大)` | `FragmentedSource` が init を常駐、fragments を 1 個ずつ lazy load。`fetch_fragmented` は probe loop 内で fragment ごとに `ticket.extend` を漸進呼び、最後に `peak_memory_hint` 確定値まで `shrink` で正味化 (legacy v0.1.0 verify handler の漸進予約パターンと同思想) |
 
 仕様 §4.3 の「Range Request パターン」: マニフェスト + チャンク 1 個分のピーク。c2pa-rs の `Reader::with_stream(content_type, &mut content)` は box header を seek で辿ってハッシュ検証もチャンク単位で行うため、Range Request reader を直接流せる。
 
-仕様 §4.3 の「フラグメントパターン」: 初期化セグメントを読み込んだ後、メディアセグメントを 1 つずつ処理して解放する。`FragmentedReader` が `Read + Seek` を実装して連結ストリーム view を提供しつつ、内部で fragment 1 個のみ in-memory に保持。`Arc<Ticket>` を bind することで fragment swap が動的に `extend` / `shrink` を呼ぶ shrink ループも有効化。
+仕様 §4.3 の「フラグメントパターン」: 初期化セグメントを読み込んだ後、メディアセグメントを 1 つずつ処理して解放する。`FragmentedReader` が `Read + Seek` を実装して連結ストリーム view を提供しつつ、内部で fragment 1 個のみ in-memory に保持。`fetch_fragmented` の probe loop で **漸進予約** (各 fragment 取得時点で ticket.extend) することで、admission gate は loop 中の中間状態を見て並列リクエストを throttle できる。
 
-監査 round1/2/3 の `should-fix-001` (フラグメント全 concat) と `should-fix-002` (漸進予約が事後カウンタ化) は **両方とも完全解消**。
+`ContentSource::is_in_memory_resident()` で source の常駐性を明示判別 (default heuristic は `peak >= size`、各 impl で override 推奨)。`peak_memory_hint` は in-memory 常駐 fragments の合計 + Range fragments の active 1 reader 分 (max) を分けて計算するため、Range 非対応サーバーで全 fragments が in-memory fallback しても実 RAM を正確に申告 (D-13 対策)。
+
+監査 round1/2 の `should-fix-001` (フラグメント全 concat) と `should-fix-002` (漸進予約が事後カウンタ化) は **両方とも完全解消**。round 3 で発見された loop 中 admission bypass / Seek 規約違反 / heuristic 脆さも漸進予約モード + `is_in_memory_resident` API で構造的に解決。
 
 ---
 
@@ -85,7 +87,7 @@ trait ContentFetcher {
 2. 対応していれば `HttpRangeSource` を返す
 3. 対応していなければ `fetch()` 経由で `InMemorySource` にフォールバック
 
-`HttpRangeSource::open()` は `http_range_client::HttpReader`(= `SyncBufferedHttpRangeClient<reqwest::blocking::Client>`) を新規構築する。c2pa-rs が期待する `Read + Seek` を実装。`min_req_size` を 64 KB に設定し、c2pa-rs の box header スキャンが過剰な小 Range Request を発行しないように緩衝する。
+`HttpRangeSource::open()` は `http_range_client::HttpReader`(= `SyncBufferedHttpRangeClient<reqwest::blocking::Client>`) を新規構築する。c2pa-rs が期待する `Read + Seek` を実装。`min_req_size` を 4 MiB に設定し、c2pa-rs の box header スキャンが過剰な小 Range Request を発行しないように緩衝する。
 
 ### 2.4 Proxy wire protocol 拡張
 
@@ -104,11 +106,11 @@ proxy (vsock) 経由でも Range Request を中継するため、`title-proxy` �
 
 `fetch_single` は `ContentSource::peak_memory_hint` で `ticket.extend` する:
 - In-memory ソース (mock / sidecar / 暗号化復号後): full size
-- Range Request ソース: reader バッファサイズのみ (64 KB)
+- Range Request ソース: reader バッファサイズのみ (4 MiB)
 
-`size_hint` (論理サイズ) は `compute_global_timeout` 用に保持。50 GB ファイルでも `peak_memory_hint = 64 KB` で admission を通過、`total_limit` をほぼ使わずに完走できる。テスト `fetch_single_streaming_source_reserves_only_peak_memory` で検証。
+`size_hint` (論理サイズ) は `compute_global_timeout` 用に保持。50 GB ファイルでも `peak_memory_hint = 4 MiB` で admission を通過、`total_limit` をほぼ使わずに完走できる。テスト `fetch_single_streaming_source_reserves_only_peak_memory` で検証。
 
-EOF 処理: `http_range_client::HttpReader` の Read impl は HTTP 416 を `ErrorKind::UnexpectedEof` で返す (Rust の `Ok(0)` 規約から外れる)。`EofSafeHttpReader` / `EofSafeProxyRangeReader` アダプタで `Ok(0)` に正規化し、`read_to_end` 等の標準 API と互換にした。
+EOF 処理: `http_range_client::HttpReader` の Read impl は HTTP 416 を `ErrorKind::UnexpectedEof` で返す (Rust の `Ok(0)` 規約から外れる)。`SafeRangeReader` (HttpRangeSource / ProxyRangeSource の両方で共有) で `Ok(0)` に正規化し、`read_to_end` 等の標準 API と互換にした。
 
 ---
 
@@ -145,7 +147,7 @@ EOF 処理: `http_range_client::HttpReader` の Read impl は HTTP 416 を `Erro
 
 ## 4. テスト追加
 
-最初の Phase 1〜5 実装で約 22 件、監査 round で **+14 件 (contract suite + 境界条件 + adversarial)**、3-input streaming round で **+19 件 (FragmentedSource + dynamic ticket + e2e c2pa-verify)** を追加。**workspace 合計 334 tests pass**。
+**workspace 合計 340 tests pass**。テスト内訳: 初期実装 + Round 1 監査強化 (contract suite + 境界条件 + adversarial) + 3-input streaming 拡張 (FragmentedSource + e2e c2pa-verify) + Round 4 漸進予約モード追加分 (Range fragment peak / i64::MIN 境界 / D-13 adversarial)。
 
 ### `crates/core`
 
@@ -173,19 +175,20 @@ EOF 処理: `http_range_client::HttpReader` の Read impl は HTTP 416 を `Erro
 - `protocol::tests::head_response_roundtrip_*` / `get_range_body_*` (5 件) — encode/decode roundtrip + truncated / 不正サイズ rejection。
 - `tests::head_returns_structured_response` / `get_range_returns_requested_slice` / `get_range_rejects_invalid_body_size` / `get_range_rejects_overflow_begin_plus_length` / `get_range_zero_length_returns_empty_without_upstream` (5 件) — handler の end-to-end (axum upstream + TCP proxy)。adversarial 入力 (overflow / length=0) を構造的に弾く経路を verify。
 
-### 3-input streaming round 追加分 (Fragmented + Ticket shrink + e2e c2pa-verify)
+### 3-input streaming round 追加分 (Fragmented + Sidecar Range + e2e c2pa-verify)
 
-- `fragmented_source::tests::*` (16 件) — `FragmentedSource` / `FragmentedReader` の網羅テスト:
-  - `size_hint_equals_init_plus_all_fragments` / `peak_memory_hint_is_init_plus_max_fragment` — メモリ会計の宣言値検証
+- `fragmented_source::tests::*` — `FragmentedSource` / `FragmentedReader` の網羅テスト:
+  - `size_hint_equals_init_plus_all_fragments` / `peak_memory_hint_with_in_memory_fragments_sums_all_sizes` — メモリ会計の宣言値検証
+  - **`peak_memory_hint_with_range_fragments_takes_active_max`** / **`peak_memory_hint_mixed_in_memory_and_range_separates_accounting`** / **`peak_memory_hint_range_source_with_buf_equal_to_size_not_treated_as_resident`** / **`peak_memory_hint_two_range_sources_with_buf_eq_size_take_max_not_sum`** — Mock Range Source で `is_in_memory_resident = false` 経路の peak 計算を独立検証 (Round 3 監査 観点 1/2/16 対策)
   - `read_to_end_returns_concatenated_bytes` / `seek_into_middle_fragment_returns_correct_bytes` / `read_at_eof_returns_zero` — Read+Seek 基本動作
+  - **`seek_to_negative_position_returns_invalid_input` / `seek_overflow_returns_invalid_input` / `seek_with_i64_min_offset_handles_boundary`** — `add_signed_offset` ヘルパによる `std::io::Cursor::seek` 互換 (Round 2 監査 B-7 対策、i64::MIN 境界を含む)
   - `fragment_swap_drops_previous_fragment_bytes` / `multiple_readers_load_fragments_independently` — fragment swap + 並列 reader の独立性
   - `fragmented_source_contract_basic` / `_uneven_fragments` / `_init_only_contract` / `_many_small_fragments` — 共通 contract suite を fragmented backend に適用 (D-14 系の read 規約準拠を含む)
-  - **`dynamic_ticket_extends_and_shrinks_on_fragment_swap`** — `with_ticket(Arc<Ticket>)` bind 時に fragment swap が `extend(new) → shrink(old)` を呼び、`pool.used` が「init + 現 fragment」に動的に反映されることを実測検証
-  - `dynamic_ticket_rejects_oversized_fragment` — extend 失敗で `OutOfMemory` を返し、reserved 量が崩れないこと
   - **`c2pa_verify_via_fragmented_source_init_only` / `_split_into_segments` / `_three_segments`** — 実 C2PA 署名付き JPEG を任意位置で split し FragmentedSource 経由で `c2pa::Reader::with_stream` に流して parse 成功することを e2e 検証。c2pa-rs が FragmentedReader の連結 view を JPEG として正しく扱う互換性を実 C2PA データで保証
-- `content_fetch::tests::fetch_fragmented_*` 更新 — 動的予約モード (init.len のみ事前予約 + reader 内部で extend/shrink) に合わせて assertion を書き直し
+- `content_fetch::tests::fetch_fragmented_concatenates_segments` / `_memory_limit_mid_fetch` — 漸進予約モードに合わせて assertion 更新 (probe loop 内 extend → 最終 peak shrink)
+- **`content_fetch::tests::fetch_fragmented_adversarial_in_memory_fragments_reject_mid_loop`** — 大量 in-memory fragments で loop 中の N 個目で reject されることを実証 (Round 3 監査 観点 6/9 = D-13 残存問題対策の reproduce)
 - `content_fetch::tests::fetch_sidecar_*` — content fetch が `fetch_streaming` 経路を通ることを確認
-- `resource_pool::tests` 更新 — `Ticket` が `AtomicU64` ベースに移行 (Sync 化) しても全 timeout/threshold テストが pass
+- `resource_pool::tests` — `Ticket` が `AtomicU64` ベースに移行 (Sync 化) しても全 timeout/threshold テストが pass
 
 ---
 
@@ -206,6 +209,12 @@ EOF 処理: `http_range_client::HttpReader` の Read impl は HTTP 416 を `Erro
    **問題は admission control の精度**: `ticket.extend` は ciphertext 分 (~100 MB) しか申告していないため、`admission_limit` の concurrency 制御が実態より 4 倍緩い。並列暗号化リクエスト 4 件で admission 上 400 MB 計上 → 実態 1.6 GB 使用、という乖離が出る。
 
    修正には `title_crypto::payload::parse_payload` を owned 返却に変える or `InMemorySource` を `Arc` 共有で plaintext と alias させる経路が必要 → task 19 のスコープを超えるので別 task。
+
+2. **in-memory fallback fragment の `Vec::with_capacity + read_to_end` で 1 fragment 分追加メモリ**
+
+   `FragmentedReader::ensure_fragment_loaded` で in-memory source (Range 非対応 fallback の `InMemorySource` 等) を読むとき、`entry.source.open()` が `Cursor<Arc<[u8]>>` を返し、`read_to_end(&mut bytes)` で別の `Vec<u8>` にバイト列をコピーする。`Arc<[u8]>` と `Vec<u8>` が並列存在する瞬間ピークが `peak_memory_hint` の申告値より 1 fragment 分多い。
+
+   `peak_memory_hint` には織り込まれていないため、admission gate が実態より 1 fragment 分緩い (= 並列 N リクエストで N × max_fragment 分の余剰 RAM)。修正案は `ContentSource::as_arc_bytes() -> Option<Arc<[u8]>>` のような fast-path を trait に追加し、`FragmentedReader` 側で in-memory のときは Vec コピーを省く。
 
 ### 完了済みだが補足
 
@@ -281,6 +290,42 @@ fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
 | ロジック | 1 重大 + 1 修正必要 + 1 推奨 | 全て修正済み |
 | 実装クリーンさ | 3 要修正 + 3 改善余地 | 全て修正済み |
 
+### 7.5 Round 2 / Round 3 監査結果 (3-input streaming 完走後の精査)
+
+3-input streaming 実装直後に Round 2 監査、それを受けた静的予約モード移行後に Round 3 監査、それを受けた漸進予約モード移行後に Round 4 監査 (= 本 task 完了確認用) を回した。各 round の主要発見と処理:
+
+#### Round 2 主要発見 (動的 ticket shrink モード時点)
+
+- **D-13 (重大)**: `fetch_fragmented` で各 fragment が `Arc<Ticket>` 共有経由で動的 extend/shrink するが、in-memory fallback (非 Range サーバー) のとき `ticket.extend(init)` のみ申告で残りの fragment が pool.used に出ない経路あり (admission bypass)。
+- **B-7 (修正必要)**: `FragmentedReader::seek` が負位置を silent に u64 wrap (例: -1 → u64::MAX) する。`std::io::Cursor::seek` 規約は `InvalidInput` で reject すべき。
+- **should-fix-001/002** (admission control 形骸化、reader 状態整合性問題)
+
+→ Round 3 で **動的 shrink モード撤回 → 静的予約一本化** で 4 件まとめて消す方向に倒した (legacy v0.1.0 の動的パターンは参考にしたが、fragmented では admission gate 精度を優先)。`B-7` は `add_signed_offset` ヘルパで `std::io::Cursor::seek` 互換に修正。
+
+#### Round 3 主要発見 (静的予約モード移行後の精査)
+
+- **観点 6/9 (重大)**: 静的予約モードでも `fetch_fragmented` の probe loop 中に in-memory fragments が `Arc<[u8]>` で確保される間、`ticket.extend` は loop 完了後の 1 回だけ。100 並列 × 100 fragments × 100 MB のシナリオで 10 GB が ticket 未申告でメモリに乗る経路 (D-13 が形を変えて残存)。
+- **観点 1/2 (懸念)**: `peak_memory_hint` の `peak >= size` heuristic が Range fragment の `min_req_size == size` で false-positive。
+- **観点 3 (要修正)**: `resource_pool.rs` Ticket doc が動的モード撤回後も「FragmentedReader が shrink を呼ぶ」と架空ユースケース言及。
+- **observ 13/15/16 (テスト欠落)**: `peak < size` 経路、i64::MIN 境界、D-13 adversarial の単体テストなし。
+
+→ Round 4 で **漸進予約モード移行 + `is_in_memory_resident()` API 追加 + 6 件のテスト追加 + doc 全面同期** で全件解消。
+
+#### Round 4 (本 task 完了確認)
+
+漸進予約モード + `is_in_memory_resident()` 明示 API + 関連テスト 6 件追加 + README/COVERAGE/Ticket doc 同期。Round 3 の指摘事項を全件解消し、新たな発見ゼロが目標 (= 監査を 1 周しても指摘が出ないレベルまで仕上げる)。
+
+#### 設計の収束方向 (Round 1 → 2 → 3 → 4)
+
+| Round | アプローチ | 何が良くて何が悪かったか |
+|---|---|---|
+| 1 | 全 concat | シンプルだが 50 GB で破綻 |
+| 2 | 動的 Arc<Ticket> shrink | 仕様 §4.3 擬似コードに忠実だが (a) admission bypass + (b) 状態整合性 + (c) reader 状態破壊 の 3 大問題 |
+| 3 | 静的 peak 1 回 extend | 動的の 3 大問題を消すが loop 中の bypass が残存 (D-13) |
+| 4 | 漸進予約 (legacy 流儀) + `is_in_memory_resident()` 明示 API | loop 中の bypass を構造的解消、heuristic 脆さも明示 API で消去 |
+
+「仕様 §4.3 擬似コードは結果不等式の例示であって規範ではない」という読み方の成熟と、「legacy v0.1.0 の漸進予約パターンが正解 (admission gate に loop 中の状態を伝える)」という発見の両方が Round 4 で揃った。
+
 ---
 
 ## 8. テスト設計の反省点と強化方針
@@ -314,16 +359,12 @@ audit round で以下の原則を確立し、全 ContentSource 実装に適用:
 
 ---
 
-## 9. 実機検証 (まだ)
-
-50 GB の実 MP4 を AWS Nitro Enclave 上で processor 通過させる実機テストは未実施。本 task で構造的に「メモリ上は安全」になったが、実 storage の Range Request スループット / vsock の Range レイテンシ等は実測が必要。EC2 ノード (54.250.143.52) は現状 FileLoader モード (旧経路) なので、Range Request 対応版をデプロイするのは別 task。
-
----
-
 ## 引き継ぎ事項
 
-ユーザーから「50 GB が明日来るので v0.1.3 では遅い、今必要」と明示の指摘を受けて立てた本 task は、`single` 入力の streaming 化までを安全に完走した。`fragmented` の per-fragment 化は本 task のスコープを超えており、v0.1.3 で `c2pa::Reader::with_fragment` API への置き換えを別 task で扱う前提。
+ユーザーから「50 GB が明日来るので v0.1.3 では遅い、今必要」と明示の指摘を受けて立てた本 task は、**全 3 入力タイプ (single / sidecar / fragmented) の streaming 化** + 仕様 §4.3 のメモリパターン要件達成まで完走した。
 
-monkey-patching 的な対応 (本番 fetch だけ修正、テスト/COVERAGE 反映なし) を避け、(a) trait の streaming 化、(b) 監査 finding の処理ログ更新、(c) COVERAGE.md 反映、(d) テストでの裏付けまで揃えた。Phase 1〜5 + audit round すべてで `cargo test --workspace --features title-tee/runtime-mock` の pass を維持 (workspace 合計 315 tests pass)。
+3-input streaming round で動的 ticket shrink モードを試みたが Round 2 監査で admission bypass / reader 整合性問題が浮上 → 静的予約モード一本化 → Round 3 監査で loop 中 admission bypass (D-13) の残存が発覚 → **漸進予約モード (legacy v0.1.0 verify handler パターン) + `is_in_memory_resident()` 明示 API** に最終収束。`fetch_fragmented` は probe loop 内で各 fragment を fetch_streaming した直後に `ticket.extend` し、loop 完了時に `peak_memory_hint` 確定値まで `shrink` で正味化する。これにより admission gate は loop 中の任意の時点で正確な pool.used を見て並列リクエストを throttle できる。
 
-監査エージェントは「重大バグ D-14 はテストでは絶対 catch できない設計だった」と指摘した。これを受けて contract test ヘルパ + 境界条件 + adversarial 入力テストを抜本的に強化した (§8 参照)。今後の `ContentSource` 実装は新規追加するたびに `content_stream::contract::assert_content_source_contract` に通すことで、同種のバグを構造的に防ぐ。
+monkey-patching 的な対応 (本番 fetch だけ修正、テスト/COVERAGE 反映なし) を避け、(a) trait の streaming 化、(b) 監査 finding の処理ログ更新、(c) COVERAGE.md 反映、(d) テストでの裏付けまで揃えた。Phase 1〜5 + audit round 1〜3 + 3-input round + Round 4 漸進予約への振り戻しすべてで `cargo test --workspace --features title-tee/runtime-mock` の pass を維持。
+
+監査エージェントは Round 1 で「重大バグ D-14 はテストでは絶対 catch できない設計だった」と指摘した。これを受けて contract test ヘルパ + 境界条件 + adversarial 入力テストを抜本的に強化し、Round 3 監査の D-13 / 観点 1 (heuristic 脆さ) / 観点 13 (i64::MIN 境界) も Round 4 で reproduce → green の adversarial test として追加した (§4 参照)。今後の `ContentSource` 実装は新規追加するたびに `content_stream::contract::assert_content_source_contract` に通し、`is_in_memory_resident()` を明示 override することで、同種のバグを構造的に防ぐ。

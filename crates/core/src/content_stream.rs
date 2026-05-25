@@ -84,8 +84,8 @@ pub trait ContentSource: Send + Sync {
     ///
     /// - In-memory: `bytes.len()` (= `size_hint`)。すでに heap にロード済み。
     /// - HTTP Range / Proxy Range: reader 内部の Range Request バッファのみ
-    ///   (典型的に 64 KB〜数 MB)。50 GB のファイルでもメモリは 64 KB に
-    ///   抑えられる。
+    ///   (`min_req_size` 連動、典型 数 MiB)。50 GB のファイルでも常駐メモリは
+    ///   このバッファサイズに抑えられる。
     /// - サイズ不明の場合は `None`。
     ///
     /// `ResourcePool::extend` はこの値を使って漸進予約する。`size_hint`
@@ -96,6 +96,32 @@ pub trait ContentSource: Send + Sync {
         // デフォルトは保守的に `size_hint` を返す (in-memory 想定)。
         // streaming source は override する。
         self.size_hint()
+    }
+
+    /// この source が「コンテンツ全体を物理メモリに常駐させているか」を返す。
+    ///
+    /// 仕様 §4.3 のメモリパターン集計で使う。`FragmentedSource` が「init +
+    /// in-memory 常駐合計 + active Range バッファ最大」を計算するときに、
+    /// 各 fragment source の常駐性をこの API で判別する。
+    ///
+    /// - `true` を返す source: コンテンツ全体が既にメモリにある (`InMemorySource`
+    ///   や、`fetch_streaming` で Range 非対応 fallback で full body fetch
+    ///   された結果)。`size_hint()` バイト分が `open()` 前から確保済み。
+    /// - `false` を返す source: コンテンツは遅延フェッチで、`open()` 後の
+    ///   reader が `peak_memory_hint()` 程度のバッファのみを保持する
+    ///   (`HttpRangeSource` / `ProxyRangeSource` 等)。
+    ///
+    /// 各 impl で明示 override すること。default は heuristic
+    /// (`peak_memory_hint() >= size_hint()`) だが、これは Range source の
+    /// `min_req_size` が偶然 fragment_size と一致するケース等で false-positive
+    /// する可能性があるため、impl 側で確定値を返すのが安全。
+    fn is_in_memory_resident(&self) -> bool {
+        match (self.peak_memory_hint(), self.size_hint()) {
+            (Some(peak), Some(size)) => peak >= size,
+            // 不明 (size_hint/peak_memory_hint のどちらかが None) なら safer は
+            // false = 「常駐扱いしない」。
+            _ => false,
+        }
     }
 }
 
@@ -146,6 +172,12 @@ impl ContentSource for InMemorySource {
     fn size_hint(&self) -> Option<u64> {
         Some(self.bytes.len() as u64)
     }
+
+    /// `Arc<[u8]>` で全バイトが常駐しているので常に `true`。
+    /// (default heuristic でも true になるが、契約として明示する。)
+    fn is_in_memory_resident(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,9 +188,9 @@ impl ContentSource for InMemorySource {
 /// 呼べるよう `pub` で公開している (`#[doc(hidden)]` で API docs からは隠す)。
 ///
 /// 仕様 §4.3 のメモリパターンと Rust の `std::io::Read` 規約を構造的に検証する。
-/// 監査でしか発見できないバグ (例: 上流 http-range-client crate の `Read::read`
-/// が `Ok(length)` を返すが実際の write は `bytes.len()` < length しかないケース)
-/// を、ContentSource 実装ごとに同じヘルパで catch するための共通テスト。
+/// `Read::read` が嘘の `Ok(buf.len())` を返して未初期化バイトを valid 扱い
+/// する経路のような構造的バグを、ContentSource 実装ごとに同じヘルパで catch
+/// するための共通テスト。
 #[doc(hidden)]
 pub mod contract {
     use super::ContentSource;
@@ -174,7 +206,7 @@ pub mod contract {
     /// 1. `size_hint()` が `expected_bytes.len()` と一致
     /// 2. `open()` で得た reader を `read_to_end` した結果が `expected_bytes` と一致
     /// 3. `seek(SeekFrom::Start(i)) → read(buf)` が `expected_bytes[i..i+n]` と一致
-    /// 4. **D-14 検出**: `read(&mut [0xCC; N])` で N が file 末尾を跨ぐとき、
+    /// 4. **Read::read 規約**: `read(&mut [0xCC; N])` で N が file 末尾を跨ぐとき、
     ///    返り値 `K < N` であり、`buf[K..]` は 0xCC のまま (= read が touch していない)
     /// 5. EOF を超えた `read` は `Ok(0)` を返す
     /// 6. 複数 `open()` の reader が独立した position を持つ
@@ -221,13 +253,12 @@ pub mod contract {
         );
     }
 
-    /// D-14: `read(&mut buf) -> Ok(N)` が返ったとき、`buf[..N]` のみが実書き込み
+    /// `Read::read(&mut buf) -> Ok(N)` が返ったとき、`buf[..N]` のみが実書き込み
     /// された保証を検証する。末尾を跨ぐ場合に N < buf.len() となるはずで、
     /// `buf[N..]` は呼び出し側が事前に置いた毒パターン (0xCC) のままであるべき。
     ///
-    /// http-range-client の `Read::read` バグ (`Ok(length)` 固定返却) を踏むと
-    /// このテストは fail する: 呼び出し側は `Ok(length)` を信じて `buf[..length]`
-    /// を valid と見なすが、buf[K..length] は 0xCC のままなので一致しない。
+    /// `Ok(length)` 固定返却型のバグ実装を踏むと、呼び出し側は `buf[..length]`
+    /// を valid と見なすが buf[K..length] は 0xCC のままで、このテストが fail する。
     fn check_read_does_not_lie_about_byte_count(source: &dyn ContentSource, expected: &[u8]) {
         if expected.is_empty() {
             return;
@@ -261,8 +292,8 @@ pub mod contract {
                             0xCC,
                             "Read::read returned Ok({}) but wrote into buf[{}], \
                              which should have been untouched (poison byte 0xCC). \
-                             This is the http-range-client D-14 bug or equivalent: \
-                             returning `Ok(buf.len())` without filling the whole buffer. \
+                             This indicates the impl returned `Ok(buf.len())` \
+                             without filling the whole buffer. \
                              At byte offset {} from poison region start.",
                             n,
                             untouched_start + i,

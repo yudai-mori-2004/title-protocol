@@ -191,14 +191,13 @@ pub fn process_request(
             (fragment_urls.len() as u64).saturating_mul(crate::limits::MAX_FRAGMENT_SIZE as u64),
         ),
     };
-    // Ticket は Arc 化して下流 (fetch_content → FragmentedSource → FragmentedReader)
-    // で共有する。仕様 §4.3 の「extend → 検証 → shrink」ループは reader 内部で
-    // 駆動されるため、ticket を共有できないと shrink hook が機能しない。
-    // Ticket は AtomicU64 ベースで Sync なので Arc 共有可能。
-    let ticket = Arc::new(
-        pool.try_admit(size_hint)
-            .ok_or(OrchestratorError::AdmissionRejected)?,
-    );
+    // Ticket は orchestrator がスコープを所有し、`fetch_content` には `&Ticket`
+    // を借用で渡す。メモリ会計の方式は input type ごとに `fetch_content` の
+    // doc を参照 (single/sidecar は peak で 1 回 extend、fragmented は probe loop
+    // 内で漸進 extend + 最終 shrink)。
+    let ticket = pool
+        .try_admit(size_hint)
+        .ok_or(OrchestratorError::AdmissionRejected)?;
 
     // Step 2: Fetch content from URL(s) with memory tracking
     // Spec §5.2, §4.2

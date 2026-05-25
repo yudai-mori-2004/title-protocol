@@ -203,6 +203,13 @@ impl ContentSource for HttpRangeSource {
     fn peak_memory_hint(&self) -> Option<u64> {
         Some(self.min_req_size as u64)
     }
+
+    /// Range Request 経路は常駐ゼロ。`open()` ごとに `min_req_size` のバッファを
+    /// 持つ reader が生成されるだけで、source 自体は URL + content_length 等の
+    /// メタデータのみ。
+    fn is_in_memory_resident(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -211,24 +218,24 @@ impl ContentSource for HttpRangeSource {
 // の両方で再利用する。
 // ---------------------------------------------------------------------------
 
-/// `http_range_client::SyncBufferedHttpRangeClient<T>` の `Read` 実装は複数の
+/// `http_range_client::SyncBufferedHttpRangeClient<T>` の `Read` 実装は次の
 /// 規約違反を持つため、本ラッパで吸収する:
 ///
-/// 1. **D-14**: `read(&mut buf)` が常に `Ok(buf.len())` を返すが、実際に書き込まれた
-///    バイト数は `bytes.len()` (file 末尾を跨ぐと < buf.len())。残りのバッファ範囲
-///    は呼び出し側のデータが残ったまま、もしくは uninitialized で valid 扱いされる。
-///    本番 50 GB MP4 でファイル末尾を跨ぐ read 時に偽データを c2pa-rs に渡してしまう。
-/// 2. **EOF が `UnexpectedEof` エラー**: HTTP 416 を `Ok(0)` ではなく
-///    `ErrorKind::UnexpectedEof` で返すため `read_to_end` などの標準 API が壊れる。
-/// 3. **末尾跨ぎ read で未消費バッファをロスト**: `get_request_range` が
-///    `begin+length > tail` の判定だけで「先に fetch」を決め、`split_to` を呼んで
-///    バッファを縮める。直後の fetch が 416 で失敗すると、`split_to` で残った
-///    バッファ末尾 (= 未消費の valid データ) も読めない状態で error が伝播する。
+/// 1. `read(&mut buf)` が常に `Ok(buf.len())` を返すが、実書き込みバイト数は
+///    `bytes.len()` (file 末尾を跨ぐと < buf.len())。残りのバッファは
+///    呼び出し側のデータが残ったまま valid 扱いされ、c2pa-rs に偽データを
+///    渡してしまう。
+/// 2. EOF を `Ok(0)` ではなく HTTP 416 → `ErrorKind::UnexpectedEof` で返すため
+///    `read_to_end` などの標準 API が壊れる。
+/// 3. `get_request_range` が `begin+length > tail` の判定だけで「先に fetch」を
+///    決め、`split_to` を呼んでバッファを縮める。直後の fetch が 416 で失敗
+///    すると、`split_to` で残ったバッファ末尾の未消費 valid データも読めない
+///    状態で error が伝播する。
 ///
-/// **対策**: `file_size` を保持し、EOF を超える `get_bytes(N)` を発行する前に
-/// `N = min(buf.len(), file_size - pos)` で clip する。これにより `begin+length > tail`
-/// が「最後の有効バイトの直後」までしか発火せず、未消費バッファのロストも、
-/// 余計な 416 リクエストも、buffer 越境による偽データ injection も起きない。
+/// 対策: `file_size` を保持し、EOF を超える `get_bytes(N)` を発行する前に
+/// `N = min(buf.len(), file_size - pos)` で clip。これで `begin+length > tail`
+/// が「最後の有効バイトの直後」までしか発火せず、未消費バッファのロストも
+/// 余計な 416 リクエストも buffer 越境の偽データも起きない。
 ///
 /// `Seek` は内部にデリゲートしつつ自前で `pos` を追跡し、`Read` と同じ EOF 判定
 /// を共有する。`HttpRangeSource` / `ProxyRangeSource` の両方で再利用される。
@@ -452,7 +459,7 @@ mod tests {
     //
     // `title_core::content_stream::contract` を呼んで Read::read 規約準拠を含む
     // 全プロパティを検証する。特に「末尾跨ぎ read で未初期化バイトを valid と
-    // 誤申告しない」 (D-14) を境界サイズで catch する。
+    // 誤申告しない」を境界サイズで catch する。
 
     fn body_with_pattern(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
@@ -468,8 +475,8 @@ mod tests {
     }
 
     /// 末尾跨ぎ (file_len % min_req_size != 0) を意図的にテストする。
-    /// D-14 が未修正だとここで read が嘘の `Ok(N)` を返し、毒バイト 0xCC が
-    /// valid データ扱いされて contract が fail する。
+    /// 上流の `Read::read` が `Ok(buf.len())` を嘘で返すと、未初期化の毒バイト
+    /// 0xCC が valid データ扱いされて contract が fail する経路を catch する。
     #[test]
     fn http_range_source_contract_tail_not_aligned_to_min_req() {
         run_contract_suite(/* body_len */ 1023, /* min_req */ 256);

@@ -82,11 +82,10 @@ pub const CHUNKED_SENTINEL: u32 = u32::MAX;
 /// chunk length is expected, never as a content length.
 ///
 /// 値は `CHUNKED_SENTINEL` (= `u32::MAX`) とは**別ビットパターン**
-/// (`u32::MAX - 1`) を選んでいる。両者が同値だった頃は wire 上で同じ
-/// 4 バイトが位置で意味を変える設計だったが、将来 chunk_len 位置で
-/// SENTINEL を別目的に使う拡張を入れた場合に silent regression が起きる
-/// 構造的リスクがあったため、Round 3 で別値に分離した。real chunk_len の
-/// 上限は `MAX_WIRE_CHUNK_BYTES = 4 MiB` で、`u32::MAX - 1` と十分離れる。
+/// (`u32::MAX - 1`) を選ぶ。両者が同値だと wire 上で同じ 4 バイトが位置で
+/// 意味を変える設計になり、chunk_len 位置で SENTINEL を別目的に使う将来拡張
+/// で silent regression を起こすため。real chunk_len の上限は
+/// `MAX_WIRE_CHUNK_BYTES = 4 MiB` で、`u32::MAX - 1` と十分離れる。
 pub const CHUNKED_TRUNCATED: u32 = u32::MAX - 1;
 
 /// 1 chunk あたりの最大バイト数。proxy 側は `bytes_stream` から受け取った

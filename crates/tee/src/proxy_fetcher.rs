@@ -635,6 +635,12 @@ impl ContentSource for ProxyRangeSource {
     fn peak_memory_hint(&self) -> Option<u64> {
         Some(self.min_req_size as u64)
     }
+
+    /// proxy 経由 Range Request も常駐ゼロ。`HttpRangeSource` と同じ理屈で
+    /// `false`。reader 内部の vsock/TCP 接続バッファのみが active 時の RAM。
+    fn is_in_memory_resident(&self) -> bool {
+        false
+    }
 }
 
 
@@ -761,7 +767,7 @@ mod tests {
         }
     }
 
-    // ---- Range Request 経由 (Spec §4.3, Phase 4) ----
+    // ---- Range Request 経由 (Spec §4.3) ----
 
     /// 複数リクエスト (HEAD + GET_RANGE × N) を受ける fake proxy。
     /// 1 接続 = 1 リクエストの wire protocol を満たすため、connection ごとに新 thread。
@@ -905,9 +911,8 @@ mod tests {
 
     // ---- ContentSource contract suite (proxy Range backend) ----
     //
-    // HttpRangeSource と同じ contract を proxy 経由でも回す。直結版で fixed した
-    // D-14 とその同類バグが、proxy backend (SyncHttpRangeClient impl 経由) でも
-    // 起きないことを構造的に保証する。
+    // HttpRangeSource と同じ contract を proxy 経由でも回す。Read::read 規約
+    // (返却 N に対し buf[..N] のみ valid) を境界条件込みで構造的に保証する。
 
     fn run_proxy_contract(body_len: usize, min_req_size: usize) {
         let body: Vec<u8> = (0..body_len).map(|i| (i % 251) as u8).collect();

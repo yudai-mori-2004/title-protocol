@@ -289,7 +289,7 @@ async fn handle_solana_extension(
     //       RAM に乗ったあと弾く」という従来の弱点が塞がれる。
     // 仕様 §4.1 / §4.2 の memory budget を `/extension/solana` も同じ枠で守る。
     const MAX_OFFCHAIN_DATA_BYTES: usize = 1024 * 1024;
-    let mut ticket = state
+    let ticket = state
         .pool
         .try_admit(Some(MAX_OFFCHAIN_DATA_BYTES as u64))
         .ok_or_else(|| {

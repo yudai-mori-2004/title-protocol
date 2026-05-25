@@ -517,9 +517,8 @@ pub(crate) mod tests {
         assert_eq!(body.as_ref(), sealed.as_slice());
     }
 
-    /// Round 3 K4 new-should-fix-001 — 4xx/5xx 透過の回帰防止。
-    /// TEE が返した HTTP status (`429`, `503`, `400`, `504`) が
-    /// Gateway response にそのまま反映されることを確認する。
+    /// TEE が返した HTTP status (`429`, `503`, `400`, `504`) が Gateway
+    /// response にそのまま反映されることを確認する (4xx/5xx 透過の回帰防止)。
     async fn assert_process_status_propagates(tee_status: u16, expected: StatusCode) {
         let mock = MockTeeClient::new();
         *mock.process_http_error.lock().unwrap() = Some((tee_status, format!("tee said {tee_status}")));

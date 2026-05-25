@@ -4,26 +4,27 @@
 //!
 //! Spec §3.2 c2pa-verify
 //!
-//! Validates the C2PA signature chain and extracts manifest information.
-//! This processor is mandatory for all requests — it is always executed
-//! regardless of whether the client includes it in `processor_ids`.
+//! Validates the C2PA signature chain and returns the **full C2PA manifest
+//! store** (as produced by `c2pa::Reader::json()`) as a [`serde_json::Value`].
+//! Validity is signalled by **presence**: a successful processor run means the
+//! manifest validated `Valid` or `Trusted`; an invalid manifest causes the
+//! processor to return [`ProcessorError`] and no manifest data is recorded.
 //!
-//! ## Outputs
-//! - `validation`: `"valid"` or `"invalid"` (spec §3.2)
-//! - `signer`: issuer and cert serial from the signing certificate
-//! - `timestamp`: C2PA signing timestamp (ISO 8601)
-//! - `claim_generator`: signing tool/device name
-//! - `actions`: action history from the manifest
+//! ## Output schema
+//!
+//! The returned JSON follows the C2PA standard ManifestStore layout (`active_manifest`,
+//! `manifests`, `validation_results`, `validation_state`, etc.). Downstream consumers
+//! are expected to parse with a C2PA-aware parser. Preserving the manifest store
+//! verbatim is what lets a third party re-verify the manifest's intrinsic validity
+//! (structure, signature, cert chain) without holding the source content.
 //!
 //! ## signature_hash utility
 //!
-//! `compute_signature_hash()` computes SHA-256 of the Active Manifest's
-//! COSE signature bytes, formatted as `"sha256:hex..."`. This value
-//! is used as the protocol-level content identifier (spec §1.3) and
-//! appears in the top-level `ProcessResponse` (spec §2.3).
-//!
-//! The utility is public because the TEE orchestration layer also
-//! needs it when assembling the final response.
+//! [`compute_signature_hash`] computes SHA-256 of the Active Manifest's COSE
+//! signature bytes, formatted as `"sha256:hex..."`. This value is used as the
+//! protocol-level content identifier (spec §1.3) and appears in the top-level
+//! `ProcessResponse` (spec §2.3). The utility is public because the TEE
+//! orchestration layer also needs it when assembling the final response.
 
 use crate::content_stream::ContentStream;
 use crate::jumbf;
@@ -100,14 +101,15 @@ impl Processor for C2paVerifyProcessor {
     /// * `content_type` — MIME type of the content
     ///
     /// # Returns
-    /// `C2paVerifyOutput` serialized as `serde_json::Value`.
+    /// The full C2PA ManifestStore JSON ([`serde_json::Value`]) as produced by
+    /// `c2pa::Reader::json()`. Validity is signalled by presence: this method
+    /// returns `Ok(value)` only when `validation_state` is `Valid` or `Trusted`.
     ///
-    /// If the C2PA signature is invalid, `validation` is `"invalid"` but
-    /// the processor does NOT return an error — an invalid verification
-    /// result is still a valid processor output (spec §3.2).
-    ///
-    /// Returns `ProcessorError` only when the content cannot be parsed
-    /// at all (no C2PA data, corrupt file, etc.).
+    /// # Errors
+    /// Returns [`ProcessorError::C2paVerificationFailed`] when:
+    /// - the content has no C2PA data or cannot be parsed,
+    /// - no active manifest exists,
+    /// - `validation_state == Invalid` (signature chain or hash validation failed).
     fn process(
         &self,
         content: &mut dyn ContentStream,

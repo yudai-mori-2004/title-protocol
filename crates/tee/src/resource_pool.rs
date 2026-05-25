@@ -19,8 +19,7 @@
 //! and `Drop` releases what's left. Each ticket also enforces a chunk
 //! timeout (max gap between extends) and a global timeout (Spec §4.4).
 
-use std::cell::Cell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -144,19 +143,26 @@ impl ResourcePool {
 /// RAII reservation handle. Releases all reserved bytes on Drop.
 /// Spec §4.2
 ///
-/// A Ticket belongs to a single request thread and must not be shared
-/// across threads. `Send` (所有権の移動は OK、例えば `tokio::task::spawn_blocking`
-/// にクロージャごと move する) だが `!Sync` (内部の `Cell<Instant>` のため、
-/// `&Ticket` を別スレッドに同時に貸せない)。共有を試みると借用検査で弾かれる。
+/// `Send + Sync`: 所有権の move も、`&Ticket` を `Arc` で複数スレッドに共有
+/// するのも可能。仕様 §4.3 のフラグメントメモリパターンを実装する
+/// [`crate::fragmented_source::FragmentedReader`] や、Range Request reader が
+/// 内部 buffer rotation 時に `ticket.shrink` を呼ぶケースで `Arc<Ticket>` を
+/// 持てる構造。
+///
+/// 旧設計は `Cell<Instant>` で `!Sync` だったが、`last_activity_nanos` を
+/// `AtomicU64` (created_at からのナノ秒) に置き換えて Sync 化した。
+/// atomic 化のオーバーヘッドは extend 1 回あたり 1 atomic store (~ns) で、
+/// admission control の精度向上に比べ無視できる。
 pub struct Ticket {
     pool: Arc<ResourcePool>,
     reserved: AtomicUsize,
     /// When this Ticket was created.
     created_at: Instant,
-    /// Last time data was received (extend was called).
-    /// Uses `Cell` for interior mutability -- safe because Ticket is
-    /// accessed from a single request thread.
-    last_activity: Cell<Instant>,
+    /// 最後に `extend` が成功した時刻を `created_at` からのナノ秒で保持する。
+    /// `Instant` 直接保持ではなく `AtomicU64` に正規化することで Ticket が
+    /// `Sync` になる。precision は ns、最大 ~584 年で overflow するため実用上
+    /// 問題なし。
+    last_activity_nanos: AtomicU64,
     /// Global timeout for this request.
     /// Spec §4.4 -- adaptive: min(max, base + size/speed)
     global_timeout: Duration,
@@ -198,10 +204,24 @@ impl Ticket {
             pool,
             reserved: AtomicUsize::new(0),
             created_at: now,
-            last_activity: Cell::new(now),
+            // 作成時点で last_activity = 0 ns (= created_at と一致)
+            last_activity_nanos: AtomicU64::new(0),
             global_timeout,
             chunk_timeout,
         }
+    }
+
+    /// 現在時刻と created_at の差分 (ns) を返す。`u64::saturating_from` 相当の
+    /// 安全変換 — 584 年 (= u64::MAX ns) を超える request は実用上ありえない。
+    fn now_nanos(&self) -> u64 {
+        self.created_at.elapsed().as_nanos() as u64
+    }
+
+    /// `last_activity` を Duration として復元する。
+    fn last_activity_elapsed(&self) -> Duration {
+        let now = self.now_nanos();
+        let last = self.last_activity_nanos.load(Ordering::Acquire);
+        Duration::from_nanos(now.saturating_sub(last))
     }
 
     /// Reserve additional bytes from the pool.
@@ -225,7 +245,7 @@ impl Ticket {
 
         // Check chunk timeout
         // Spec §4.4 -- time since last data arrival
-        if self.last_activity.get().elapsed() > self.chunk_timeout {
+        if self.last_activity_elapsed() > self.chunk_timeout {
             return Err(TicketError::ChunkTimeout(
                 LimitsError::ChunkTimeoutExceeded {
                     timeout: self.chunk_timeout,
@@ -236,7 +256,8 @@ impl Ticket {
         self.extend_inner(additional)?;
 
         // Update last_activity on successful extend
-        self.last_activity.set(Instant::now());
+        self.last_activity_nanos
+            .store(self.now_nanos(), Ordering::Release);
 
         Ok(())
     }
@@ -306,7 +327,7 @@ impl Ticket {
 
     /// Check whether the chunk timeout has been exceeded.
     pub fn is_chunk_timeout_exceeded(&self) -> bool {
-        self.last_activity.get().elapsed() > self.chunk_timeout
+        self.last_activity_elapsed() > self.chunk_timeout
     }
 
     /// Elapsed time since Ticket creation.

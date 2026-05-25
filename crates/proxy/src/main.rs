@@ -9,8 +9,12 @@
 //!   to limit blast radius if a sibling host process opens a vsock socket.
 //! - otherwise: TCP `127.0.0.1:8000` (dev mode).
 
-mod handler;
-mod protocol;
+// `handler` と `protocol` は lib.rs から公開済み。binary では crate ルート
+// (= `title_proxy::*`) 経由で参照する。`protocol` は vsock 経路 (Linux + vendor-aws)
+// でのみ使うため、cfg 経由で参照されない target では unused 警告を抑制する。
+use title_proxy::handler;
+#[allow(unused_imports)]
+use title_proxy::protocol;
 
 const DEFAULT_LISTEN_PORT: u32 = 8000;
 
@@ -334,6 +338,197 @@ mod tests {
         let (status, body) = read_response(&mut stream).await;
         assert_eq!(status, 0, "proxy error status");
         assert!(String::from_utf8(body).unwrap().contains("Proxy error"));
+    }
+
+    #[tokio::test]
+    async fn head_returns_structured_response() {
+        use crate::protocol::decode_head_response;
+        use axum::http::Response;
+
+        // Upstream that responds to HEAD with Content-Length / Accept-Ranges / ETag.
+        let app = Router::new().route(
+            "/file.mp4",
+            axum::routing::head(|| async {
+                Response::builder()
+                    .status(200)
+                    .header("Content-Length", "1048576")
+                    .header("Accept-Ranges", "bytes")
+                    .header("ETag", "\"abc-123\"")
+                    .header("Content-Type", "video/mp4")
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }),
+        );
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(upstream, app).await.unwrap();
+        });
+
+        let proxy = start_proxy().await;
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy}"))
+            .await
+            .unwrap();
+        write_request(
+            &mut stream,
+            "HEAD",
+            &format!("http://127.0.0.1:{upstream_port}/file.mp4"),
+            &[],
+        )
+        .await;
+
+        let (status, body) = read_response(&mut stream).await;
+        assert_eq!(status, 200);
+        let parsed = decode_head_response(&body).expect("decode HEAD response");
+        assert_eq!(parsed.content_length, 1_048_576);
+        assert!(parsed.accepts_ranges);
+        assert_eq!(parsed.etag.as_deref(), Some("\"abc-123\""));
+        assert_eq!(parsed.content_type.as_deref(), Some("video/mp4"));
+    }
+
+    #[tokio::test]
+    async fn get_range_returns_requested_slice() {
+        use crate::protocol::encode_get_range_body;
+        use axum::extract::Request;
+        use axum::http::{header, Response};
+
+        // Upstream that honors Range requests on a fixed 4 KB body.
+        let app = Router::new().route(
+            "/data.bin",
+            get(|req: Request| async move {
+                let body: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+                let range = req
+                    .headers()
+                    .get(header::RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.strip_prefix("bytes="))
+                    .and_then(|s| s.split_once('-'))
+                    .and_then(|(b, e)| {
+                        let b: usize = b.parse().ok()?;
+                        let e: usize = e.parse().ok()?;
+                        Some((b, e))
+                    });
+                if let Some((begin, end)) = range {
+                    let clipped_end = end.min(body.len() - 1);
+                    let slice = body[begin..=clipped_end].to_vec();
+                    Response::builder()
+                        .status(206)
+                        .header(header::CONTENT_LENGTH, slice.len())
+                        .header(
+                            header::CONTENT_RANGE,
+                            format!("bytes {begin}-{clipped_end}/{}", body.len()),
+                        )
+                        .body(axum::body::Body::from(slice))
+                        .unwrap()
+                } else {
+                    Response::builder()
+                        .status(200)
+                        .header(header::CONTENT_LENGTH, body.len())
+                        .body(axum::body::Body::from(body))
+                        .unwrap()
+                }
+            }),
+        );
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(upstream, app).await.unwrap();
+        });
+
+        let proxy = start_proxy().await;
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy}"))
+            .await
+            .unwrap();
+
+        // Request bytes 1000..=1099 (100 bytes)
+        let body = encode_get_range_body(1000, 100);
+        write_request(
+            &mut stream,
+            "GET_RANGE",
+            &format!("http://127.0.0.1:{upstream_port}/data.bin"),
+            &body,
+        )
+        .await;
+
+        let (status, response_body) = read_response(&mut stream).await;
+        assert_eq!(status, 206);
+        assert_eq!(response_body.len(), 100);
+        let expected: Vec<u8> = (1000..1100).map(|i| (i % 251) as u8).collect();
+        assert_eq!(response_body, expected);
+    }
+
+    /// adversarial: begin + length が u64 を overflow する入力を弾く。
+    /// `saturating_add` で値が丸まると意味不明な Range ヘッダが upstream に
+    /// 流れてしまうため、handler 側で明示的に reject する経路を検証。
+    #[tokio::test]
+    async fn get_range_rejects_overflow_begin_plus_length() {
+        use crate::protocol::encode_get_range_body;
+
+        let proxy = start_proxy().await;
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy}"))
+            .await
+            .unwrap();
+
+        // begin=u64::MAX, length=2 → u64 overflow
+        let body = encode_get_range_body(u64::MAX, 2);
+        write_request(
+            &mut stream,
+            "GET_RANGE",
+            "http://example.com/x.bin",
+            &body,
+        )
+        .await;
+        let (status, msg) = read_response(&mut stream).await;
+        assert_eq!(status, 0, "overflow must be proxy-internal reject");
+        let msg = String::from_utf8(msg).unwrap();
+        assert!(
+            msg.contains("overflows"),
+            "error message should mention overflow, got: {msg}"
+        );
+    }
+
+    /// length=0 の GET_RANGE は upstream に行かず空応答を返す (early return パス)。
+    /// `end_inclusive` 計算の `saturating_sub(1)` 罠を踏まないことを保証する。
+    #[tokio::test]
+    async fn get_range_zero_length_returns_empty_without_upstream() {
+        use crate::protocol::encode_get_range_body;
+
+        let proxy = start_proxy().await;
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy}"))
+            .await
+            .unwrap();
+
+        let body = encode_get_range_body(1000, 0);
+        write_request(
+            &mut stream,
+            "GET_RANGE",
+            // upstream URL は実際には到達できなくてもよい
+            "http://127.0.0.1:1/should-not-be-called",
+            &body,
+        )
+        .await;
+        let (status, response_body) = read_response(&mut stream).await;
+        assert_eq!(status, 200, "length=0 should succeed");
+        assert!(response_body.is_empty(), "length=0 returns empty body");
+    }
+
+    #[tokio::test]
+    async fn get_range_rejects_invalid_body_size() {
+        let proxy = start_proxy().await;
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy}"))
+            .await
+            .unwrap();
+        // 16 byte ではなく 8 byte の body を送る → proxy 内部エラー (status 0)
+        write_request(
+            &mut stream,
+            "GET_RANGE",
+            "http://example.com/data.bin",
+            &[0u8; 8],
+        )
+        .await;
+        let (status, body) = read_response(&mut stream).await;
+        assert_eq!(status, 0);
+        assert!(String::from_utf8(body).unwrap().contains("Invalid GET_RANGE"));
     }
 
     #[tokio::test]

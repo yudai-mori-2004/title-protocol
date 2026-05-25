@@ -24,9 +24,10 @@
 //!
 
 use std::io::Read;
+use std::sync::Arc;
 use std::time::Duration;
 
-use title_core::InputData;
+use title_core::{ContentSource, InMemorySource, InputData};
 
 use crate::limits::{self, LimitsError};
 use crate::resource_pool::{Ticket, TicketError};
@@ -100,7 +101,7 @@ pub struct FetchResponse {
 }
 
 /// Content fetcher trait.
-/// Spec §5.2
+/// Spec §5.2, §4.3
 ///
 /// Abstraction over the HTTP client for testability.
 /// The orchestrator depends on this trait, not on `reqwest` directly.
@@ -108,7 +109,56 @@ pub trait ContentFetcher: Send + Sync {
     /// Fetch the full body from a URL.
     ///
     /// Implementations should follow redirects and return the final body.
+    /// 主に小ファイル (フラグメント / サイドカーマニフェスト) で使用する。
     fn fetch(&self, url: &str) -> Result<FetchResponse, FetchError>;
+
+    /// 仕様 §4.3 のストリーミング取得。`Read + Seek` ベースの `ContentSource`
+    /// を返す。
+    ///
+    /// 既定実装は `fetch()` を呼んで全バイトを `InMemorySource` に包む。
+    /// HTTP 直結 (`HttpContentFetcher`) や proxy 経由 (`ProxyContentFetcher`)
+    /// は Range Request 経路を持つように override する。
+    ///
+    /// `size_hint` が `Some` の場合、orchestrator はそれを使って ticket の
+    /// 漸進予約を最適化する。`None` の場合は `fetch` 経路と同じく完全 fetch
+    /// 後の `extend(body.len())` で予約する。
+    fn fetch_streaming(&self, url: &str) -> Result<StreamingFetchResponse, FetchError> {
+        let resp = self.fetch(url)?;
+        if resp.body.is_empty() {
+            return Err(FetchError::EmptyContent(url.to_string()));
+        }
+        let body_len = resp.body.len();
+        let content_type = resp.content_type.clone();
+        let etag = resp.etag.clone();
+        Ok(StreamingFetchResponse {
+            source: Box::new(InMemorySource::new(resp.body)),
+            content_type,
+            etag,
+            size_hint: Some(body_len as u64),
+        })
+    }
+}
+
+/// `ContentFetcher::fetch_streaming` の戻り値。
+///
+/// `source` を `open()` すると `Read + Seek` reader が得られる。
+/// `size_hint` は HEAD で得た既知サイズ。Range Request 非対応 fetcher (mock 等)
+/// では `fetch()` の body 長がそのまま入る。
+pub struct StreamingFetchResponse {
+    pub source: Box<dyn ContentSource>,
+    pub content_type: Option<String>,
+    pub etag: Option<String>,
+    pub size_hint: Option<u64>,
+}
+
+impl std::fmt::Debug for StreamingFetchResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamingFetchResponse")
+            .field("size_hint", &self.size_hint)
+            .field("content_type", &self.content_type)
+            .field("etag", &self.etag)
+            .finish()
+    }
 }
 
 /// HTTP-based content fetcher using `reqwest::blocking::Client`.
@@ -163,6 +213,53 @@ impl Default for HttpContentFetcher {
 }
 
 impl ContentFetcher for HttpContentFetcher {
+    /// HTTP Range Request 経由のストリーミング取得を試みる。
+    /// 仕様 §4.3 — Range 対応サーバーなら 50 GB ファイルでも全展開しない。
+    ///
+    /// HEAD で `Accept-Ranges: bytes` を確認できれば [`HttpRangeSource`] を返す。
+    /// 確認できない場合 (HEAD 拒否、Range 非対応、Content-Length 欠落) は
+    /// 黙って `fetch()` 経路にフォールバックする。これにより Range 非対応の
+    /// 古いストレージや R2 / GCS の特定 prefix でも処理が止まらない。
+    fn fetch_streaming(&self, url: &str) -> Result<StreamingFetchResponse, FetchError> {
+        match crate::range_source::HttpRangeSource::probe(url) {
+            Ok(source) => {
+                let size_hint = source.size_hint();
+                let content_type = source.content_type_hint().map(|s| s.to_string());
+                let etag = source.etag().map(|s| s.to_string());
+                Ok(StreamingFetchResponse {
+                    source: Box::new(source),
+                    content_type,
+                    etag,
+                    size_hint,
+                })
+            }
+            Err(reason) => {
+                // warn レベルで残す。Range 非対応サーバーへの fallback は仕様
+                // §4.3 のメモリ上限 (典型 64 KB) より大きいバッファを要求する
+                // 経路で、運用者が「なぜ大きなファイルが reject されるか」を
+                // 追える視認性が必要 (audit round 3 監査での指摘箇所)。
+                tracing::warn!(
+                    url,
+                    %reason,
+                    "Range probe failed, falling back to full fetch (peak memory will be file size)"
+                );
+                let resp = self.fetch(url)?;
+                if resp.body.is_empty() {
+                    return Err(FetchError::EmptyContent(url.to_string()));
+                }
+                let body_len = resp.body.len();
+                let content_type = resp.content_type.clone();
+                let etag = resp.etag.clone();
+                Ok(StreamingFetchResponse {
+                    source: Box::new(InMemorySource::new(resp.body)),
+                    content_type,
+                    etag,
+                    size_hint: Some(body_len as u64),
+                })
+            }
+        }
+    }
+
     fn fetch(&self, url: &str) -> Result<FetchResponse, FetchError> {
         let resp = self
             .client
@@ -251,24 +348,42 @@ impl ContentFetcher for HttpContentFetcher {
 // ---------------------------------------------------------------------------
 
 /// Fetched content, normalized for processor consumption.
-/// Spec §5.2
-#[derive(Debug)]
+/// Spec §5.2, §4.3
+///
+/// `source` は reader factory ([`title_core::ContentSource`])。orchestrator は
+/// `source.open()` で必要なときに `Read + Seek` stream を取り出す。これにより
+/// 50 GB 級の動画でも Range Request 経由で必要部分だけを読み込める。
+///
+/// - Single: 1 ファイル分のソース。HTTP Range Request 経由なら
+///   [`crate::range_source::HttpRangeSource`] / [`crate::proxy_fetcher::ProxyRangeSource`]
+///   が入る。mock / 全 fetch fallback 経路では [`InMemorySource`] が入る。
+/// - Fragmented: init + 全 segment を concat したバイト列を InMemorySource で
+///   保持。fragment-by-fragment streaming (c2pa::Reader::with_fragment 経路) は
+///   v0.1.3 持ち越し。
+/// - Sidecar: コンテンツ本体のソースに加え、`manifest_source` が別途付く。
 pub struct FetchedContent {
-    /// Content bytes.
-    /// - Single: the file bytes.
-    /// - Fragmented: init.mp4 + all segments concatenated into a contiguous
-    ///   buffer. BMFF fragmented MP4 is a sequence of boxes
-    ///   (ftyp+moov from init, moof+mdat from each segment), so simple
-    ///   concatenation produces a valid container.
-    /// - Sidecar: the content file bytes (manifest is in `manifest_bytes`).
-    pub content_bytes: Vec<u8>,
+    /// コンテンツ本体の reader factory。
+    pub source: Box<dyn ContentSource>,
 
     /// Detected MIME type of the content.
     pub content_type: String,
 
     /// For sidecar input: the separate manifest (.c2pa) bytes containing
     /// raw JUMBF data. `None` for single and fragmented inputs.
-    pub manifest_bytes: Option<Vec<u8>>,
+    pub manifest_source: Option<Box<dyn ContentSource>>,
+}
+
+impl std::fmt::Debug for FetchedContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FetchedContent")
+            .field("source_size_hint", &self.source.size_hint())
+            .field("content_type", &self.content_type)
+            .field(
+                "manifest_source_size_hint",
+                &self.manifest_source.as_ref().and_then(|s| s.size_hint()),
+            )
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -329,14 +444,16 @@ pub fn detect_content_type(bytes: &[u8], url: &str, server_type: Option<&str>) -
 // ---------------------------------------------------------------------------
 
 /// Fetch content based on input data type, tracking memory via Ticket.
-/// Spec §5.2, §4.2
+/// Spec §5.2, §4.2, §4.3
 ///
-/// Each fetch operation calls `ticket.extend()` as data arrives,
-/// enforcing memory limits and timeouts.
+/// Each fetch operation calls `ticket.extend()` as data arrives, enforcing
+/// memory limits and timeouts. Fragmented input passes `Arc<Ticket>` down to
+/// [`crate::fragmented_source::FragmentedSource`] so that fragment swap can do
+/// dynamic `extend` / `shrink` (仕様 §4.3 の shrink ループ)。
 pub fn fetch_content(
     fetcher: &dyn ContentFetcher,
     input: &InputData,
-    ticket: &Ticket,
+    ticket: &Arc<Ticket>,
 ) -> Result<FetchedContent, FetchError> {
     match input {
         InputData::Single { content_url } => fetch_single(fetcher, content_url, ticket),
@@ -357,119 +474,203 @@ pub fn fetch_content(
 }
 
 /// Fetch single file content.
-/// Spec §5.2 -- HTTP GET for the content URL.
+/// Spec §5.2, §4.3 -- HTTP GET (or Range Request) for the content URL.
+///
+/// `fetcher.fetch_streaming()` を呼ぶことで、Range Request 対応サーバーなら
+/// 50 GB のファイルでも全展開せず [`HttpRangeSource`] を返す。Range 非対応
+/// もしくは mock fetcher なら従来通り full fetch → `InMemorySource`。
+///
+/// メモリ予約 (`ticket.extend`) は [`title_core::ContentSource::peak_memory_hint`]
+/// が示す**実ピークメモリ**で行う:
+/// - In-memory ソース: ファイル全長 (= 既にメモリ上)
+/// - Range Request ソース: reader バッファサイズ (典型 64 KB)
+///
+/// この区別を `size_hint` ベースにすると、50 GB の Range Request リクエストが
+/// admission_limit で reject されてしまい §4.3 のストリーミング前提が崩れる。
 fn fetch_single(
     fetcher: &dyn ContentFetcher,
     url: &str,
-    ticket: &Ticket,
+    ticket: &Arc<Ticket>,
 ) -> Result<FetchedContent, FetchError> {
-    let resp = fetcher.fetch(url)?;
-    if resp.body.is_empty() {
+    let resp = fetcher.fetch_streaming(url)?;
+
+    // 論理サイズ 0 (empty content) はソース種別問わずエラー。
+    if matches!(resp.size_hint, Some(0)) {
         return Err(FetchError::EmptyContent(url.to_string()));
     }
 
-    // Track memory for the fetched data
-    // Spec §4.2 -- incremental reservation on data arrival
-    ticket.extend(resp.body.len())?;
+    // ピークメモリ予約。peak_memory_hint が None なら従来通り保守的 (size_hint
+    // 相当)、Range source なら数十 KB だけ予約される。
+    if let Some(peak) = resp.source.peak_memory_hint() {
+        ticket.extend(peak as usize)?;
+    }
 
-    let content_type = detect_content_type(&resp.body, url, resp.content_type.as_deref());
+    // MIME 判定: streaming source からも最初の数バイトだけ覗いてマジックバイト
+    // 検出する。HEAD の Content-Type が信用できないストレージ (R2 等) でも
+    // ファイル先頭で正しく判定できる。
+    let mut peek_reader = resp.source.open().map_err(|e| FetchError::HttpError {
+        url: url.to_string(),
+        reason: format!("Could not open source for MIME peek: {e}"),
+    })?;
+    let mut magic = [0u8; 12];
+    let read = peek_reader.read(&mut magic).map_err(|e| FetchError::HttpError {
+        url: url.to_string(),
+        reason: format!("MIME peek read failed: {e}"),
+    })?;
+    drop(peek_reader);
+
+    let content_type = detect_content_type(&magic[..read], url, resp.content_type.as_deref());
 
     Ok(FetchedContent {
-        content_bytes: resp.body,
+        source: resp.source,
         content_type,
-        manifest_bytes: None,
+        manifest_source: None,
     })
 }
 
 /// Fetch fragmented content (CMAF init + segments).
-/// Spec §5.2 -- Sequential HTTP GET for init.mp4 then each seg-*.m4s.
+/// Spec §5.2, §4.3 -- 仕様 §4.3 のフラグメントメモリパターンに準拠。
 ///
-/// BMFF/ISO-14496-12 fragmented MP4 is a sequence of boxes:
-/// ftyp + moov (from init.mp4) followed by moof + mdat (from each segment).
-/// Simple byte concatenation produces a valid fragmented MP4 container.
+/// BMFF/ISO-14496-12 fragmented MP4 は ftyp + moov (init.mp4) + moof + mdat
+/// (各 segment) という構造。本実装は [`FragmentedSource`] を通じて
+/// 「init は in-memory 常駐 + fragments は lazy load (1 個ずつ)」の経路を作る。
 ///
 /// ## Memory pattern (§4.3)
 ///
-/// All fragments are accumulated into a single buffer; peak memory is
-/// `init + Σ fragments`, tracked via `Ticket::extend`.
+/// 旧実装は全 fragment を `Vec<u8>` に concat していたためピーク = `init + Σ fragments`。
+/// 新実装はピーク = `init + max(fragment_sizes)` で固定 (`FragmentedSource::peak_memory_hint`)。
+/// 50K fragments × 5 MB の long-form ストリームでも 5 MB + init のみで処理可能。
+///
+/// `fetch_streaming` を使うことで、各 fragment 自体も Range Request 対応なら
+/// 内部的に streaming される (typical fragment = 数 MB なので影響は限定的)。
 fn fetch_fragmented(
     fetcher: &dyn ContentFetcher,
     init_url: &str,
     fragment_urls: &[String],
-    ticket: &Ticket,
+    ticket: &Arc<Ticket>,
 ) -> Result<FetchedContent, FetchError> {
     if fragment_urls.is_empty() {
         return Err(FetchError::NoFragments);
     }
 
-    // Fetch init segment
+    // ── init segment (数 KB〜数十 KB、in-memory 常駐) ──
     let init_resp = fetcher.fetch(init_url)?;
     if init_resp.body.is_empty() {
         return Err(FetchError::EmptyContent(init_url.to_string()));
     }
-    ticket.extend(init_resp.body.len())?;
+    let init_len = init_resp.body.len();
+    let init_bytes = init_resp.body;
 
-    // Start with init bytes, grow as fragments arrive
-    let mut combined = init_resp.body;
-
-    // Fetch and concatenate each fragment segment
-    for fragment_url in fragment_urls {
-        let frag_resp = fetcher.fetch(fragment_url)?;
-        if frag_resp.body.is_empty() {
-            return Err(FetchError::EmptyContent(fragment_url.clone()));
-        }
-        // Validate individual fragment size
-        // Spec §4.4
-        limits::validate_fragment_size(frag_resp.body.len())?;
-        // Track memory for this fragment
-        ticket.extend(frag_resp.body.len())?;
-        combined.extend_from_slice(&frag_resp.body);
+    // ── 各 fragment の ContentSource + size を収集 ──
+    //
+    // 全 fragment を fetch_streaming で probe する (HEAD でサイズだけ確定、
+    // 実バイトはまだ取らない)。HttpRangeSource なら HEAD のみ、in-memory fallback
+    // 経路だと full fetch が発生するため fragment が大きい場合は注意。
+    let mut fragment_sources: Vec<Box<dyn ContentSource>> = Vec::with_capacity(fragment_urls.len());
+    let mut fragment_sizes: Vec<u64> = Vec::with_capacity(fragment_urls.len());
+    for url in fragment_urls {
+        let resp = fetcher.fetch_streaming(url)?;
+        let size = match resp.size_hint {
+            Some(s) if s > 0 => s,
+            Some(_) => return Err(FetchError::EmptyContent(url.clone())),
+            // size_hint が None だとピークメモリ計算ができない。実装上は
+            // fetch_streaming default は size_hint を返すはず (Mock fetcher 含む)。
+            None => {
+                return Err(FetchError::HttpError {
+                    url: url.clone(),
+                    reason: "fragment source did not report size_hint".to_string(),
+                })
+            }
+        };
+        // 仕様 §4.4 — 1 fragment の最大サイズ check。
+        limits::validate_fragment_size(size as usize)?;
+        fragment_sources.push(resp.source);
+        fragment_sizes.push(size);
     }
 
+    // 仕様 §4.3 のフラグメントメモリパターン (動的モード):
+    // - init.len を事前予約 (常駐分)
+    // - fragments は FragmentedReader が動的に extend/shrink (swap ごと)
+    // これにより同時 reserved は「init + 現在ロード中 1 fragment」ぴったり。
+    // fragment サイズが不均一でも厳密に admission control できる。
+    ticket.extend(init_len)?;
+
+    let source = crate::fragmented_source::FragmentedSource::new(
+        init_bytes,
+        fragment_sources,
+        fragment_sizes,
+    )
+    .with_ticket(Arc::clone(ticket));
+
     Ok(FetchedContent {
-        content_bytes: combined,
+        source: Box::new(source),
         content_type: "video/mp4".to_string(),
-        manifest_bytes: None,
+        manifest_source: None,
     })
 }
 
 /// Fetch sidecar content (manifest + content separately).
-/// Spec §5.2 -- Two HTTP GETs for the manifest (.c2pa) and content file.
+/// Spec §5.2, §4.3 -- Manifest (.c2pa, typically few KB) を in-memory で取得し、
+/// content file は `fetch_single` と同じ streaming 経路 (Range Request 対応なら
+/// `HttpRangeSource`、非対応なら full fetch fallback) で取得する。
 ///
 /// ## Memory pattern (§4.3)
 ///
-/// Two-stage: manifest (typically a few KB) + content file.
-/// Both are tracked via Ticket.extend().
+/// 仕様 §4.3 sidecar 節「メモリパターンは単一ファイルとほぼ同じで、マニフェスト分
+/// （数KB〜数十KB）が追加される」と整合する。content 側は Range Request 経路なら
+/// peak = `min_req_size` (4 MiB) のみ、in-memory fallback なら full size。
 fn fetch_sidecar(
     fetcher: &dyn ContentFetcher,
     manifest_url: &str,
     content_url: &str,
-    ticket: &Ticket,
+    ticket: &Arc<Ticket>,
 ) -> Result<FetchedContent, FetchError> {
-    // Fetch manifest (.c2pa file = raw JUMBF data)
+    // ── Manifest (.c2pa file = raw JUMBF data, 数 KB〜数十 KB) ──
+    // 小さいので Range Request は不要、full fetch + InMemorySource で十分。
     let manifest_resp = fetcher.fetch(manifest_url)?;
     if manifest_resp.body.is_empty() {
         return Err(FetchError::EmptyContent(manifest_url.to_string()));
     }
     ticket.extend(manifest_resp.body.len())?;
 
-    // Fetch content file
-    let content_resp = fetcher.fetch(content_url)?;
-    if content_resp.body.is_empty() {
-        return Err(FetchError::EmptyContent(content_url.to_string()));
+    // ── Content file (任意サイズ、本体は数十 MB〜数十 GB を想定) ──
+    // `fetch_single` と同じ streaming 経路。Range Request 対応サーバーなら
+    // 50 GB ファイルでも peak = 4 MiB の予約のみ。
+    let content_resp = fetcher.fetch_streaming(content_url)?;
+
+    if let Some(peak) = content_resp.source.peak_memory_hint() {
+        if peak == 0 {
+            return Err(FetchError::EmptyContent(content_url.to_string()));
+        }
+        ticket.extend(peak as usize)?;
     }
-    ticket.extend(content_resp.body.len())?;
+
+    // MIME 判定: 先頭数バイトを peek してマジックバイト検出 (fetch_single と同じ
+    // パターン)。Range Request 経路では新規 reader で 1 リクエスト分のバッファ
+    // が確保されるが、本処理側 source とは独立。
+    let mut peek_reader = content_resp.source.open().map_err(|e| FetchError::HttpError {
+        url: content_url.to_string(),
+        reason: format!("Could not open sidecar content source for MIME peek: {e}"),
+    })?;
+    let mut magic = [0u8; 12];
+    let read = peek_reader
+        .read(&mut magic)
+        .map_err(|e| FetchError::HttpError {
+            url: content_url.to_string(),
+            reason: format!("Sidecar content MIME peek read failed: {e}"),
+        })?;
+    drop(peek_reader);
 
     let content_type = detect_content_type(
-        &content_resp.body,
+        &magic[..read],
         content_url,
         content_resp.content_type.as_deref(),
     );
 
     Ok(FetchedContent {
-        content_bytes: content_resp.body,
+        source: content_resp.source,
         content_type,
-        manifest_bytes: Some(manifest_resp.body),
+        manifest_source: Some(Box::new(InMemorySource::new(manifest_resp.body))),
     })
 }
 
@@ -517,10 +718,18 @@ mod tests {
     }
 
     /// Create a large-enough pool and ticket for tests that don't care about limits.
-    fn test_pool_and_ticket() -> (Arc<ResourcePool>, Ticket) {
+    fn test_pool_and_ticket() -> (Arc<ResourcePool>, Arc<Ticket>) {
         let pool = Arc::new(ResourcePool::with_single_limit(1_000_000_000)); // 1 GB
-        let ticket = pool.ticket(Some(0));
+        let ticket = Arc::new(pool.ticket(Some(0)));
         (pool, ticket)
+    }
+
+    /// `ContentSource` から実バイト列を取り出すテストヘルパ。
+    fn drain(source: &dyn ContentSource) -> Vec<u8> {
+        let mut r = source.open().expect("open should succeed");
+        let mut buf = Vec::new();
+        r.read_to_end(&mut buf).expect("read_to_end should succeed");
+        buf
     }
 
     // -- detect_content_type --
@@ -621,8 +830,9 @@ mod tests {
         let (_pool, ticket) = test_pool_and_ticket();
         let result = fetch_content(&fetcher, &input, &ticket).unwrap();
         assert_eq!(result.content_type, "image/jpeg");
-        assert_eq!(result.content_bytes.len(), 12);
-        assert!(result.manifest_bytes.is_none());
+        assert_eq!(result.source.size_hint(), Some(12));
+        assert_eq!(drain(result.source.as_ref()).len(), 12);
+        assert!(result.manifest_source.is_none());
         assert_eq!(ticket.reserved(), 12);
     }
 
@@ -661,6 +871,119 @@ mod tests {
         ));
     }
 
+    /// Default `fetch_streaming` 実装の検証。`ContentFetcher` を素朴に
+    /// 実装した fetcher が full body を `InMemorySource` で包んで返すこと、
+    /// および `size_hint` / `peak_memory_hint` が body 長と一致することを確認。
+    #[test]
+    fn default_fetch_streaming_wraps_full_body_as_in_memory_source() {
+        use title_core::ContentSource;
+
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/photo.jpg",
+            vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01],
+            Some("image/jpeg"),
+        );
+
+        let resp = fetcher
+            .fetch_streaming("https://storage.example.com/photo.jpg")
+            .expect("fetch_streaming");
+
+        assert_eq!(resp.size_hint, Some(12));
+        // default impl は InMemorySource を返すので peak_memory_hint == size_hint
+        assert_eq!(resp.source.peak_memory_hint(), Some(12));
+        assert_eq!(resp.content_type.as_deref(), Some("image/jpeg"));
+
+        let mut reader = resp.source.open().unwrap();
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf.len(), 12);
+    }
+
+    /// 空 body を渡した default `fetch_streaming` は EmptyContent を返すべき。
+    #[test]
+    fn default_fetch_streaming_rejects_empty_body() {
+        let mut fetcher = MockFetcher::new();
+        fetcher.add(
+            "https://storage.example.com/empty",
+            vec![],
+            Some("image/jpeg"),
+        );
+        let err = fetcher
+            .fetch_streaming("https://storage.example.com/empty")
+            .expect_err("empty body must error");
+        assert!(matches!(err, FetchError::EmptyContent(_)));
+    }
+
+    /// 仕様 §4.3 — Range Request 経路のソースは `peak_memory_hint` が小さい
+    /// (例: 64 KB)。`size_hint` が 50 GB でも ticket への extend は数十 KB だけ。
+    /// in-memory パスは依然 size_hint 分予約 (Mock fetcher 経由はこちら)。
+    #[test]
+    fn fetch_single_streaming_source_reserves_only_peak_memory() {
+        use std::io::{Cursor, Seek, SeekFrom};
+        use title_core::{ContentSource, ContentStream};
+
+        /// 50 GB を「装う」テスト用 ContentSource。実バイトは 16 byte の
+        /// JPEG マジックだが、size_hint が 50 GB、peak_memory_hint が 64 KB。
+        /// fetch_single が peak_memory_hint で予約することを検証する。
+        struct FiftyGbStreamingSource;
+
+        impl ContentSource for FiftyGbStreamingSource {
+            fn open(&self) -> std::io::Result<Box<dyn ContentStream>> {
+                Ok(Box::new(Cursor::new(vec![
+                    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+                ])))
+            }
+            fn size_hint(&self) -> Option<u64> {
+                Some(50 * 1024 * 1024 * 1024) // 50 GB (嘘の値)
+            }
+            fn peak_memory_hint(&self) -> Option<u64> {
+                Some(64 * 1024) // 64 KB のリーダーバッファ相当
+            }
+        }
+
+        // fetcher は streaming source を直接返すモック。
+        struct StreamingMockFetcher;
+        impl ContentFetcher for StreamingMockFetcher {
+            fn fetch(&self, _url: &str) -> Result<FetchResponse, FetchError> {
+                unreachable!("streaming path should not call fetch()")
+            }
+            fn fetch_streaming(
+                &self,
+                _url: &str,
+            ) -> Result<StreamingFetchResponse, FetchError> {
+                Ok(StreamingFetchResponse {
+                    source: Box::new(FiftyGbStreamingSource),
+                    content_type: Some("image/jpeg".to_string()),
+                    etag: None,
+                    size_hint: Some(50 * 1024 * 1024 * 1024),
+                })
+            }
+        }
+
+        let input = InputData::Single {
+            content_url: "https://50gb.example.com/video.mp4".to_string(),
+        };
+
+        // admission_limit / total_limit は 1 MB だけ。50 GB を pre-extend
+        // しようとしていたらここで TotalLimitExceeded で reject されるはず。
+        let pool = Arc::new(ResourcePool::with_single_limit(1024 * 1024));
+        let ticket = Arc::new(pool.ticket(Some(0)));
+        let result = fetch_content(&StreamingMockFetcher, &input, &ticket).expect("succeed");
+
+        // ピークメモリだけ予約されている (64 KB)
+        assert_eq!(ticket.reserved(), 64 * 1024);
+        // 論理サイズ (50 GB) はそのまま source に保持される
+        assert_eq!(result.source.size_hint(), Some(50 * 1024 * 1024 * 1024));
+
+        // 続けて processor 並みに read しても OOM しない (バッファ越えはしない)
+        let mut r = result.source.open().unwrap();
+        let mut buf = [0u8; 4];
+        r.seek(SeekFrom::Start(0)).unwrap();
+        r.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, [0xFF, 0xD8, 0xFF, 0xE0]);
+    }
+
     #[test]
     fn fetch_single_exceeds_memory_limit() {
         let mut fetcher = MockFetcher::new();
@@ -678,7 +1001,7 @@ mod tests {
 
         // Pool with very small limit
         let pool = Arc::new(ResourcePool::with_single_limit(5));
-        let ticket = pool.ticket(Some(0));
+        let ticket = Arc::new(pool.ticket(Some(0)));
         let result = fetch_content(&fetcher, &input, &ticket);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FetchError::MemoryLimit(_)));
@@ -726,22 +1049,34 @@ mod tests {
         let (_pool, ticket) = test_pool_and_ticket();
         let result = fetch_content(&fetcher, &input, &ticket).unwrap();
         assert_eq!(result.content_type, "video/mp4");
-        assert_eq!(
-            result.content_bytes.len(),
-            init_bytes.len() + seg0.len() + seg1.len()
-        );
+        let bytes = drain(result.source.as_ref());
+        assert_eq!(bytes.len(), init_bytes.len() + seg0.len() + seg1.len());
         // Verify concatenation order
-        assert_eq!(&result.content_bytes[..init_bytes.len()], &init_bytes[..]);
+        assert_eq!(&bytes[..init_bytes.len()], &init_bytes[..]);
         assert_eq!(
-            &result.content_bytes[init_bytes.len()..init_bytes.len() + seg0.len()],
+            &bytes[init_bytes.len()..init_bytes.len() + seg0.len()],
             &seg0[..]
         );
-        assert!(result.manifest_bytes.is_none());
-        // Verify memory tracking
-        assert_eq!(
-            ticket.reserved(),
-            init_bytes.len() + seg0.len() + seg1.len()
-        );
+        assert!(result.manifest_source.is_none());
+        // Verify memory tracking — 仕様 §4.3 フラグメントパターン (動的モード):
+        // fetch_fragmented 直後は init 分のみ予約。fragments は FragmentedReader が
+        // 読む際に動的に extend / drop 時に shrink するので、source を read しない
+        // この時点では reserved = init.len のみ。
+        assert_eq!(ticket.reserved(), init_bytes.len());
+
+        // 実際に reader を使って read_to_end したときは init + 現在ロード中
+        // fragment が reserved されることを確認。read 完了後 (reader drop) で
+        // shrink され、reserved = init に戻る。
+        use std::io::Read as _;
+        let mut reader = result.source.open().unwrap();
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).unwrap();
+        // 最後に読んだ fragment が current_fragment として残っている状態
+        let last_frag_size = seg1.len();
+        assert_eq!(ticket.reserved(), init_bytes.len() + last_frag_size);
+        // reader drop で fragment 分が shrink される
+        drop(reader);
+        assert_eq!(ticket.reserved(), init_bytes.len());
     }
 
     #[test]
@@ -815,13 +1150,25 @@ mod tests {
             fragment_urls: vec!["https://storage.example.com/video/seg-0.m4s".to_string()],
         };
 
-        // Pool can hold init but not init + segment
+        // Pool can hold init (8 bytes) + 50 bytes、fragment は 100 bytes。
+        // 動的モード:
+        //   - fetch_fragmented 自体は init のみ extend で成功 (8 bytes 予約)
+        //   - reader.read() で fragment 分 (100 bytes) extend を試み MemoryLimit
         let pool = Arc::new(ResourcePool::with_single_limit(init_bytes.len() + 50));
-        let ticket = pool.ticket(Some(0));
-        let result = fetch_content(&fetcher, &input, &ticket);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FetchError::MemoryLimit(_)));
-        // Init reservation should still be tracked (not leaked)
+        let ticket = Arc::new(pool.ticket(Some(0)));
+        let fetched = fetch_content(&fetcher, &input, &ticket).expect("init fetch ok");
+        assert_eq!(ticket.reserved(), init_bytes.len());
+
+        use std::io::Read as _;
+        let mut reader = fetched.source.open().unwrap();
+        let mut buf = Vec::new();
+        let read_err = reader
+            .read_to_end(&mut buf)
+            .expect_err("fragment extend should hit memory limit");
+        assert_eq!(read_err.kind(), std::io::ErrorKind::OutOfMemory);
+        // extend が失敗したので current_fragment はセットされず、reader drop でも
+        // 余分な shrink は走らない。init 分の reserved は維持。
+        drop(reader);
         assert_eq!(ticket.reserved(), init_bytes.len());
     }
 
@@ -888,12 +1235,9 @@ mod tests {
         let (_pool, ticket) = test_pool_and_ticket();
         let result = fetch_content(&fetcher, &input, &ticket).unwrap();
         assert_eq!(result.content_type, "image/jpeg");
-        assert_eq!(result.content_bytes.len(), 12);
-        assert!(result.manifest_bytes.is_some());
-        assert_eq!(
-            result.manifest_bytes.as_ref().unwrap(),
-            b"jumbf-manifest-data"
-        );
+        assert_eq!(drain(result.source.as_ref()).len(), 12);
+        let manifest = result.manifest_source.as_ref().expect("manifest present");
+        assert_eq!(drain(manifest.as_ref()), b"jumbf-manifest-data".to_vec());
         // Memory tracking: manifest + content
         assert_eq!(ticket.reserved(), 19 + 12);
     }
@@ -959,7 +1303,7 @@ mod tests {
 
         // Pool can hold manifest but not manifest + content
         let pool = Arc::new(ResourcePool::with_single_limit(10)); // 8 (manifest) + 12 (content) > 10
-        let ticket = pool.ticket(Some(0));
+        let ticket = Arc::new(pool.ticket(Some(0)));
         let result = fetch_content(&fetcher, &input, &ticket);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FetchError::MemoryLimit(_)));

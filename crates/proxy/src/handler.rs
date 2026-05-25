@@ -6,7 +6,8 @@
 //! the transport (Spec §5.2).
 
 use crate::protocol::{
-    self, CHUNKED_SENTINEL, CHUNKED_TRUNCATED, MAX_RESPONSE_BYTES, MAX_WIRE_CHUNK_BYTES,
+    self, decode_get_range_body, encode_head_response, CHUNKED_SENTINEL, CHUNKED_TRUNCATED,
+    MAX_RESPONSE_BYTES, MAX_WIRE_CHUNK_BYTES,
 };
 
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -52,11 +53,24 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
         .build()
         .map_err(std::io::Error::other)?;
 
-    // Spec §5.2 — proxy only forwards GET (content fetch) and POST (Solana
-    // RPC submission). Limiting the set shrinks the attack surface.
+    // Spec §5.2, §4.3 — proxy only forwards GET / POST (existing) と
+    // HEAD / GET_RANGE (Range Request streaming 用、§4.3 で追加)。
+    // method whitelist を絞ることで attack surface を最小化する。
+    //
+    // HEAD は Range Request 対応の事前確認 (HEAD で Accept-Ranges / Content-Length
+    // を取り、応答は専用エンコーディングで返す)。
+    // GET_RANGE は body に `[u64 begin][u64 length]` を載せ、proxy が
+    // `Range: bytes=begin-(begin+length-1)` 付きで GET を発行する。
     let request_result = match method {
         "GET" => client.get(url).send().await,
         "POST" => client.post(url).body(body.to_vec()).send().await,
+        "HEAD" => {
+            // HEAD は専用パスで処理 (応答ボディが HTTP body ではなく構造化メタデータ)。
+            return handle_head(w, &client, url, &upstream_host, started).await;
+        }
+        "GET_RANGE" => {
+            return handle_get_range(w, &client, url, body, &upstream_host, started).await;
+        }
         other => {
             tracing::warn!(method = other, upstream_host = %upstream_host, "rejecting unsupported HTTP method");
             let msg = format!("Unsupported method: {other}").into_bytes();
@@ -237,6 +251,199 @@ async fn write_error<W: tokio::io::AsyncWrite + Unpin>(
     w.write_all(body).await?;
     w.flush().await?;
     Ok(())
+}
+
+/// HEAD: upstream に HEAD を投げ、`encode_head_response` で構造化応答を返す。
+/// content_length は HTTP の `Content-Length` ヘッダから読む (`response.content_length()`
+/// は HEAD では body 長 = 0 を返すため使えない、これは reqwest の仕様)。
+async fn handle_head<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    client: &reqwest::Client,
+    url: &str,
+    upstream_host: &str,
+    started: std::time::Instant,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let response = match client.head(url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
+                err = format!("{e:#}"),
+                upstream_host = %upstream_host,
+                "HEAD request failed",
+            );
+            let msg = format!("Proxy HEAD error: {e}").into_bytes();
+            write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+            return shutdown_write(w).await;
+        }
+    };
+
+    let status = response.status().as_u16() as u32;
+
+    if !response.status().is_success() {
+        // upstream が non-2xx を返した場合はそのまま透過。body は空。
+        w.write_all(&status.to_be_bytes()).await?;
+        w.write_all(&0u32.to_be_bytes()).await?;
+        w.flush().await?;
+        return shutdown_write(w).await;
+    }
+
+    let content_length = response
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let accepts_ranges = response
+        .headers()
+        .get(reqwest::header::ACCEPT_RANGES)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("bytes"))
+        .unwrap_or(false);
+
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let body = encode_head_response(
+        content_length,
+        accepts_ranges,
+        etag.as_deref(),
+        content_type.as_deref(),
+    );
+
+    w.write_all(&status.to_be_bytes()).await?;
+    w.write_all(&(body.len() as u32).to_be_bytes()).await?;
+    w.write_all(&body).await?;
+    w.flush().await?;
+
+    tracing::info!(
+        url,
+        status,
+        content_length,
+        accepts_ranges,
+        upstream_host = %upstream_host,
+        duration_ms = started.elapsed().as_millis() as u64,
+        "HEAD",
+    );
+    shutdown_write(w).await
+}
+
+/// GET_RANGE: body から `[u64 begin][u64 length]` を読み、`Range: bytes=begin-(begin+length-1)`
+/// 付きで upstream に GET を投げ、応答をそのまま (frame として) 返す。
+async fn handle_get_range<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    client: &reqwest::Client,
+    url: &str,
+    body: &[u8],
+    upstream_host: &str,
+    started: std::time::Instant,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let (begin, length) = match decode_get_range_body(body) {
+        Ok(v) => v,
+        Err(reason) => {
+            tracing::warn!(reason, "invalid GET_RANGE body");
+            let msg = format!("Invalid GET_RANGE body: {reason}").into_bytes();
+            write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+            return shutdown_write(w).await;
+        }
+    };
+
+    if length == 0 {
+        // 0 byte 要求は upstream に投げず空応答で済ます。
+        w.write_all(&200u32.to_be_bytes()).await?;
+        w.write_all(&0u32.to_be_bytes()).await?;
+        w.flush().await?;
+        return shutdown_write(w).await;
+    }
+
+    if length > MAX_RESPONSE_BYTES {
+        let msg = format!("GET_RANGE length {length} exceeds MAX_RESPONSE_BYTES").into_bytes();
+        write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+        return shutdown_write(w).await;
+    }
+
+    // begin + length が u64 を overflow するケース (攻撃者が begin=u64::MAX,
+    // length=1 などを送る) を弾く。`saturating_add` で値を丸めるのではなく
+    // 明確に reject することで、upstream に意味不明な Range ヘッダを投げない。
+    let end_exclusive = match begin.checked_add(length) {
+        Some(v) => v,
+        None => {
+            let msg = format!("GET_RANGE begin {begin} + length {length} overflows u64")
+                .into_bytes();
+            write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+            return shutdown_write(w).await;
+        }
+    };
+    let end_inclusive = end_exclusive - 1; // length > 0 は上で保証済み
+    let range_header = format!("bytes={begin}-{end_inclusive}");
+
+    let response = match client
+        .get(url)
+        .header(reqwest::header::RANGE, &range_header)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
+                err = format!("{e:#}"),
+                upstream_host = %upstream_host,
+                "GET_RANGE upstream failed",
+            );
+            let msg = format!("Proxy GET_RANGE error: {e}").into_bytes();
+            write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+            return shutdown_write(w).await;
+        }
+    };
+
+    let status = response.status().as_u16() as u32;
+    let response_bytes = match response.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            let msg = format!("GET_RANGE body read failed: {e}").into_bytes();
+            write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+            return shutdown_write(w).await;
+        }
+    };
+
+    if response_bytes.len() as u64 > MAX_RESPONSE_BYTES {
+        let msg = format!(
+            "GET_RANGE upstream returned {} bytes > MAX_RESPONSE_BYTES",
+            response_bytes.len()
+        )
+        .into_bytes();
+        write_error(w, PROXY_ERROR_STATUS, &msg).await?;
+        return shutdown_write(w).await;
+    }
+
+    w.write_all(&status.to_be_bytes()).await?;
+    w.write_all(&(response_bytes.len() as u32).to_be_bytes()).await?;
+    w.write_all(&response_bytes).await?;
+    w.flush().await?;
+
+    tracing::info!(
+        url,
+        status,
+        range = %range_header,
+        body_len = response_bytes.len(),
+        upstream_host = %upstream_host,
+        duration_ms = started.elapsed().as_millis() as u64,
+        "GET_RANGE",
+    );
+    shutdown_write(w).await
 }
 
 async fn shutdown_write<W: tokio::io::AsyncWrite + Unpin>(w: &mut W) -> std::io::Result<()> {

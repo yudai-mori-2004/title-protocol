@@ -4,7 +4,7 @@
 
 Round 2 では must:6 / should:14 / nitpick:11（Round 1 由来）と新規 r2-001..r2-007 を計上し、最終的に Round 2 処理ログでは:
 - fixed: must-fix-001/003/004/005、should-fix-003/004/005/006/007/008/009/010/011/012/013、nitpick-001/002/007/008/009/011、および新規 must-fix-r2-001 / should-fix-r2-001/002/004 / nitpick-r2-001/002
-- wontfix: must-fix-002/006（process_request 9 分割と graceful in-flight）、should-fix-001/002（streaming I/F）、should-fix-014/r2-003（fetcher 関連の長期改修）、nitpick-003/004/005/006（doc 冗長）、nitpick-010、nitpick-r2-003
+- wontfix: must-fix-002/006（process_request 9 分割と graceful in-flight）、should-fix-001/002（streaming I/F、その後 task 19 で should-fix-002 完全対応 + should-fix-001 部分対応 — trait のみ streaming 化、fragment 経路は v0.1.3 で c2pa-rs `with_fragment` に置換予定）、should-fix-014/r2-003（fetcher 関連の長期改修）、nitpick-003/004/005/006（doc 冗長）、nitpick-010、nitpick-r2-003
 
 Round 3 再走査の結果:
 
@@ -53,8 +53,8 @@ Round 3 再走査の結果:
 |---|---|---|
 | must-fix-002 | `process_request` 肥大 | 妥当な wontfix。Step 0..9 が doc 番号と一致しており、Round 2 で nitpick-r2-001 を fix した今、`process_request` の 90 行構造は読める。9 関数分割は引き続き v0.1.3 で OK。 |
 | must-fix-006 | Drop 順 / graceful shutdown | 妥当な wontfix。`main.rs:196-198` は `axum::serve(..).with_graceful_shutdown(shutdown_signal())` で、`shutdown_signal()` は `tokio::signal::ctrl_c()` を await。`axum 0.8` の `with_graceful_shutdown` は新規 connection の拒否までは保証するが in-flight request の完了待ちは hyper-util ベースに移行しないと厳密化できない。`NitroRuntime` doc (`vendor/aws.rs:117-125`) の運用注意で当面カバー。 |
-| should-fix-001 | フラグメント全 concat | 妥当な wontfix。`content_fetch.rs:395-434` は `combined.extend_from_slice(&frag_resp.body)` で全展開、ピーク = init + Σ fragments。仕様 §4.3 (l. 929-948) の「extend → 検証 → shrink」ループは依然未実装だが、これは `c2pa::Reader` を fragment 単位 push する API が core 側に必要で、TEE crate 単体では片付かない。 |
-| should-fix-002 | 漸進予約が事後カウンタ化 | 妥当な wontfix。`HttpContentFetcher::fetch` (`content_fetch.rs:216-239`) は 64 KB チャンクの読み込みループは持つが、`ticket.extend` を chunk 内部から呼ぶフックは `fetcher` trait 経由で公開されていないので、`fetch_single` (`content_fetch.rs:373`) で `ticket.extend(resp.body.len())` の事後一括。これも streaming trait 化が必要。`max_body_bytes = 100 MiB` + admission_limit で多層防御は機能している。 |
+| should-fix-001 | フラグメント全 concat | **task 19 で部分対応 (fixed-partial)** — Round 3 時点の wontfix から、task 19 で `FetchedContent` を `ContentSource` ベース (Read+Seek factory) に抽象化し、`single` 入力の Range Request streaming は完了。`fragmented` 経路は `c2pa::Reader::with_fragment(init, fragment)` API への置き換えが残り、v0.1.3 で別 task 切る前提。Round 3 時点の wontfix 判断 (=「TEE crate 単体では片付かない」) は依然正しく、core/c2pa-verify 側の API 切替を含む別 task が必要。 |
+| should-fix-002 | 漸進予約が事後カウンタ化 | **task 19 で fixed** — Round 3 時点の wontfix から、task 19 で `ContentFetcher::fetch_streaming` を追加し `HttpContentFetcher` / `ProxyContentFetcher` が `HttpRangeSource` / `ProxyRangeSource` を返す経路を実装。`fetch_single` は `ContentSource::peak_memory_hint` で予約するため、50 GB ファイルでも reader バッファ (64 KB) しか積まない。Range 非対応サーバーは従来の full fetch にフォールバック (この経路は依然 `max_body_bytes` cap のみが防御線だが、Range 対応が事実上の標準なので影響限定)。テスト `fetch_single_streaming_source_reserves_only_peak_memory` で 50 GB 想定の peak_memory = 64 KB を検証。 |
 | should-fix-014 | proxy `write_string(... url, url)` | 妥当な wontfix。`proxy_fetcher.rs:160` で `write_string(&mut socket, url, url)`。コメント (`proxy_fetcher.rs:158`) で「Request: [u32 method_len][method][u32 url_len][url][u32 body_len][body]」とプロトコルを示してあるので意図は読み取れる。 |
 | should-fix-r2-003 | `compute_signature_hash` の content_bytes 三重走査 | 妥当な wontfix。core trait 変更を伴うため v0.1.3。 |
 | nitpick-003/004/005/006 | Cargo.toml / docstring 冗長 | 妥当な wontfix。`Cargo.toml:14-18, 47-51, 56-58` 確認、いずれも将来 OSS 公開時の一括整理対象として認識済み。 |

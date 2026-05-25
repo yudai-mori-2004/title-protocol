@@ -33,15 +33,16 @@
 //! layer. RAII drop semantics and pool accounting details live with
 //! `ResourcePool` / `Ticket` in `resource_pool.rs`.
 
-use std::collections::HashMap;
+use std::io::Read;
 use std::sync::Arc;
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
 use title_core::{
-    compute_signature_hash, compute_signature_hash_from_manifest_data, EncryptionSuite, InputData,
-    ProcessRequest, ProcessResponse, ProcessorOutput, ProcessorRegistry, VerifiableResponse,
+    compute_signature_hash, compute_signature_hash_from_manifest_data, ContentSource,
+    EncryptionSuite, InMemorySource, InputData, ProcessRequest, ProcessResponse,
+    ProcessorRegistry, VerifiableResponse,
 };
 use title_crypto::key_bundle::KeyBundle;
 use title_crypto::payload;
@@ -190,9 +191,14 @@ pub fn process_request(
             (fragment_urls.len() as u64).saturating_mul(crate::limits::MAX_FRAGMENT_SIZE as u64),
         ),
     };
-    let ticket = pool
-        .try_admit(size_hint)
-        .ok_or(OrchestratorError::AdmissionRejected)?;
+    // Ticket は Arc 化して下流 (fetch_content → FragmentedSource → FragmentedReader)
+    // で共有する。仕様 §4.3 の「extend → 検証 → shrink」ループは reader 内部で
+    // 駆動されるため、ticket を共有できないと shrink hook が機能しない。
+    // Ticket は AtomicU64 ベースで Sync なので Arc 共有可能。
+    let ticket = Arc::new(
+        pool.try_admit(size_hint)
+            .ok_or(OrchestratorError::AdmissionRejected)?,
+    );
 
     // Step 2: Fetch content from URL(s) with memory tracking
     // Spec §5.2, §4.2
@@ -201,34 +207,32 @@ pub fn process_request(
     // Step 3: Decrypt if the request declares an encryption suite (§2.4).
     // The fetched body is the encrypted wire payload; after decryption we
     // obtain `metadata + raw content` and the response channel used to seal
-    // the eventual reply.
-    let (content_bytes, content_type, manifest_bytes, response_channel, declared_signature_hash) =
-        if let Some(suite) = request.encryption {
-            decrypt_single_payload(suite, &request.input, &fetched, key_bundle)?
-        } else {
-            (
-                fetched.content_bytes,
-                fetched.content_type,
-                fetched.manifest_bytes,
-                None,
-                None,
-            )
-        };
+    // the eventual reply. 復号後のバイト列は in-memory に確定するので、
+    // `InMemorySource` でラップして以降のパイプラインに乗せる。
+    let materialized = if let Some(suite) = request.encryption {
+        decrypt_single_payload(suite, &request.input, &fetched, key_bundle)?
+    } else {
+        Materialized {
+            source: fetched.source,
+            content_type: fetched.content_type,
+            manifest_source: fetched.manifest_source,
+            response_channel: None,
+            declared_signature_hash: None,
+        }
+    };
 
     // Step 4: Compute signature_hash from the (decrypted) content/manifest.
     // Spec §1.3 — SHA-256(Active Manifest's COSE signature)
-    let signature_hash = if let Some(ref manifest_data) = manifest_bytes {
-        compute_signature_hash_from_manifest_data(manifest_data)
-            .map_err(|e| OrchestratorError::SignatureHashFailed(e.to_string()))?
-    } else {
-        compute_signature_hash(&content_bytes, &content_type)
-            .map_err(|e| OrchestratorError::SignatureHashFailed(e.to_string()))?
-    };
+    let signature_hash = compute_signature_hash_from_source(
+        materialized.source.as_ref(),
+        &materialized.content_type,
+        materialized.manifest_source.as_deref(),
+    )?;
 
     // Step 5: For encrypted requests, verify the declared signature_hash
     // matches what we just computed (§2.4 step 8).
-    if let Some(declared) = declared_signature_hash {
-        if declared != signature_hash {
+    if let Some(ref declared) = materialized.declared_signature_hash {
+        if declared != &signature_hash {
             return Err(OrchestratorError::SignatureHashMismatch);
         }
     }
@@ -238,13 +242,15 @@ pub fn process_request(
     // 場合のみ実行される (rootlens-license-v1 のようなオールインワン processor
     // が自前で C2PA 検証を内包するケースを許す)。署名検証自体は orchestrator
     // の compute_signature_hash で必須実行されるため、署名なしコンテンツは
-    // この段に到達する前に reject される (§1.3 / §3.2)。
-    let results = execute_processors(
-        registry,
+    // この段に到達する前に reject される (§1.3 / §3.2)。各 processor は
+    // `source.open()` で独立した reader を取得する。
+    let results = registry.execute(
         &request.processor_ids,
-        &content_bytes,
-        &content_type,
+        materialized.source.as_ref(),
+        &materialized.content_type,
     );
+
+    let response_channel = materialized.response_channel;
 
     let verifiable = VerifiableResponse {
         signature_hash,
@@ -268,33 +274,47 @@ pub fn process_request(
     }
 }
 
+/// Pipeline 内部で「fetch / decrypt 完了後の状態」をひとまとめにする中間型。
+///
+/// 暗号化なし: `source` は fetch 結果そのまま、`response_channel` は `None`。
+/// 暗号化あり: `source` は復号後の平文を `InMemorySource` でラップしたもの。
+///   `declared_signature_hash` は client が暗号化ペイロードのメタデータで
+///   宣言した signature_hash で、Step 5 で TEE 計算値と照合する。
+struct Materialized {
+    source: Box<dyn ContentSource>,
+    content_type: String,
+    manifest_source: Option<Box<dyn ContentSource>>,
+    response_channel: Option<ResponseChannel>,
+    declared_signature_hash: Option<String>,
+}
+
 /// Decrypt a single-file encrypted payload and surface its inner content.
 ///
-/// Returns `(content_bytes, content_type, manifest_bytes, response_channel,
-/// declared_signature_hash)`. `manifest_bytes` is always `None` for `single`
-/// because §2.2 only allows manifest-as-sidecar with `input_type=sidecar`,
-/// and encryption is restricted to `single` here (§2.4).
+/// `manifest_source` は常に `None` (sidecar マニフェストは `input_type=sidecar`
+/// 専用、暗号化は `single` 専用 §2.4)。
 fn decrypt_single_payload(
     suite: EncryptionSuite,
     input: &InputData,
     fetched: &crate::content_fetch::FetchedContent,
     key_bundle: &KeyBundle,
-) -> Result<
-    (
-        Vec<u8>,
-        String,
-        Option<Vec<u8>>,
-        Option<ResponseChannel>,
-        Option<String>,
-    ),
-    OrchestratorError,
-> {
+) -> Result<Materialized, OrchestratorError> {
     let content_url = match input {
         InputData::Single { content_url } => content_url.as_str(),
         _ => return Err(OrchestratorError::EncryptionRequiresSingleInput),
     };
 
-    let opened = open_request(key_bundle, suite, &fetched.content_bytes).map_err(|e| match e {
+    // 暗号化ペイロードは fetch 段で in-memory に乗っている (Range Request 経路でも
+    // 復号には全 ciphertext が必要)。ここでバイト列を取り出して復号する。
+    let mut cipher_reader = fetched.source.open().map_err(|e| {
+        OrchestratorError::DecryptionFailed(format!("open ciphertext source: {e}"))
+    })?;
+    let mut cipher_bytes = Vec::new();
+    cipher_reader.read_to_end(&mut cipher_bytes).map_err(|e| {
+        OrchestratorError::DecryptionFailed(format!("read ciphertext source: {e}"))
+    })?;
+    drop(cipher_reader);
+
+    let opened = open_request(key_bundle, suite, &cipher_bytes).map_err(|e| match e {
         title_crypto::CryptoError::EncryptionSuiteMismatch { wire, .. } => {
             OrchestratorError::EncryptionSuiteMismatch {
                 declared: suite,
@@ -314,29 +334,45 @@ fn decrypt_single_payload(
     let plaintext_content_type =
         detect_content_type(parsed.content, content_url, Some(&fetched.content_type));
 
-    Ok((
-        parsed.content.to_vec(),
-        plaintext_content_type,
-        None,
-        Some(opened.response_channel),
-        Some(parsed.metadata.signature_hash),
-    ))
+    Ok(Materialized {
+        source: Box::new(InMemorySource::new(parsed.content.to_vec())),
+        content_type: plaintext_content_type,
+        manifest_source: None,
+        response_channel: Some(opened.response_channel),
+        declared_signature_hash: Some(parsed.metadata.signature_hash),
+    })
+}
+
+/// `compute_signature_hash` / `compute_signature_hash_from_manifest_data` を
+/// `ContentSource` ベースで一本化。sidecar manifest がある場合はそちらを優先、
+/// なければ content stream から JUMBF を抽出する。
+fn compute_signature_hash_from_source(
+    source: &dyn ContentSource,
+    content_type: &str,
+    manifest_source: Option<&dyn ContentSource>,
+) -> Result<String, OrchestratorError> {
+    if let Some(manifest) = manifest_source {
+        let mut reader = manifest.open().map_err(|e| {
+            OrchestratorError::SignatureHashFailed(format!("open manifest source: {e}"))
+        })?;
+        let mut manifest_data = Vec::new();
+        reader.read_to_end(&mut manifest_data).map_err(|e| {
+            OrchestratorError::SignatureHashFailed(format!("read manifest source: {e}"))
+        })?;
+        return compute_signature_hash_from_manifest_data(&manifest_data)
+            .map_err(|e| OrchestratorError::SignatureHashFailed(e.to_string()));
+    }
+
+    let mut reader = source.open().map_err(|e| {
+        OrchestratorError::SignatureHashFailed(format!("open content source: {e}"))
+    })?;
+    compute_signature_hash(reader.as_mut(), content_type)
+        .map_err(|e| OrchestratorError::SignatureHashFailed(e.to_string()))
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/// Execute processors and collect results.
-/// Spec §3.1 -- each processor runs independently.
-fn execute_processors(
-    registry: &ProcessorRegistry,
-    processor_ids: &[String],
-    content: &[u8],
-    content_type: &str,
-) -> HashMap<String, ProcessorOutput> {
-    registry.execute(processor_ids, content, content_type)
-}
 
 /// 仕様 §1.7 / §2.3 — core 処理用 user_data のドメインタグ。
 /// Solana 鍵登録用 (`b"title:solana-key"`) と分離する。
@@ -386,8 +422,9 @@ mod tests {
     use crate::content_fetch::{ContentFetcher, FetchError, FetchResponse};
     use crate::resource_pool::ResourcePool;
     use crate::TeeError;
+    use std::collections::HashMap;
     use std::sync::Mutex;
-    use title_core::{C2paVerifyProcessor, ProcessorRegistry};
+    use title_core::{C2paVerifyProcessor, ProcessorOutput, ProcessorRegistry};
 
     // ---- Mock ContentFetcher ----
 
@@ -954,10 +991,15 @@ mod tests {
         assert!(json["results"].is_object());
         assert!(json["attestation"].is_string());
 
-        // c2pa-verify result
+        // c2pa-verify result — 新スキーマ (Reader::json() のフル ManifestStore)。
+        // validity の signal は「status=ok かつ active_manifest が存在」で表す。
+        // 旧 "validation" string フィールドは廃止。
         let c2pa = &json["results"]["c2pa-verify"];
         assert_eq!(c2pa["status"], "ok");
-        assert!(c2pa["validation"].is_string());
+        assert!(
+            c2pa["active_manifest"].is_string() || c2pa["manifests"].is_object(),
+            "c2pa-verify output should be the C2PA ManifestStore JSON shape"
+        );
     }
 
     // ---- Admission control ----
@@ -1104,8 +1146,11 @@ mod tests {
         let key_bundle = test_key_bundle();
         let tee_pub = key_bundle.public_key_bytes(EncryptionSuite::X25519);
         let signed = create_signed_jpeg();
-        let signature_hash =
-            compute_signature_hash(&signed, "image/jpeg").expect("signed content has sig");
+        let signature_hash = {
+            let src = InMemorySource::new(signed.clone());
+            let mut r = src.open().unwrap();
+            compute_signature_hash(r.as_mut(), "image/jpeg").expect("signed content has sig")
+        };
 
         // 2. Client side: build the inner plaintext payload exactly as Spec §2.4
         //    prescribes, then encrypt for the TEE.

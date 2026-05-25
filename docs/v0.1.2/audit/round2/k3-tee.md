@@ -32,8 +32,8 @@ Round 1 の中核 4 must (起動順 / process_request 肥大 / unsafe Send+Sync 
 
 | # | 件名 | 状況 | 備考 |
 |---|---|---|---|
-| 001 | フラグメント全 concat 仕様逸脱 | 部分対応 | `content_fetch.rs:255-258, 389-392` でコメントは「peak = init + Σ fragments」に書き直され「将来最適化」表現は消えた。実装は依然 `combined.extend_from_slice` で全 fragment を保持。仕様 §4.3 の「extend → 検証 → shrink」ループは未実装。 |
-| 002 | 漸進予約が事後カウンタ化 | 未対応 | `HttpContentFetcher::fetch` (`content_fetch.rs:166-243`) は依然 `Vec<u8>` で完全展開した「あと」に `ticket.extend` を呼ぶ構造。`ContentFetcher` トレイトの streaming 化は未着手。`max_body_bytes` cap が唯一のメモリ防御線という構図は不変。 |
+| 001 | フラグメント全 concat 仕様逸脱 | 部分対応 → task 19 で trait は streaming 化 (fixed-partial) | `content_fetch.rs:255-258, 389-392` でコメントは「peak = init + Σ fragments」に書き直され「将来最適化」表現は消えた。実装は依然 `combined.extend_from_slice` で全 fragment を保持。仕様 §4.3 の「extend → 検証 → shrink」ループは未実装。**task 19 (2026-05)**: `FetchedContent` を `ContentSource` ベース (Read+Seek factory) に抽象化。single 入力は `HttpRangeSource` / `ProxyRangeSource` 経由でストリーミング完了。fragmented は `c2pa::Reader::with_fragment(init, fragment)` API への置き換えが残作業 (v0.1.3 で別 task)。 |
+| 002 | 漸進予約が事後カウンタ化 | 未対応 → task 19 で fixed | `HttpContentFetcher::fetch` (`content_fetch.rs:166-243`) は依然 `Vec<u8>` で完全展開した「あと」に `ticket.extend` を呼ぶ構造。`ContentFetcher` トレイトの streaming 化は未着手。`max_body_bytes` cap が唯一のメモリ防御線という構図は不変。**task 19 (2026-05)**: `ContentFetcher::fetch_streaming` を追加、Range Request 経路で `HttpRangeSource` / `ProxyRangeSource` を返す。`fetch_single` は `ContentSource::peak_memory_hint` (= reader バッファサイズ 64 KB) で予約。50 GB streaming reservation テストで実証。Range 非対応サーバーは full fetch にフォールバック (従来通り `max_body_bytes` cap で守る)。 |
 | 003 | Mock measurement bypass | 解消 | `lib.rs` の `tests::MockRuntime` を削除し `runtime/mock/MockRuntime` に統一。Self-attestation のログ (`main.rs:114-119`) で `tee_type` を併記しており mock 環境が視認可能。 |
 | 004 | `decrypt_single_payload` の早期 reject | 解消 | `orchestrator.rs:172-177` に Step 0 として encryption × non-Single を fetch 前に reject。 |
 | 005 | reqwest async/blocking 混在 | 部分対応 | `handle_process` (`server.rs:142-154`) は `spawn_blocking` でラップ済み。一方 `handle_solana_extension` (`server.rs:244-252`) は依然バニラ async 内で blocking `fetcher.fetch` を呼ぶ。**新規発見 #2 として再掲**。 |

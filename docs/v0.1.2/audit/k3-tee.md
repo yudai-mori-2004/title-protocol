@@ -107,19 +107,23 @@
 
 ### should-fix-001 仕様 §4.3 のシナリオ「init + フラグメント1個」を実装が逸脱
 
+- **処理**: partial fixed (task 19 で trait は streaming 化、fragment 経路の c2pa-rs `with_fragment` 置換は v0.1.3)
 - 場所: `crates/tee/src/content_fetch.rs:404-443`
 - 観察: 仕様 §4.3 フラグメントは「extend → 検証 → shrink」のループで各フラグメント終了後に解放するパターン (ピーク = init + フラグメント1個 + Reader 内部状態) を要求。実装は「全 fragment を `combined` に concat、shrink 呼ばず」。コメント `// ## Memory pattern (SS4.3) ... Peak memory = init + all fragments.` で逸脱を自認。
 - 問題: 仕様逸脱を doc で正当化しているだけで COVERAGE 上は実装済み扱いになる懸念。仕様 §4.4 の「フラグメント1個の最大 100MB × 10万個 = 10TB」を total_limit=512MB の前提で受け切れない実装になっている。
 - 修正案: 二段階で。(a) 短期: `FetchedContent::content_bytes` を `Vec<u8>` から `Box<dyn Read+Seek>` に抽象化するか、`Vec<Vec<u8>>` でフラグメント単位に保持し、processor 側で順次 feed する。(b) 抽象化が大規模になるなら、せめて doc コメントから「Currently accumulates ... future optimization」表現を消し、`TODO(spec-§4.3): streaming fragment processing` で COVERAGE に明示 deviation を記録。
+- **task 19 での対応**: `FetchedContent` を `Box<dyn ContentSource>` ベースに抽象化済み (修正案 (a) の前半)。`single` 入力は Range Request 経由の streaming に切り替わったため、50 GB MP4 が `peak_memory_hint = 64 KB` で通る。`fragmented` 入力は `c2pa::Reader::with_fragment(init, fragment)` API への置き換えが必要 (現在は init+全 fragment を `Vec<u8>` に concat してから `c2pa::Reader::with_stream` に流している)。v0.1.3 で `with_fragment` 経路に移行する別 task を切る前提。
 
 ---
 
 ### should-fix-002 `process_request` の Ticket admission が `extend(0)` 後の漸進予約をパスしている
 
+- **処理**: fixed (task 19)
 - 場所: `crates/tee/src/orchestrator.rs:171-173` & `crates/tee/src/content_fetch.rs:380, 419, 434, 463, 470`
 - 観察: `pool.try_admit(0)` で 0 byte ticket 発行 → `fetch_content` 内で `ticket.extend(body.len())` を呼ぶ。だが `body` は既に reqwest 内部で完全にメモリに展開されている (`HttpContentFetcher::fetch` は同期 `Vec<u8>` を返す)。
 - 問題: 仕様 §4.2「漸進的予約 = 実データ到着時に予約」が達成できていない。reqwest が 100MB を読み込んだ「後で」ticket.extend を呼ぶため、reqwest のバッファでメモリピークを既に踏んでいる。`max_body_bytes` cap (100MB) が事実上の唯一のガードで、ResourcePool は事後カウンタにしかなっていない。
 - 修正案: `ContentFetcher::fetch` を `fn fetch_streaming(&self, url, on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), FetchError>) -> Result<_, FetchError>` に変更し、`on_chunk` で `ticket.extend(chunk.len())` を呼ぶ。少なくとも `HttpContentFetcher` の 64KB ループ (l. 228-248) を Ticket-aware にする。`ProxyContentFetcher::fetch` (l. 143-147) も `read_exact` を chunked loop に変更。
+- **task 19 での対応**: `ContentFetcher::fetch_streaming` を追加し、`HttpContentFetcher` / `ProxyContentFetcher` がそれぞれ `HttpRangeSource` / `ProxyRangeSource` を返す経路を実装。`fetch_single` は `ContentSource::peak_memory_hint` (= reader バッファサイズ、典型 64 KB) で `ticket.extend` するように変更。50 GB ファイルの Range Request でもメモリ予約は 64 KB のみで、`POOL_TOTAL_LIMIT` 内で完走することを `fetch_single_streaming_source_reserves_only_peak_memory` テストで検証。reqwest による事後カウンタ問題は Range Request 経路では消滅 (per-Range で必要部分だけ取る)。Range 非対応サーバーは従来の full fetch にフォールバックするが、これは仕様 §4.4 の `total_limit` で守られる範囲内。
 
 ---
 

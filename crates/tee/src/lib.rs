@@ -18,9 +18,11 @@ compile_error!(
 );
 
 pub mod content_fetch;
+pub mod fragmented_source;
 pub mod limits;
 pub mod orchestrator;
 pub mod proxy_fetcher;
+pub mod range_source;
 pub mod resource_pool;
 pub mod runtime;
 pub mod server;

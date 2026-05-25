@@ -31,6 +31,10 @@ title-core = { workspace = true }
 title-crypto = { workspace = true }
 title-attestation = { workspace = true }
 title-attestation-aws-nitro = { workspace = true, optional = true }
+# proxy crate のワイヤープロトコル定数とエンコーディング関数を共有するための
+# 一方向依存 (tee → proxy)。逆方向は存在しない (proxy main.rs は title-tee を参照しない)。
+# §4.3 Range Request サポート (HEAD / GET_RANGE) で本格的に使用。
+title-proxy = { workspace = true }
 title-solana = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -40,6 +44,12 @@ hex = { workspace = true }
 base64 = { workspace = true }
 serde_json_canonicalizer = { workspace = true }
 reqwest = { workspace = true }
+# Range Request 経由の `Read + Seek` 実装 (50 GB 級ファイルのストリーミング検証用)。
+# 仕様 §4.3 のメモリパターンを満たすために必要。
+# `reqwest-sync` + `rustls-tls` を選ぶことで、production reqwest と同じ TLS スタックを共有する。
+http-range-client = { version = "0.9", default-features = false, features = ["reqwest-sync", "rustls-tls"] }
+# http-range-client の trait 実装で `Bytes` を返すために必要。
+bytes = "1"
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 tracing = "0.1"

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use title_attestation::AttestationVerifier;
-use title_core::{C2paVerifyProcessor, ProcessorRegistry};
+use title_core::{C2paVerifyProcessor, ProcessorRegistry, RootLensLicenseV1Processor};
 use title_crypto::key_bundle::KeyBundle;
 use title_solana::signing_key::SolanaSigningKey;
 use title_tee::content_fetch::{ContentFetcher, HttpContentFetcher};
@@ -133,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 5: Processors + ResourcePool. Spec §3.1 / §4.1.
     let mut registry = ProcessorRegistry::new();
     registry.register(Box::new(C2paVerifyProcessor::new()));
+    registry.register(Box::new(RootLensLicenseV1Processor::new()));
     tracing::info!(
         processors = ?registry.processor_ids(),
         "Processors registered"

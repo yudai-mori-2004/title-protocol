@@ -25,54 +25,37 @@
 //! The utility is public because the TEE orchestration layer also
 //! needs it when assembling the final response.
 
+use crate::content_stream::ContentStream;
 use crate::jumbf;
 use crate::processor::{Processor, ProcessorError};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Cursor;
+use std::io::{Read, Seek, SeekFrom};
 
-/// c2pa-verify processor output. Spec §3.2.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct C2paVerifyOutput {
-    /// `"valid"` or `"invalid"` — an invalid signature is still a successful
-    /// processor run.
-    pub validation: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signer: Option<SignerInfo>,
-
-    /// C2PA signing timestamp in ISO 8601.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<String>,
-
-    /// Signing tool / device name. Built from `claim_generator_info` when
-    /// the manifest carries it (preferred), else the raw `claim_generator`
-    /// string.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub claim_generator: Option<String>,
-
-    #[serde(default)]
-    pub actions: Vec<C2paAction>,
-}
-
-/// Issuer and certificate serial of the C2PA signing identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SignerInfo {
-    /// The signing certificate's issuer DN. `None` means the C2PA library
-    /// could not extract one — surfaced as a missing field rather than a
-    /// `"unknown"` string so downstream trust logic doesn't mistake it for
-    /// a real issuer named "unknown".
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cert_serial: Option<String>,
-}
-
-/// One entry from the manifest's action history.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct C2paAction {
-    pub action: String,
-}
+/// c2pa-verify processor output is the C2PA manifest store itself.
+/// Spec §3.2.
+///
+/// The processor returns the full manifest store as returned by
+/// `c2pa::Reader::json()`, parsed into a [`serde_json::Value`]. Validity is
+/// signalled by **presence**: a successful processor run means the manifest
+/// validated (validation_state was `Valid` or `Trusted`); an invalid manifest
+/// causes the processor to return [`ProcessorError`] and no manifest data is
+/// recorded.
+///
+/// Consumers are expected to parse the result with a C2PA-aware parser. The
+/// schema is whatever the c2pa-rs version in use emits from `Reader::json()` —
+/// the C2PA standard ManifestStore layout with `active_manifest`, `manifests`,
+/// `validation_results`, `validation_state`.
+///
+/// # Byte-determinism
+///
+/// The byte-level JSON output is **per-binary**, not per-content. `c2pa-rs`
+/// can change object key order, optional-field inclusion, or numeric encoding
+/// across minor versions; doing so changes the JCS hash of this output even
+/// for identical input. The workspace pins `c2pa = "=0.84.1"` exactly for this
+/// reason. A deliberate bump must coincide with a TEE rebuild and a new PCR0
+/// registered on Solana — old attestations remain valid against their own
+/// PCR0 / `c2pa` version pair, never against a newer one.
+pub type C2paVerifyOutput = serde_json::Value;
 
 /// c2pa-verify processor ID.
 /// Spec §3.2
@@ -110,7 +93,10 @@ impl Processor for C2paVerifyProcessor {
     /// Spec §3.2 c2pa-verify
     ///
     /// # Arguments
-    /// * `content` — C2PA-signed content bytes (JPEG, PNG, MP4, etc.)
+    /// * `content` — C2PA-signed content stream (Read + Seek). c2pa-rs
+    ///   only reads the box headers and the verification ranges, so a
+    ///   Range-Request-backed reader works for large MP4 files without
+    ///   loading the file into memory.
     /// * `content_type` — MIME type of the content
     ///
     /// # Returns
@@ -124,7 +110,7 @@ impl Processor for C2paVerifyProcessor {
     /// at all (no C2PA data, corrupt file, etc.).
     fn process(
         &self,
-        content: &[u8],
+        content: &mut dyn ContentStream,
         content_type: &str,
     ) -> Result<serde_json::Value, ProcessorError> {
         let output = verify_and_extract(content, content_type)?;
@@ -135,10 +121,15 @@ impl Processor for C2paVerifyProcessor {
 }
 
 /// 仕様 §1.3 — `signature_hash = SHA-256(Active Manifest's COSE signature)`
-/// を計算し `"sha256:hex..."` 形式で返す。`content` / `content_type` は
-/// C2PA 署名付きコンテンツとその MIME タイプ。
+/// を計算し `"sha256:hex..."` 形式で返す。`content` は C2PA 署名付き
+/// コンテンツの `Read + Seek` stream、`content_type` は MIME タイプ。
+///
+/// 実装は `c2pa::jumbf_io::load_jumbf_from_stream` で JUMBF ボックスだけを
+/// 抽出 (BMFF/JPEG/PNG いずれもファイル全体をメモリに載せずに seek で位置
+/// 特定する)、その後 JUMBF 内の COSE 署名を取り出して SHA-256 を計算する。
+/// 50 GB の MP4 でも Range Request reader 経由で JUMBF 周辺だけを読めば済む。
 pub fn compute_signature_hash(
-    content: &[u8],
+    content: &mut dyn ContentStream,
     content_type: &str,
 ) -> Result<String, ProcessorError> {
     let signature_bytes = extract_active_manifest_signature(content, content_type)?;
@@ -178,155 +169,157 @@ fn format_signature_hash(signature_bytes: &[u8]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// CAIRead 互換アダプタ
+// ---------------------------------------------------------------------------
+
+/// `c2pa::jumbf_io::load_jumbf_from_stream` は `&mut dyn CAIRead` を要求するが、
+/// `CAIRead` は c2pa-rs 内部 trait で、`Read + Seek + MaybeSend` のブランケット
+/// impl で公開される。`dyn ContentStream` から `dyn CAIRead` への trait object
+/// 直接変換はできないため、`&mut dyn ContentStream` を保持する小さな具体型に
+/// 包んで渡す。具体型は `Read + Seek + Send` を満たすので CAIRead が自動で付く。
+struct CaiReadAdapter<'a> {
+    inner: &'a mut dyn ContentStream,
+}
+
+impl<'a> Read for CaiReadAdapter<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<'a> Seek for CaiReadAdapter<'a> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Internal implementation
 // ---------------------------------------------------------------------------
 
 /// Extracts the Active Manifest's COSE signature bytes from content.
 /// Spec §1.3
 ///
-/// Uses `c2pa::jumbf_io::load_jumbf_from_memory` to extract raw JUMBF data,
-/// then the JUMBF parser to locate the c2pa.signature box and extract CBOR.
+/// Uses `c2pa::jumbf_io::load_jumbf_from_stream` to pull the JUMBF box out
+/// of a `Read + Seek` source (BMFF / JPEG / PNG にかかわらずヘッダだけを
+/// 読む)、then the local JUMBF parser to locate the active manifest's
+/// `c2pa.signature` box and return the COSE bytes.
+///
+/// JUMBF データそのものは数 KB なので [`compute_signature_hash_from_manifest_data`]
+/// と同じ単一パス処理に合流させ、Reader の二重構築を避ける。
 fn extract_active_manifest_signature(
-    content: &[u8],
+    content: &mut dyn ContentStream,
     content_type: &str,
 ) -> Result<Vec<u8>, ProcessorError> {
-    // Parse with c2pa::Reader to get the active manifest label
-    let mut cursor = Cursor::new(content);
-    let reader = c2pa::Reader::from_context(c2pa::Context::default())
-        .with_stream(content_type, &mut cursor)
+    // 念のため stream を先頭へ巻き戻す (前段で seek されている場合がある)。
+    content.seek(SeekFrom::Start(0)).map_err(|e| {
+        ProcessorError::ReadFailed(format!("Failed to rewind content stream: {e}"))
+    })?;
+
+    // CAIRead trait object 互換のアダプタに包んで c2pa-rs に渡す。
+    let mut adapter = CaiReadAdapter { inner: content };
+    let jumbf_data = c2pa::jumbf_io::load_jumbf_from_stream(content_type, &mut adapter)
         .map_err(|e| {
-            ProcessorError::C2paVerificationFailed(format!("C2PA Reader construction failed: {e}"))
-        })?;
-
-    let active_label = reader
-        .active_label()
-        .ok_or_else(|| {
-            ProcessorError::C2paVerificationFailed("Active Manifest not found".to_string())
-        })?
-        .to_string();
-
-    // Extract raw JUMBF data from content
-    let jumbf_data =
-        c2pa::jumbf_io::load_jumbf_from_memory(content_type, content).map_err(|e| {
             ProcessorError::C2paVerificationFailed(format!("JUMBF extraction failed: {e}"))
         })?;
 
-    // Extract COSE signature bytes from JUMBF
-    jumbf::extract_signature_from_jumbf(&jumbf_data, &active_label)
+    let labels = jumbf::find_manifest_labels(&jumbf_data)?;
+    let active_label = labels.last().ok_or_else(|| {
+        ProcessorError::C2paVerificationFailed("No manifest found in JUMBF data".to_string())
+    })?;
+
+    jumbf::extract_signature_from_jumbf(&jumbf_data, active_label)
 }
 
-/// Verifies C2PA and extracts metadata into `C2paVerifyOutput`.
+/// Verifies the C2PA manifest and returns the full manifest store.
 /// Spec §3.2 c2pa-verify
+///
+/// Returns the C2PA manifest store verbatim (`c2pa::Reader::json()`) as a
+/// [`serde_json::Value`]. The output's *presence* is the validity signal:
+/// the processor returns [`ProcessorError`] when the manifest cannot be
+/// loaded, when no active manifest exists, or when the validation state is
+/// `Invalid`. A successful return means the manifest validated `Valid` or
+/// `Trusted` and the entire manifest store (including `validation_results`,
+/// `validation_state`, `signature_info`, all assertions, all ingredients) is
+/// preserved in the returned value for downstream re-verification without
+/// the source content.
 fn verify_and_extract(
-    content: &[u8],
+    content: &mut dyn ContentStream,
     content_type: &str,
 ) -> Result<C2paVerifyOutput, ProcessorError> {
-    let mut cursor = Cursor::new(content);
+    // c2pa::Reader::with_stream は内部で box ヘッダだけを seek/read するので、
+    // 巨大ファイルでも全部メモリに載せる必要はない。Range Request reader を
+    // 直接ここに流せる。
+    content.seek(SeekFrom::Start(0)).map_err(|e| {
+        ProcessorError::ReadFailed(format!("Failed to rewind content stream: {e}"))
+    })?;
     let reader = c2pa::Reader::from_context(c2pa::Context::default())
-        .with_stream(content_type, &mut cursor)
+        .with_stream(content_type, &mut *content)
         .map_err(|e| {
             ProcessorError::C2paVerificationFailed(format!("C2PA Reader construction failed: {e}"))
         })?;
 
-    // Determine validation state
-    // Spec §3.2: "valid" when signature chain is structurally valid (Valid or Trusted)
-    let validation_state = reader.validation_state();
-    let validation = match validation_state {
+    // Require an active manifest. A reader without one is structurally
+    // useless to downstream consumers.
+    if reader.active_manifest().is_none() {
+        return Err(ProcessorError::C2paVerificationFailed(
+            "Active Manifest not found".to_string(),
+        ));
+    }
+
+    // Reject `Invalid` validation. Presence of the output is the validity
+    // signal — we never record an invalid manifest.
+    match reader.validation_state() {
         c2pa::validation_results::ValidationState::Valid
-        | c2pa::validation_results::ValidationState::Trusted => "valid",
-        c2pa::validation_results::ValidationState::Invalid => "invalid",
-    };
-
-    let manifest = reader.active_manifest().ok_or_else(|| {
-        ProcessorError::C2paVerificationFailed("Active Manifest not found".to_string())
-    })?;
-
-    // Extract signer info from SignatureInfo
-    // Spec §3.2: signer.issuer + signer.cert_serial
-    let signer = manifest.signature_info().map(|sig_info| SignerInfo {
-        issuer: sig_info.issuer.clone(),
-        cert_serial: sig_info.cert_serial_number.clone(),
-    });
-
-    // Extract timestamp
-    // Spec §3.2: ISO 8601 format
-    let timestamp = manifest.time();
-
-    // Extract claim_generator
-    // Spec §3.2: signing tool/device name
-    // Use claim_generator_info (name + version) if available, fall back to claim_generator
-    let claim_generator = build_claim_generator_string(manifest);
-
-    // Extract actions
-    // Spec §3.2: action history from manifest assertions
-    let actions = extract_actions(manifest);
-
-    Ok(C2paVerifyOutput {
-        validation: validation.to_string(),
-        signer,
-        timestamp,
-        claim_generator,
-        actions,
-    })
-}
-
-/// Builds the claim_generator display string.
-///
-/// Prefers `claim_generator_info` (structured data with name + version)
-/// over the raw `claim_generator` string. If `claim_generator_info` has
-/// entries, formats as "name version" for the first entry.
-fn build_claim_generator_string(manifest: &c2pa::Manifest) -> Option<String> {
-    // Try claim_generator_info first (structured, preferred)
-    if let Some(info_vec) = &manifest.claim_generator_info {
-        if let Some(info) = info_vec.first() {
-            let name = &info.name;
-            return Some(match &info.version {
-                Some(ver) => format!("{name} {ver}"),
-                None => name.clone(),
-            });
+        | c2pa::validation_results::ValidationState::Trusted => {}
+        c2pa::validation_results::ValidationState::Invalid => {
+            return Err(ProcessorError::C2paVerificationFailed(
+                "C2PA validation failed (validation_state = Invalid)".to_string(),
+            ));
         }
     }
 
-    // Fall back to raw claim_generator string
-    manifest.claim_generator().map(|s| s.to_string())
-}
-
-/// Extracts C2PA actions from manifest assertions.
-/// Spec §3.2: action history
-///
-/// Looks for both `c2pa.actions` and `c2pa.actions.v2` assertion labels.
-fn extract_actions(manifest: &c2pa::Manifest) -> Vec<C2paAction> {
-    // Try c2pa.actions.v2 first (preferred), then c2pa.actions
-    let actions_result: Option<c2pa::assertions::Actions> = manifest
-        .find_assertion(c2pa::assertions::Actions::LABEL_VERSIONED)
-        .ok()
-        .or_else(|| {
-            manifest
-                .find_assertion(c2pa::assertions::Actions::LABEL)
-                .ok()
-        });
-
-    match actions_result {
-        Some(actions) => actions
-            .actions
-            .iter()
-            .map(|a| C2paAction {
-                action: a.action().to_string(),
-            })
-            .collect(),
-        None => Vec::new(),
-    }
+    // `reader.json()` returns the entire ManifestStore as a JSON string in
+    // the C2PA standard layout (active + ingredients, all assertions, all
+    // signature info, all validation codes). Parsing it into a serde_json
+    // Value lets us return it verbatim, so a verifier can reconstruct and
+    // re-check the C2PA manifest without holding the source content.
+    serde_json::from_str(&reader.json()).map_err(|e| {
+        ProcessorError::Internal(format!("Failed to parse c2pa reader JSON: {e}"))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content_stream::{ContentSource, InMemorySource};
+    use std::io::Cursor;
+
+    /// テスト用ヘルパ: バイト列を InMemorySource にして processor に渡す。
+    fn run_processor(
+        processor: &C2paVerifyProcessor,
+        bytes: &[u8],
+        content_type: &str,
+    ) -> Result<serde_json::Value, ProcessorError> {
+        let source = InMemorySource::new(bytes.to_vec());
+        let mut reader = source.open().expect("InMemorySource::open never fails");
+        processor.process(reader.as_mut(), content_type)
+    }
+
+    /// テスト用ヘルパ: バイト列から signature_hash を計算。
+    fn compute_signature_hash_bytes(
+        bytes: &[u8],
+        content_type: &str,
+    ) -> Result<String, ProcessorError> {
+        let source = InMemorySource::new(bytes.to_vec());
+        let mut reader = source.open().expect("InMemorySource::open never fails");
+        compute_signature_hash(reader.as_mut(), content_type)
+    }
 
     /// Creates a minimal valid JPEG for testing.
     /// Uses the `image` crate to generate a 4x4 pixel JPEG image.
     fn create_test_jpeg() -> Vec<u8> {
         use image::{ImageBuffer, ImageEncoder, Rgb};
-        use std::io::Cursor;
 
         let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
             ImageBuffer::from_fn(4, 4, |x, y| Rgb([(x * 60) as u8, (y * 60) as u8, 128]));
@@ -420,37 +413,35 @@ mod tests {
     fn process_signed_content() {
         let signed = create_signed_jpeg();
         let proc = C2paVerifyProcessor::new();
-        let result = proc.process(&signed, "image/jpeg");
-        assert!(result.is_ok(), "process() should succeed: {result:?}");
+        // EphemeralSigner is expected to validate as Valid/Trusted under the
+        // pinned c2pa-rs version. If this unwrap ever panics, the test trust
+        // setup needs fixing — do not silently skip.
+        let store = run_processor(&proc, &signed, "image/jpeg")
+            .expect("EphemeralSigner-signed content must produce Ok output; fix test signer trust");
 
-        let value = result.unwrap();
-        let output: C2paVerifyOutput =
-            serde_json::from_value(value).expect("Should deserialize to C2paVerifyOutput");
-
-        // Self-signed cert → ValidationState may be Invalid (untrusted) or Valid
-        // depending on c2pa-rs version. The key assertion is that it doesn't error.
+        // Output is the c2pa-rs Reader::json() JSON. Verify shape.
+        assert!(store.is_object(), "output must be a JSON object");
+        let obj = store.as_object().unwrap();
         assert!(
-            output.validation == "valid" || output.validation == "invalid",
-            "validation should be 'valid' or 'invalid', got: {}",
-            output.validation
+            obj.contains_key("active_manifest"),
+            "store must contain active_manifest"
+        );
+        assert!(
+            obj.contains_key("manifests"),
+            "store must contain manifests map"
         );
 
-        // Signer info should be extracted
-        assert!(output.signer.is_some(), "signer should be present");
-
-        // Actions should be extracted
-        assert_eq!(output.actions.len(), 1);
-        assert_eq!(output.actions[0].action, "c2pa.created");
-
-        // claim_generator should be extracted
+        // The active manifest should mention our test claim_generator name —
+        // walk the JSON tree rather than substring match (H4).
+        let active_label = store["active_manifest"].as_str().unwrap();
+        let manifest = &store["manifests"][active_label];
+        let claim_gen = manifest["claim_generator"]
+            .as_str()
+            .or_else(|| manifest["claim_generator_info"][0]["name"].as_str())
+            .expect("claim_generator or claim_generator_info[0].name must be present");
         assert!(
-            output.claim_generator.is_some(),
-            "claim_generator should be present"
-        );
-        let cg = output.claim_generator.unwrap();
-        assert!(
-            cg.contains("title-core-test"),
-            "claim_generator should contain our test name, got: {cg}"
+            claim_gen.contains("title-core-test"),
+            "manifest should preserve the claim_generator name we signed with, got: {claim_gen}"
         );
     }
 
@@ -458,7 +449,7 @@ mod tests {
     fn process_unsigned_content_returns_error() {
         let unsigned = create_test_jpeg();
         let proc = C2paVerifyProcessor::new();
-        let result = proc.process(&unsigned, "image/jpeg");
+        let result = run_processor(&proc, &unsigned, "image/jpeg");
         assert!(result.is_err(), "unsigned content should return error");
         match result {
             Err(ProcessorError::C2paVerificationFailed(_)) => {} // expected
@@ -469,14 +460,14 @@ mod tests {
     #[test]
     fn process_empty_content_returns_error() {
         let proc = C2paVerifyProcessor::new();
-        let result = proc.process(&[], "image/jpeg");
+        let result = run_processor(&proc, &[], "image/jpeg");
         assert!(result.is_err(), "empty content should return error");
     }
 
     #[test]
     fn process_garbage_content_returns_error() {
         let proc = C2paVerifyProcessor::new();
-        let result = proc.process(b"not a valid image", "image/jpeg");
+        let result = run_processor(&proc, b"not a valid image", "image/jpeg");
         assert!(result.is_err(), "garbage content should return error");
     }
 
@@ -486,10 +477,10 @@ mod tests {
     fn signature_hash_deterministic() {
         let signed = create_signed_jpeg();
 
-        let hash1 =
-            compute_signature_hash(&signed, "image/jpeg").expect("signature_hash computation");
-        let hash2 =
-            compute_signature_hash(&signed, "image/jpeg").expect("signature_hash computation");
+        let hash1 = compute_signature_hash_bytes(&signed, "image/jpeg")
+            .expect("signature_hash computation");
+        let hash2 = compute_signature_hash_bytes(&signed, "image/jpeg")
+            .expect("signature_hash computation");
 
         // Same content → same hash (deterministic)
         assert_eq!(hash1, hash2);
@@ -522,8 +513,8 @@ mod tests {
         let signed1 = create_signed_jpeg();
         let signed2 = create_signed_jpeg();
 
-        let hash1 = compute_signature_hash(&signed1, "image/jpeg").unwrap();
-        let hash2 = compute_signature_hash(&signed2, "image/jpeg").unwrap();
+        let hash1 = compute_signature_hash_bytes(&signed1, "image/jpeg").unwrap();
+        let hash2 = compute_signature_hash_bytes(&signed2, "image/jpeg").unwrap();
 
         // Different signing events → different COSE signatures → different hashes
         assert_ne!(
@@ -535,63 +526,84 @@ mod tests {
     #[test]
     fn signature_hash_unsigned_content_error() {
         let unsigned = create_test_jpeg();
-        let result = compute_signature_hash(&unsigned, "image/jpeg");
+        let result = compute_signature_hash_bytes(&unsigned, "image/jpeg");
         assert!(
             result.is_err(),
             "unsigned content should not produce signature_hash"
         );
     }
 
-    // ── C2paVerifyOutput JSON compatibility (§3.2) ──
-
+    /// signature_hash 計算は seek が走っても結果が変わらないことを確認。
+    /// Range Request reader は内部で seek するため、この性質が崩れると
+    /// orchestrator の declared_signature_hash mismatch を誤検出する。
     #[test]
-    fn output_matches_spec_json_structure() {
+    fn signature_hash_idempotent_on_same_stream() {
         let signed = create_signed_jpeg();
-        let proc = C2paVerifyProcessor::new();
-        let value = proc.process(&signed, "image/jpeg").unwrap();
+        let source = InMemorySource::new(signed);
+        let mut reader = source.open().unwrap();
 
-        // Check that all expected fields are present
-        assert!(
-            value.get("validation").is_some(),
-            "validation field missing"
-        );
-        assert!(value.get("actions").is_some(), "actions field missing");
-
-        // status field should NOT be present (it's added by ProcessorOutput::ok())
-        assert!(
-            value.get("status").is_none(),
-            "status should not be in processor output"
-        );
+        let h1 = compute_signature_hash(reader.as_mut(), "image/jpeg").unwrap();
+        let h2 = compute_signature_hash(reader.as_mut(), "image/jpeg").unwrap();
+        assert_eq!(h1, h2);
     }
 
+    // ── manifest store shape (§3.2) ──
+
     #[test]
-    fn output_roundtrip_through_c2pa_verify_output() {
+    fn output_is_manifest_store_with_status_unset() {
         let signed = create_signed_jpeg();
         let proc = C2paVerifyProcessor::new();
-        let value = proc.process(&signed, "image/jpeg").unwrap();
+        let value = run_processor(&proc, &signed, "image/jpeg")
+            .expect("EphemeralSigner-signed content must produce Ok output");
 
-        // Deserialize back to C2paVerifyOutput
-        let output: C2paVerifyOutput = serde_json::from_value(value.clone()).unwrap();
-
-        // Re-serialize and check round-trip
-        let re_serialized = serde_json::to_value(&output).unwrap();
-        assert_eq!(value, re_serialized, "round-trip should be lossless");
+        // status は ProcessorOutput::ok() が後付けする層なので processor の生出力には含まれない
+        assert!(value.get("status").is_none());
+        // Top-level shape is the c2pa ManifestStore
+        assert!(value.get("active_manifest").is_some());
+        assert!(value.get("manifests").is_some());
     }
 
-    // ── Multiple actions ──
-
+    /// 生 JSON 値はそのまま serde で round-trip 可能 (情報損失ゼロ)。
     #[test]
-    fn extract_multiple_actions() {
+    fn output_roundtrip_lossless() {
+        let signed = create_signed_jpeg();
+        let proc = C2paVerifyProcessor::new();
+        let value = run_processor(&proc, &signed, "image/jpeg")
+            .expect("EphemeralSigner-signed content must produce Ok output");
+        let re_serialized = serde_json::to_value(&value).unwrap();
+        assert_eq!(value, re_serialized);
+    }
+
+    /// 複数 action を含む manifest を流すと、全 action が manifest_store 内に
+    /// 完全保存される (元データから復元可能であることの担保)。
+    /// H4: JSON ツリーを walk して action 名を厳密に検証する。
+    #[test]
+    fn manifest_store_preserves_all_actions() {
         let signed =
             create_signed_jpeg_with_actions(&["c2pa.created", "c2pa.edited", "c2pa.cropped"]);
         let proc = C2paVerifyProcessor::new();
-        let value = proc.process(&signed, "image/jpeg").unwrap();
-        let output: C2paVerifyOutput = serde_json::from_value(value).unwrap();
+        let value = run_processor(&proc, &signed, "image/jpeg")
+            .expect("EphemeralSigner-signed content must produce Ok output");
 
-        assert_eq!(output.actions.len(), 3);
-        assert_eq!(output.actions[0].action, "c2pa.created");
-        assert_eq!(output.actions[1].action, "c2pa.edited");
-        assert_eq!(output.actions[2].action, "c2pa.cropped");
+        let active_label = value["active_manifest"].as_str().unwrap();
+        let assertions = value["manifests"][active_label]["assertions"]
+            .as_array()
+            .expect("assertions must be an array");
+        let actions_assertion = assertions
+            .iter()
+            .find(|a| {
+                let label = a["label"].as_str().unwrap_or("");
+                label == "c2pa.actions" || label == "c2pa.actions.v2"
+            })
+            .expect("actions assertion must be present");
+        let actions = actions_assertion["data"]["actions"]
+            .as_array()
+            .expect("actions array must exist under data.actions");
+        let names: Vec<&str> = actions
+            .iter()
+            .map(|a| a["action"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(names, vec!["c2pa.created", "c2pa.edited", "c2pa.cropped"]);
     }
 
     // ── ProcessorRegistry integration ──
@@ -611,12 +623,16 @@ mod tests {
         let mut registry = crate::ProcessorRegistry::new();
         registry.register(Box::new(C2paVerifyProcessor::new()));
 
-        let results = registry.execute(&["c2pa-verify".into()], &signed, "image/jpeg");
+        let source = InMemorySource::new(signed);
+        let results = registry.execute(&["c2pa-verify".into()], &source, "image/jpeg");
 
         assert_eq!(results.len(), 1);
+        // EphemeralSigner content must validate to Ok under the pinned c2pa-rs.
+        // If this ever fails, fix the test trust setup — do not weaken the gate.
         assert_eq!(
             results["c2pa-verify"].status,
-            crate::response::ProcessorStatus::Ok
+            crate::response::ProcessorStatus::Ok,
+            "EphemeralSigner-signed content must pass the strict gate"
         );
     }
 
@@ -626,7 +642,8 @@ mod tests {
         let mut registry = crate::ProcessorRegistry::new();
         registry.register(Box::new(C2paVerifyProcessor::new()));
 
-        let results = registry.execute(&["c2pa-verify".into()], &unsigned, "image/jpeg");
+        let source = InMemorySource::new(unsigned);
+        let results = registry.execute(&["c2pa-verify".into()], &source, "image/jpeg");
 
         assert_eq!(results.len(), 1);
         assert_eq!(

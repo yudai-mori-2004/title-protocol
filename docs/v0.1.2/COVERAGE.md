@@ -51,14 +51,15 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 
 | Section | Spec Item | Status | Implementation | Task |
 |---|---|---|---|---|
-| §3.1 | Processor trait/interface definition | [x] | crates/core/src/processor.rs (Processor trait + ProcessorRegistry + ProcessorError, 7 tests) | 02 |
-| §3.2 | c2pa-verify processor | [x] | crates/core/src/c2pa_verify.rs (C2paVerifyProcessor + compute_signature_hash, JUMBF parser in jumbf.rs, 14 tests) | 03 |
+| §3.1 | Processor trait/interface definition | [x] | crates/core/src/processor.rs (Processor trait: `&mut dyn ContentStream`, ProcessorRegistry::execute は `&dyn ContentSource` で各 processor に独立 reader を発行) + crates/core/src/content_stream.rs (ContentStream / ContentSource / InMemorySource / peak_memory_hint, task 19) | 02, 19 |
+| §3.2 | c2pa-verify processor | [x] | crates/core/src/c2pa_verify.rs (C2paVerifyProcessor + compute_signature_hash: `Read + Seek` ベース、`c2pa::jumbf_io::load_jumbf_from_stream` で単一パス, CaiReadAdapter, 14 tests + signature_hash_idempotent_on_same_stream) | 03, 19 |
 | §3.2 | provenance-graph processor | [ ] | | |
 | §3.2 | image-pdq processor | [ ] | | |
 | §3.2 | video-vpdq processor | [ ] | | |
 | §3.2 | cert-google processor | [ ] | | |
 | §3.2 | cert-sony processor | [ ] | | |
 | §3.2 | cert-leica processor | [ ] | | |
+| — | rootlens-license-v1 processor (RootLens extension) | [x] | crates/core/src/rootlens_license_v1.rs (RootLensLicenseV1Processor: C2PA検証内包 + CAWG TDM gate + rootlens_binding, 8 tests) | 18 |
 
 ### 4. Memory Management (§4)
 
@@ -66,9 +67,9 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 |---|---|---|---|---|
 | §4.1 | ResourcePool (admission_limit / total_limit) | [x] | crates/tee/src/resource_pool.rs (ResourcePool: 2-tier threshold, AtomicUsize counter, can_admit/try_admit/acquire, 5 tests) | 09 |
 | §4.2 | Ticket (incremental reservation / release) | [x] | crates/tee/src/resource_pool.rs (Ticket: CAS-loop extend/shrink, RAII Drop auto-release, Cell<Instant> timeout tracking, 14 tests incl. 2 concurrent) | 09 |
-| §4.3 | Memory pattern: single file (Range Request) | [x] | crates/tee/src/content_fetch.rs (fetch_single: ticket.extend on data arrival) + crates/tee/src/resource_pool.rs (Ticket API). Note: streaming Range Request with shrink is future optimization; current impl fetches full file. | 09 |
-| §4.3 | Memory pattern: fragmented | [x] | crates/tee/src/content_fetch.rs (fetch_fragmented: ticket.extend per segment, validate_fragment_count/size) + resource_pool.rs. Note: accumulates all fragments; streaming shrink-per-fragment requires streaming C2PA reader (future). | 09 |
-| §4.3 | Memory pattern: sidecar | [x] | crates/tee/src/content_fetch.rs (fetch_sidecar: ticket.extend for manifest + content separately) + resource_pool.rs | 09 |
+| §4.3 | Memory pattern: single file (Range Request) | [x] | crates/core/src/content_stream.rs (ContentSource trait + InMemorySource + peak_memory_hint + `contract` test helper) + crates/tee/src/range_source.rs (HttpRangeSource via http-range-client 0.9, SafeRangeReader で D-14 修正済み: get_bytes 直接叩き + file_size clip で末尾跨ぎバッファロスト防止) + crates/tee/src/proxy_fetcher.rs (ProxyRangeSource via SyncBufferedHttpRangeClient<ProxyRangeBackend>, 同じ SafeRangeReader を共有) + crates/tee/src/content_fetch.rs (fetch_streaming → peak_memory_hint で漸進予約: in-memory=full size, range=reader buffer = `min_req_size` = 4 MiB). 50 GB streaming reservation test + 境界条件 contract suite (body_len 1..1025 × 末尾跨ぎ) で D-14 含む全規約を構造的に検証。 | 09, 19 |
+| §4.3 | Memory pattern: fragmented | [x] | crates/tee/src/fragmented_source.rs (FragmentedSource + FragmentedReader: init を Arc<[u8]> 常駐、fragments を lazy load で 1 個ずつ swap、`with_ticket(Arc<Ticket>)` で動的 extend/shrink ループ駆動) + crates/tee/src/content_fetch.rs (fetch_fragmented: init.len 事前予約 → reader 内部で fragment 分を動的会計). 仕様 §4.3 「init + 1 fragment + Reader 内部状態」のピーク要件を達成。実 C2PA 署名付き JPEG を split して c2pa::Reader::with_stream 経由で parse 成功する e2e テスト 3 件 + ContentSource contract suite (境界条件 + D-14 系規約準拠) + 動的 ticket extend/shrink 実測テスト。Ticket は AtomicU64 化で Sync 共有可能。 | 09, 19 |
+| §4.3 | Memory pattern: sidecar | [x] | crates/tee/src/content_fetch.rs (fetch_sidecar: manifest は full fetch + InMemorySource (~数十 KB), content は fetch_streaming 経路 = single と同じ Range Request 対応で peak = min_req_size 4 MiB). 仕様 §4.3 「single とほぼ同じ + マニフェスト分」要件達成。 | 09, 19 |
 | §4.4 | Data size limits enforcement | [x] | crates/tee/src/limits.rs (MAX_FRAGMENT_COUNT=100K, MAX_FRAGMENT_SIZE=100MB, validate_fragment_count/size, 4 tests) | 09 |
 | §4.4 | Chunk timeout (60s) | [x] | crates/tee/src/resource_pool.rs (Ticket::extend checks Cell<Instant> last_activity against CHUNK_TIMEOUT) + crates/tee/src/limits.rs (CHUNK_TIMEOUT constant) | 09 |
 | §4.4 | Global timeout (max 30min, size-adaptive) | [x] | crates/tee/src/limits.rs (compute_global_timeout: min(30min, 60s + size/64KB/s), 3 tests) + crates/tee/src/resource_pool.rs (Ticket::extend checks created_at against global_timeout) | 09 |
@@ -83,9 +84,9 @@ Spec: `docs/v0.1.2/SPECS_JA.md`
 | §5.2 | AWS Nitro TeeRuntime | [x] | crates/tee/src/vendor/aws.rs (NitroRuntime via aws-nitro-enclaves-nsm-api 0.4: nsm_init, GetRandom loop, Attestation request, FakeNsm test backend, 4 tests). Build: `cargo build --features title-tee/vendor-aws` | post-15 |
 | §5.2 | TEE HTTP endpoints | [x] | crates/tee/src/server.rs (GET /health, /keys, /processors, /solana-keys; POST /process, /extension/solana; spawn_blocking for sync orchestrator, 9 tests) | 13 |
 | §5.2 | TEE request processing flow | [x] | crates/tee/src/orchestrator.rs (process_request: fetch → signature_hash → processors → JCS → attestation → ProcessResponse, 9 tests) | 04 |
-| §5.2 | Content fetch: single (HTTP GET + ETag) | [x] | crates/tee/src/content_fetch.rs (HttpContentFetcher + ContentFetcher trait, 3 tests). Range Request streaming sandbox verified in task 01, sandbox tree removed post-verification | 01, 04 |
-| §5.2 | Content fetch: fragmented | [x] | crates/tee/src/content_fetch.rs (init + segments concatenation, 3 tests). Fragment sandbox verified in task 01, removed post-verification | 01, 04 |
-| §5.2 | Content fetch: sidecar | [x] | crates/tee/src/content_fetch.rs (manifest + content separate fetch, 3 tests) + crates/core/src/c2pa_verify.rs (compute_signature_hash_from_manifest_data) | 04 |
+| §5.2 | Content fetch: single (HTTP GET + Range Request) | [x] | crates/tee/src/content_fetch.rs (HttpContentFetcher::fetch_streaming → HttpRangeSource w/ HEAD probe + fallback) + crates/tee/src/range_source.rs (Phase 3 task 19: HttpRangeSource via http-range-client, fake-server tests) + crates/tee/src/proxy_fetcher.rs (ProxyContentFetcher::fetch_streaming → ProxyRangeSource via wire-protocol HEAD/GET_RANGE, Phase 4 task 19) | 01, 04, 19 |
+| §5.2 | Content fetch: fragmented | [x] | crates/tee/src/content_fetch.rs (init + segments concatenation, 3 tests). Fragment-by-fragment streaming via `c2pa::Reader::with_fragment` は v0.1.3 で c2pa-rs fragment API に置き換える (trait は task 19 で ContentStream に streaming 化済み) | 01, 04 |
+| §5.2 | Content fetch: sidecar | [x] | crates/tee/src/content_fetch.rs (manifest + content separate fetch, 3 tests) + crates/core/src/c2pa_verify.rs (compute_signature_hash_from_manifest_data, streaming 化) | 04, 19 |
 | §5.3 | Gateway: client auth + rate limiting | [x] | crates/gateway/src/auth.rs (ApiKeySet + Bearer token middleware) + crates/gateway/src/rate_limit.rs (token bucket per API key, 4 tests) + crates/gateway/src/server.rs (middleware layer, 5 auth tests + 1 rate limit test) | 10 |
 | §5.3 | Gateway: TEE info relay | [x] | crates/gateway/src/state.rs (TeeInfoCache with RwLock, refresh_tee_info) + crates/gateway/src/endpoints.rs (cached responses for /keys, /processors, /health, /solana-keys) | 10 |
 | §5.3 | Gateway: request proxy | [x] | crates/gateway/src/tee_client.rs (TeeClient trait + HttpTeeClient) + crates/gateway/src/endpoints.rs (handle_process, handle_solana_extension: relay to TEE) | 10 |

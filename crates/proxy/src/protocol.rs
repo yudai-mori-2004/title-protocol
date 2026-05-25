@@ -2,18 +2,25 @@
 
 //! # Length-prefixed wire protocol
 //!
-//! Spec §5.2 — TEE content fetch (proxy-mediated transport)
+//! Spec §5.2, §4.3 — TEE content fetch (proxy-mediated transport)
 //!
 //! Used between the Enclave-side `ProxyContentFetcher` and this host-side
 //! forwarder. One request per connection — no request id, no keep-alive.
 //! Sending a second request on the same connection is undefined behavior.
 //!
 //! ## TEE → Proxy (request)
+//!
 //! ```text
 //! [4B u32 BE: method_len][method utf8]
 //! [4B u32 BE: url_len   ][url utf8   ]
 //! [4B u32 BE: body_len  ][body bytes ]
 //! ```
+//!
+//! 対応メソッド (proxy 側 method whitelist):
+//! - `GET`        — 通常の content fetch (body は空)
+//! - `POST`       — Solana RPC 等の送信 (body は payload)
+//! - `HEAD`       — Range Request 対応確認用 (body は空、§4.3)
+//! - `GET_RANGE`  — Range Request 本体 (body は `[8B u64 BE: begin][8B u64 BE: length]`、§4.3)
 //!
 //! ## Proxy → TEE (response)
 //!
@@ -29,6 +36,22 @@
 //! [4B u32 BE: chunk_len][chunk bytes] ...repeated...
 //! [4B u32 BE: 0 or CHUNKED_TRUNCATED]   // end-of-stream marker
 //! ```
+//!
+//! ## HEAD response body format
+//!
+//! `HEAD` requests return a structured body that the TEE side parses to
+//! decide whether Range Request streaming is feasible. status_code は通常の
+//! HTTP ステータス (200 OK 等)。body は固定レイアウト:
+//!
+//! ```text
+//! [8B u64 BE: content_length]
+//! [1B u8: accept_ranges_bytes]      // 1 = "Accept-Ranges: bytes", 0 = otherwise
+//! [4B u32 BE: etag_len][etag utf8]
+//! [4B u32 BE: content_type_len][content_type utf8]
+//! ```
+//!
+//! `etag_len` / `content_type_len` は 0 でも構わない (= ヘッダ未送出)。
+//! `accept_ranges_bytes = 0` の場合、TEE 側は full fetch にフォールバックする。
 //!
 //! ### chunk_len の解釈空間
 //!
@@ -79,6 +102,125 @@ pub const MAX_URL_BYTES: usize = 8 * 1024;
 pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum total response body the proxy is willing to forward.
 pub const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// `HEAD` 応答 body の固定ヘッダ部 (content_length:u64 + accept_ranges:u8) の長さ。
+/// その後に `[u32 etag_len][etag][u32 ct_len][ct]` が続く。
+pub const HEAD_RESPONSE_FIXED_PREFIX_BYTES: usize = 8 + 1;
+
+/// `GET_RANGE` リクエスト body のサイズ (begin:u64 + length:u64 = 16 byte 固定)。
+pub const GET_RANGE_REQUEST_BODY_BYTES: usize = 16;
+
+/// Encode a HEAD response body into the wire format described in this module's
+/// doc comment.
+pub fn encode_head_response(
+    content_length: u64,
+    accepts_ranges: bool,
+    etag: Option<&str>,
+    content_type: Option<&str>,
+) -> Vec<u8> {
+    let etag = etag.unwrap_or("");
+    let ct = content_type.unwrap_or("");
+    let mut buf = Vec::with_capacity(
+        HEAD_RESPONSE_FIXED_PREFIX_BYTES + 4 + etag.len() + 4 + ct.len(),
+    );
+    buf.extend_from_slice(&content_length.to_be_bytes());
+    buf.push(if accepts_ranges { 1 } else { 0 });
+    buf.extend_from_slice(&(etag.len() as u32).to_be_bytes());
+    buf.extend_from_slice(etag.as_bytes());
+    buf.extend_from_slice(&(ct.len() as u32).to_be_bytes());
+    buf.extend_from_slice(ct.as_bytes());
+    buf
+}
+
+/// Parsed HEAD response. Mirror of [`encode_head_response`].
+#[derive(Debug, Clone)]
+pub struct ParsedHeadResponse {
+    pub content_length: u64,
+    pub accepts_ranges: bool,
+    pub etag: Option<String>,
+    pub content_type: Option<String>,
+}
+
+/// Decode a HEAD response body (as produced by [`encode_head_response`]).
+pub fn decode_head_response(body: &[u8]) -> Result<ParsedHeadResponse, &'static str> {
+    if body.len() < HEAD_RESPONSE_FIXED_PREFIX_BYTES {
+        return Err("HEAD response too short for fixed prefix");
+    }
+    let content_length =
+        u64::from_be_bytes(body[..8].try_into().expect("8 bytes => [u8; 8]"));
+    let accepts_ranges = body[8] != 0;
+    let mut pos = HEAD_RESPONSE_FIXED_PREFIX_BYTES;
+
+    if body.len() < pos + 4 {
+        return Err("HEAD response truncated before etag_len");
+    }
+    let etag_len = u32::from_be_bytes(
+        body[pos..pos + 4]
+            .try_into()
+            .expect("4 bytes => [u8; 4]"),
+    ) as usize;
+    pos += 4;
+    if body.len() < pos + etag_len {
+        return Err("HEAD response truncated before etag bytes");
+    }
+    let etag = if etag_len == 0 {
+        None
+    } else {
+        Some(
+            std::str::from_utf8(&body[pos..pos + etag_len])
+                .map_err(|_| "HEAD response etag not utf8")?
+                .to_string(),
+        )
+    };
+    pos += etag_len;
+
+    if body.len() < pos + 4 {
+        return Err("HEAD response truncated before content_type_len");
+    }
+    let ct_len = u32::from_be_bytes(
+        body[pos..pos + 4]
+            .try_into()
+            .expect("4 bytes => [u8; 4]"),
+    ) as usize;
+    pos += 4;
+    if body.len() < pos + ct_len {
+        return Err("HEAD response truncated before content_type bytes");
+    }
+    let content_type = if ct_len == 0 {
+        None
+    } else {
+        Some(
+            std::str::from_utf8(&body[pos..pos + ct_len])
+                .map_err(|_| "HEAD response content_type not utf8")?
+                .to_string(),
+        )
+    };
+
+    Ok(ParsedHeadResponse {
+        content_length,
+        accepts_ranges,
+        etag,
+        content_type,
+    })
+}
+
+/// Encode a GET_RANGE request body: `[u64 begin][u64 length]`.
+pub fn encode_get_range_body(begin: u64, length: u64) -> [u8; GET_RANGE_REQUEST_BODY_BYTES] {
+    let mut buf = [0u8; GET_RANGE_REQUEST_BODY_BYTES];
+    buf[..8].copy_from_slice(&begin.to_be_bytes());
+    buf[8..].copy_from_slice(&length.to_be_bytes());
+    buf
+}
+
+/// Decode a GET_RANGE request body.
+pub fn decode_get_range_body(body: &[u8]) -> Result<(u64, u64), &'static str> {
+    if body.len() != GET_RANGE_REQUEST_BODY_BYTES {
+        return Err("GET_RANGE body must be exactly 16 bytes");
+    }
+    let begin = u64::from_be_bytes(body[..8].try_into().expect("8 bytes => [u8; 8]"));
+    let length = u64::from_be_bytes(body[8..].try_into().expect("8 bytes => [u8; 8]"));
+    Ok((begin, length))
+}
 
 // ----------------------------------------------------------------------------
 // Async I/O — used on the TCP code path (dev/test) and on the vsock writer
@@ -147,4 +289,63 @@ pub fn read_bytes_sync(r: &mut impl std::io::Read, max_len: usize) -> std::io::R
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+// ----------------------------------------------------------------------------
+// Tests for HEAD / GET_RANGE encoding
+// ----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn head_response_roundtrip_with_all_headers() {
+        let encoded = encode_head_response(
+            1_073_741_824,
+            true,
+            Some("\"abc123\""),
+            Some("video/mp4"),
+        );
+        let parsed = decode_head_response(&encoded).expect("decode");
+        assert_eq!(parsed.content_length, 1_073_741_824);
+        assert!(parsed.accepts_ranges);
+        assert_eq!(parsed.etag.as_deref(), Some("\"abc123\""));
+        assert_eq!(parsed.content_type.as_deref(), Some("video/mp4"));
+    }
+
+    #[test]
+    fn head_response_roundtrip_without_optional_headers() {
+        let encoded = encode_head_response(42, false, None, None);
+        let parsed = decode_head_response(&encoded).expect("decode");
+        assert_eq!(parsed.content_length, 42);
+        assert!(!parsed.accepts_ranges);
+        assert!(parsed.etag.is_none());
+        assert!(parsed.content_type.is_none());
+    }
+
+    #[test]
+    fn head_response_rejects_truncated_input() {
+        let encoded = encode_head_response(100, true, Some("e"), Some("ct"));
+        // 切り詰めて 1 byte 落とす → decode 失敗
+        assert!(decode_head_response(&encoded[..encoded.len() - 1]).is_err());
+        assert!(decode_head_response(&[]).is_err());
+        assert!(decode_head_response(&[0u8; HEAD_RESPONSE_FIXED_PREFIX_BYTES]).is_err());
+    }
+
+    #[test]
+    fn get_range_body_roundtrip() {
+        let encoded = encode_get_range_body(2048, 4096);
+        assert_eq!(encoded.len(), GET_RANGE_REQUEST_BODY_BYTES);
+        let (begin, length) = decode_get_range_body(&encoded).expect("decode");
+        assert_eq!(begin, 2048);
+        assert_eq!(length, 4096);
+    }
+
+    #[test]
+    fn get_range_body_rejects_wrong_size() {
+        assert!(decode_get_range_body(&[]).is_err());
+        assert!(decode_get_range_body(&[0u8; 8]).is_err());
+        assert!(decode_get_range_body(&[0u8; 24]).is_err());
+    }
 }

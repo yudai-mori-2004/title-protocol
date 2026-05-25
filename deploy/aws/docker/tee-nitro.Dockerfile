@@ -20,7 +20,8 @@ WORKDIR /build
 # Reproducibility: strip host paths from panic strings and DWARF info,
 # fix embedded timestamps.
 ENV SOURCE_DATE_EPOCH=0
-ENV RUSTFLAGS="--remap-path-prefix=/usr/local/cargo=/cargo --remap-path-prefix=/usr/local/rustup=/rustup"
+ENV CARGO_INCREMENTAL=0
+ENV RUSTFLAGS="--remap-path-prefix=/build=/src --remap-path-prefix=/usr/local/cargo=/cargo --remap-path-prefix=/usr/local/rustup=/rustup"
 
 # Manifests + lock first (dependency cache layer)
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
@@ -75,7 +76,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates=20230311+deb12u1 \
     socat=1.7.4.4-2 \
     iproute2=6.1.0-3 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /var/cache/ldconfig/aux-cache \
+    && rm -rf /var/log/dpkg.log /var/log/apt /var/log/alternatives.log
 
 COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee
 COPY deploy/aws/docker/tee-entrypoint.sh /usr/local/bin/tee-entrypoint.sh

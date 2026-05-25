@@ -52,3 +52,6 @@ title-solana = { path = "crates/solana" }
 
 [profile.release]
 overflow-checks = true
+codegen-units = 1
+lto = "fat"
+strip = "symbols"

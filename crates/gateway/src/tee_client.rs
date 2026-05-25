@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use title_core::{ProcessRequest, ProcessResponse};
 
 use crate::{
-    HealthResponse, KeysResponse, ProcessorsResponse, SolanaExtensionRequest,
-    SolanaExtensionResponse, SolanaKeysResponse,
+    CreateTreeRequest, CreateTreeResponse, HealthResponse, KeysResponse, ProcessorsResponse,
+    SolanaExtensionRequest, SolanaExtensionResponse, SolanaKeysResponse,
 };
 
 /// Outcome of relaying `POST /process` to the TEE. The Gateway is a thin
@@ -78,6 +78,12 @@ pub trait TeeClient: Send + Sync {
         &self,
         req: &SolanaExtensionRequest,
     ) -> Result<SolanaExtensionResponse, TeeClientError>;
+
+    /// POST /solana/create-tree on TEE.
+    async fn create_tree(
+        &self,
+        req: &CreateTreeRequest,
+    ) -> Result<CreateTreeResponse, TeeClientError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,5 +238,12 @@ impl TeeClient for HttpTeeClient {
         req: &SolanaExtensionRequest,
     ) -> Result<SolanaExtensionResponse, TeeClientError> {
         self.post("/extension/solana", req).await
+    }
+
+    async fn create_tree(
+        &self,
+        req: &CreateTreeRequest,
+    ) -> Result<CreateTreeResponse, TeeClientError> {
+        self.post("/solana/create-tree", req).await
     }
 }

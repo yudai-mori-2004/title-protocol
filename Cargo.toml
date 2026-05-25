@@ -8,6 +8,7 @@ members = [
     "crates/gateway",
     "crates/proxy",
     "crates/solana",
+    "crates/cli",
 ]
 exclude = [
     "legacy",

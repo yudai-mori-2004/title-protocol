@@ -75,7 +75,12 @@ pub fn router(state: Arc<GatewayState>) -> Router {
         )
         .route(
             "/extension/solana",
-            axum::routing::post(endpoints::handle_solana_extension).layer(post_limit),
+            axum::routing::post(endpoints::handle_solana_extension)
+                .layer(post_limit.clone()),
+        )
+        .route(
+            "/solana/create-tree",
+            axum::routing::post(endpoints::handle_create_tree).layer(post_limit),
         )
         // axum/tower: layers added LATER wrap EARLIER ones (the last
         // `.layer` call is the outermost middleware). The order below
@@ -156,8 +161,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::tee_client::{ProcessOutcome, TeeClientError};
     use crate::{
-        HealthResponse, KeysResponse, ProcessorsResponse, SolanaExtensionRequest,
-        SolanaExtensionResponse, SolanaKeysResponse,
+        CreateTreeRequest, CreateTreeResponse, HealthResponse, KeysResponse, ProcessorsResponse,
+        SolanaExtensionRequest, SolanaExtensionResponse, SolanaKeysResponse,
     };
     use async_trait::async_trait;
     use std::collections::HashMap;
@@ -179,6 +184,7 @@ pub(crate) mod tests {
         pub process_http_error: Mutex<Option<(u16, String)>>,
         pub solana_keys_response: Mutex<Option<SolanaKeysResponse>>,
         pub solana_ext_response: Mutex<Option<SolanaExtensionResponse>>,
+        pub create_tree_response: Mutex<Option<CreateTreeResponse>>,
         pub should_fail: Mutex<bool>,
     }
 
@@ -210,6 +216,7 @@ pub(crate) mod tests {
                 process_http_error: Mutex::new(None),
                 solana_keys_response: Mutex::new(None),
                 solana_ext_response: Mutex::new(None),
+                create_tree_response: Mutex::new(None),
                 should_fail: Mutex::new(false),
             }
         }
@@ -221,6 +228,10 @@ pub(crate) mod tests {
             });
             *self.solana_ext_response.lock().unwrap() = Some(SolanaExtensionResponse {
                 partial_tx: "mock-partial-tx".into(),
+            });
+            *self.create_tree_response.lock().unwrap() = Some(CreateTreeResponse {
+                partial_tx: "mock-create-tree-tx".into(),
+                tree_pubkey: "MockTreePubkey".into(),
             });
             self
         }
@@ -299,6 +310,20 @@ pub(crate) mod tests {
                 return Err(TeeClientError::Unreachable("mock failure".into()));
             }
             self.solana_ext_response
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| TeeClientError::Unreachable("no mock".into()))
+        }
+
+        async fn create_tree(
+            &self,
+            _req: &CreateTreeRequest,
+        ) -> Result<CreateTreeResponse, TeeClientError> {
+            if *self.should_fail.lock().unwrap() {
+                return Err(TeeClientError::Unreachable("mock failure".into()));
+            }
+            self.create_tree_response
                 .lock()
                 .unwrap()
                 .clone()

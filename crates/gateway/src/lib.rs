@@ -161,6 +161,45 @@ pub struct SolanaExtensionResponse {
     pub partial_tx: String,
 }
 
+// ---------------------------------------------------------------------------
+// POST /solana/create-tree (§6.2)
+// ---------------------------------------------------------------------------
+
+/// POST /solana/create-tree リクエスト。
+/// 仕様書 §6.2
+///
+/// Merkle tree 作成リクエスト。TEE が tree_creator として署名する。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateTreeRequest {
+    /// Payer公開鍵（Base58）。Fee payer。
+    pub payer: String,
+    /// Merkle tree の最大深度。
+    #[serde(default = "default_max_depth")]
+    pub max_depth: u32,
+    /// Merkle tree のバッファサイズ。
+    #[serde(default = "default_max_buffer_size")]
+    pub max_buffer_size: u32,
+    /// 最新のBlockhash（Base58）。
+    pub recent_blockhash: String,
+}
+
+fn default_max_depth() -> u32 {
+    14
+}
+fn default_max_buffer_size() -> u32 {
+    64
+}
+
+/// POST /solana/create-tree レスポンス。
+/// 仕様書 §6.2
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateTreeResponse {
+    /// Base64エンコードされた部分署名済みトランザクション。
+    pub partial_tx: String,
+    /// 作成された Merkle tree のアドレス（Base58）。
+    pub tree_pubkey: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

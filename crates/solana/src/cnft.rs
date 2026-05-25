@@ -261,6 +261,74 @@ pub fn build_and_sign_mint_tx(
     Ok(tx)
 }
 
+/// Apply an ed25519-dalek signature to a VersionedTransaction.
+/// Finds the signer slot matching the key's pubkey and writes the signature.
+fn apply_ed25519_signature(
+    tx: &mut VersionedTransaction,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<(), CnftError> {
+    use ed25519_dalek::Signer;
+
+    let pubkey = Pubkey::new_from_array(key.verifying_key().to_bytes());
+    let message_bytes = tx.message.serialize();
+    let sig = key.sign(&message_bytes);
+
+    let num_signers = tx.message.header().num_required_signatures as usize;
+    let static_keys = tx.message.static_account_keys();
+
+    let index = static_keys
+        .iter()
+        .take(num_signers)
+        .position(|k| k == &pubkey)
+        .ok_or_else(|| {
+            CnftError::MessageCompileFailed(format!("pubkey {} not in signers", pubkey))
+        })?;
+
+    if tx.signatures.len() <= index {
+        return Err(CnftError::MessageCompileFailed(format!(
+            "signature slot {} missing (only {} slots)",
+            index,
+            tx.signatures.len()
+        )));
+    }
+
+    tx.signatures[index] = Signature::from(sig.to_bytes());
+    Ok(())
+}
+
+/// Build a CreateTreeConfigV2 transaction and partially sign it with the TEE key.
+/// Spec §6.2 — tree creation with TEE key as tree_creator.
+///
+/// Generates an ephemeral tree keypair, builds the TX, and signs with both
+/// the TEE signing key (tree_creator) and the tree keypair (new account).
+/// The caller must add the payer signature and broadcast.
+pub fn build_create_tree_signed(
+    signing_key: &SolanaSigningKey,
+    payer: &Pubkey,
+    max_depth: u32,
+    max_buffer_size: u32,
+    blockhash: &Hash,
+    rng: &mut (impl rand::RngCore + rand::CryptoRng),
+) -> Result<(VersionedTransaction, Pubkey), CnftError> {
+    let tree_signing_key = ed25519_dalek::SigningKey::generate(rng);
+    let tree_pubkey = Pubkey::new_from_array(tree_signing_key.verifying_key().to_bytes());
+    let tee_pubkey = signing_key.pubkey();
+
+    let mut tx = build_create_tree_tx(
+        payer,
+        &tree_pubkey,
+        &tee_pubkey,
+        max_depth,
+        max_buffer_size,
+        blockhash,
+    )?;
+
+    signing_key.sign_transaction(&mut tx)?;
+    apply_ed25519_signature(&mut tx, &tree_signing_key)?;
+
+    Ok((tx, tree_pubkey))
+}
+
 /// Serialize a VersionedTransaction to bytes.
 pub fn serialize_transaction(tx: &VersionedTransaction) -> Result<Vec<u8>, CnftError> {
     bincode::serialize(tx).map_err(|e| CnftError::SerializeFailed(e.to_string()))

@@ -40,3 +40,6 @@ legacy/
 # every boot — do not commit). The capture scripts that produce them
 # live under deploy/aws/scripts/.
 deploy/aws/build/
+
+# Local stack runtime state (PIDs, logs)
+.local-stack/

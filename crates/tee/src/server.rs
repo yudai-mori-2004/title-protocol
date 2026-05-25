@@ -98,7 +98,11 @@ pub fn router(state: Arc<TeeAppState>) -> Router {
         .route("/solana-keys", get(handle_solana_keys))
         .route(
             "/extension/solana",
-            post(handle_solana_extension).layer(post_limit),
+            post(handle_solana_extension).layer(post_limit.clone()),
+        )
+        .route(
+            "/solana/create-tree",
+            post(handle_create_tree).layer(post_limit),
         )
         .with_state(state)
 }
@@ -370,6 +374,85 @@ async fn handle_solana_extension(
 
     Ok(Json(serde_json::json!({
         "partial_tx": encoded,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// POST /solana/create-tree
+// ---------------------------------------------------------------------------
+
+/// Solana create-tree request body.
+/// Spec §6.2
+#[derive(serde::Deserialize)]
+struct CreateTreeBody {
+    payer: String,
+    #[serde(default = "default_max_depth")]
+    max_depth: u32,
+    #[serde(default = "default_max_buffer_size")]
+    max_buffer_size: u32,
+    recent_blockhash: String,
+}
+
+fn default_max_depth() -> u32 {
+    14
+}
+fn default_max_buffer_size() -> u32 {
+    64
+}
+
+/// POST /solana/create-tree — Create a Bubblegum V2 Merkle tree.
+/// Spec §6.2
+///
+/// TEE generates an ephemeral tree keypair, builds the CreateTreeConfigV2
+/// transaction, and signs with both the TEE key (tree_creator) and the
+/// tree keypair (new account). The caller adds the payer signature and
+/// broadcasts.
+async fn handle_create_tree(
+    State(state): State<Arc<TeeAppState>>,
+    Json(body): Json<CreateTreeBody>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let payer: title_solana::SolanaPubkey = body.payer.parse().map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("invalid payer pubkey: {e}") })),
+        )
+    })?;
+    let blockhash: title_solana::SolanaHash = body.recent_blockhash.parse().map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("invalid blockhash: {e}") })),
+        )
+    })?;
+
+    let mut rng = rand::rngs::OsRng;
+
+    let (tx, tree_pubkey) = title_solana::cnft::build_create_tree_signed(
+        &state.solana_key,
+        &payer,
+        body.max_depth,
+        body.max_buffer_size,
+        &blockhash,
+        &mut rng,
+    )
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+    })?;
+
+    let tx_bytes = title_solana::cnft::serialize_transaction(&tx).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+    })?;
+
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &tx_bytes);
+
+    Ok(Json(serde_json::json!({
+        "partial_tx": encoded,
+        "tree_pubkey": tree_pubkey.to_string(),
     })))
 }
 

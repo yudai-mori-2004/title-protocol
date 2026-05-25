@@ -25,8 +25,8 @@ use crate::error::GatewayError;
 use crate::state::GatewayState;
 use crate::tee_client::{ProcessOutcome, TeeClientError};
 use crate::{
-    HealthResponse, KeysResponse, ProcessorsResponse, SolanaExtensionRequest,
-    SolanaExtensionResponse, SolanaKeysResponse,
+    CreateTreeRequest, CreateTreeResponse, HealthResponse, KeysResponse, ProcessorsResponse,
+    SolanaExtensionRequest, SolanaExtensionResponse, SolanaKeysResponse,
 };
 
 // ---------------------------------------------------------------------------
@@ -166,6 +166,33 @@ pub async fn handle_solana_keys(
 // ---------------------------------------------------------------------------
 // POST /extension/solana (§2.5, §6.2)
 // ---------------------------------------------------------------------------
+
+/// POST /solana/create-tree -- Relay Merkle tree creation to TEE.
+/// Spec §6.2
+pub async fn handle_create_tree(
+    State(state): State<Arc<GatewayState>>,
+    Json(request): Json<CreateTreeRequest>,
+) -> Result<Json<CreateTreeResponse>, GatewayError> {
+    if !state.is_tee_available() {
+        return Err(GatewayError::TeeUnavailable("TEE is not available".into()));
+    }
+
+    {
+        let cache = state.tee_cache.read().await;
+        if cache.solana_keys.is_none() {
+            return Err(GatewayError::NotFound(
+                "Solana Extension not enabled".into(),
+            ));
+        }
+    }
+
+    state
+        .tee_client
+        .create_tree(&request)
+        .await
+        .map(Json)
+        .map_err(tee_err)
+}
 
 /// POST /extension/solana -- Relay Solana Extension request to TEE.
 /// Spec §2.5, §6.2

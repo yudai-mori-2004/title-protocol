@@ -22,6 +22,7 @@ COPY crates/tee/Cargo.toml crates/tee/Cargo.toml
 COPY crates/gateway/Cargo.toml crates/gateway/Cargo.toml
 COPY crates/proxy/Cargo.toml crates/proxy/Cargo.toml
 COPY crates/solana/Cargo.toml crates/solana/Cargo.toml
+COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
 
 # Stub sources so `cargo build` can resolve + fetch deps before real source.
 # Every workspace member needs a manifest + stub, even ones this image
@@ -32,8 +33,9 @@ RUN mkdir -p crates/attestation/src && echo "" > crates/attestation/src/lib.rs \
  && mkdir -p crates/crypto/src && echo "" > crates/crypto/src/lib.rs \
  && mkdir -p crates/tee/src && echo "fn main() {}" > crates/tee/src/main.rs && echo "" > crates/tee/src/lib.rs \
  && mkdir -p crates/gateway/src && echo "fn main() {}" > crates/gateway/src/main.rs && echo "" > crates/gateway/src/lib.rs \
- && mkdir -p crates/proxy/src && echo "fn main() {}" > crates/proxy/src/main.rs \
- && mkdir -p crates/solana/src && echo "" > crates/solana/src/lib.rs
+ && mkdir -p crates/proxy/src && echo "fn main() {}" > crates/proxy/src/main.rs && echo "" > crates/proxy/src/lib.rs \
+ && mkdir -p crates/solana/src && echo "" > crates/solana/src/lib.rs \
+ && mkdir -p crates/cli/src && echo "fn main() {}" > crates/cli/src/main.rs
 
 # Warm dep cache (no-op if all deps are unchanged across builds)
 RUN cargo build --release --bin title-tee \

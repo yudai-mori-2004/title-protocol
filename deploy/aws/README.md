@@ -1,15 +1,12 @@
 # Title Protocol — AWS Nitro Enclaves deployment
 
-End-to-end recipe for provisioning a Title Protocol TEE node on AWS from a
-clean clone. Every step assumes you're in the repository root unless noted.
-
-> **Status**: experimental — first cloud deployment on the v0.1.2 rewrite.
-> Treat as a working harness for measurement / proof generation, not a
-> hardened production blueprint.
+Run a Title Protocol TEE node on AWS Nitro Enclaves. All operations run
+ON the EC2 instance after `git clone` — no local cross-build, no terraform
+dependency for runtime scripts.
 
 ---
 
-## What this provisions
+## Architecture
 
 ```
   EC2 host (c5.xlarge, Amazon Linux 2023)
@@ -37,161 +34,122 @@ clean clone. Every step assumes you're in the repository root unless noted.
 | Gateway | Docker container, `--network host` | Public internet, port 3000 |
 | socat bridge | Plain process | localhost only |
 | title-proxy | Docker container, `--network host` | Enclave only (vsock:8000) |
-| title-tee | Nitro Enclave | vsock only — `socat` for inbound, `title-proxy` for outbound |
+| title-tee | Nitro Enclave | vsock only |
 
-The Enclave has **no network interface**. Every outbound HTTPS call goes
-through the proxy; every inbound request comes from the socat bridge.
-
----
-
-## Prerequisites (local machine)
-
-| Tool | Notes |
-|---|---|
-| `aws` CLI | `aws configure` against an account that can create EC2 + IAM-free networking |
-| Terraform 1.5+ | `brew install terraform` etc. |
-| Docker with buildx | Used to cross-build linux/amd64 images on Mac |
-| `jq` | For parsing JSON in scripts |
-| Solana CLI (optional) | Only needed for the on-chain `register_key` follow-up |
+The Enclave has **no network interface**. Outbound HTTPS goes through
+the proxy; inbound requests come from the socat bridge.
 
 ---
 
-## Cost note
+## Prerequisites
 
-Single `c5.xlarge` ($0.214/hr Tokyo) + 50 GB gp3 EBS. Stop the instance
-when idle and you only pay for EBS (~$5/mo); destroy with `terraform
-destroy` and you pay nothing. Public IP changes on every stop/start —
-re-read `terraform output public_ip` after restarting.
+- EC2 instance with Nitro Enclave support (c5.xlarge or larger)
+- Amazon Linux 2023 AMI
+- Security group: SSH (22) + Gateway port (3000)
+- SSH access to the instance
 
 ---
 
 ## End-to-end setup
 
-### 1. Provision infrastructure
+### 1. Provision and prepare the host
+
+SSH into a fresh Amazon Linux 2023 EC2 instance:
 
 ```bash
-cd deploy/aws/terraform
-terraform init
-terraform apply
-cd -
+sudo bash deploy/aws/scripts/setup-host.sh
 ```
 
-`terraform apply` provisions an EC2 instance, a security group (SSH + 3000),
-and generates a fresh ed25519 SSH key under `deploy/aws/keys/`. First-boot
-provisioning (Docker, nitro-cli, hugepage allocation) runs automatically
-via cloud-init; subsequent scripts wait for it to finish.
-
-### 2. Build the three images locally
+Log out and back in (for docker/ne group membership), then clone:
 
 ```bash
-bash deploy/aws/scripts/build-images.sh
+git clone <repo-url>
+cd title-protocol
 ```
 
-Produces three `linux/amd64` Docker images:
-- `title-protocol-tee-nitro:latest` — base for the EIF (vendor-aws build, no mock)
-- `title-protocol-proxy:latest` — host-side vsock <-> internet bridge
-- `title-protocol-gateway:latest` — public HTTP entrypoint
-
-### 3. Ship images to EC2 and build the EIF
+### 2. Build images + EIF
 
 ```bash
-bash deploy/aws/scripts/ship-images.sh
+bash deploy/aws/scripts/build.sh
 ```
 
-`docker save | ssh docker load` for all three images, then
-`nitro-cli build-enclave` on the host. The script prints **PCR0 / PCR1 /
-PCR2** at the end — record PCR0; you'll register it on Solana via
-`add_approved_measurement`.
+First build takes ~25 min on c5.xlarge. Incremental rebuilds use Docker
+layer cache (1-3 min). PCR0 / PCR1 / PCR2 are printed at the end —
+record PCR0 for on-chain registration.
 
-### 4. Start the stack
+### 3. Start the stack
 
 ```bash
-bash deploy/aws/scripts/run-stack.sh
+bash deploy/aws/scripts/run.sh
 ```
 
-Brings up `title-proxy`, the Enclave, the socat bridge, and `title-gateway`.
-Stops anything that was already running first, so it's safe to re-run after
-edits.
+Starts: title-proxy → Nitro Enclave → socat bridge → title-gateway.
+Idempotent — stops any running stack first.
 
-To gate the Gateway behind a Bearer token:
+Optional Bearer token authentication:
 ```bash
-API_KEYS="my-secret-key,another-key" bash deploy/aws/scripts/run-stack.sh
+API_KEYS="secret-1,secret-2" bash deploy/aws/scripts/run.sh
 ```
 
-### 5. Sanity check
+### 4. Verify
 
 ```bash
-PUBLIC_IP=$(cd deploy/aws/terraform && terraform output -raw public_ip)
-curl http://$PUBLIC_IP:3000/health
-# {"status":"ok","tee_type":"aws-nitro"}
-curl http://$PUBLIC_IP:3000/keys | jq
-curl http://$PUBLIC_IP:3000/solana-keys | jq
-```
-
-If anything looks off, tail the Enclave console:
-```bash
-bash deploy/aws/scripts/tee-console.sh
+curl http://localhost:3000/health
+curl http://localhost:3000/keys | jq
+curl http://localhost:3000/solana-keys | jq
 ```
 
 ---
 
-## On-chain follow-up (one-time per measurement)
+## On-chain key registration
 
-The TEE's signing key is fresh on every restart and is not trusted by the
-`title-whitelist` program until you register it. See
-[docs/v0.1.2/OPERATIONS_JA.md §4](../../docs/v0.1.2/OPERATIONS_JA.md) for the
-full proof-generation + `register_key` sequence. Quick outline:
+After the stack is running in release mode (not debug):
 
-1. Note the PCR0 emitted by `ship-images.sh`.
-2. Register it: see the `add_placeholder_measurement_devnet` test for the
-   exact instruction encoding — swap the placeholder bytes for your real
-   PCR0 and submit with the admin keypair.
-3. SSH in (`bash deploy/aws/scripts/ssh.sh`) and dump the boot attestation
-   from `/dev/nsm` (`nitro-cli console` shows the captured measurement in
-   the startup log; the matching `signing_pubkey` is also logged).
-4. Generate the SP1 Groth16 proof locally (`cargo run --release -p
-   title-sp1-attestation-aws-nitro-host --bin prove -- <attestation.bin>`).
-   This takes ~90 minutes on CPU.
-5. Submit `register_key` with the resulting proof, public_values, and the
-   freshly generated signing_pubkey.
+```bash
+bash deploy/aws/scripts/fetch-registration-bundle.sh
+```
 
-The Gateway will then accept `POST /extension/solana` requests that mint
-cNFTs signed by the TEE.
+This captures PCR0, solana_pubkey, and the registration attestation into
+`deploy/aws/build/registration/`. Then:
+
+1. `add_approved_measurement(PCR0)` on devnet (admin keypair)
+2. Generate Groth16 proof from `attestation.bin` (~90 min on CPU)
+3. Submit `register_key` with proof + public_values
 
 ---
 
-## Stop / restart
+## Operations
 
 ```bash
-# Stop containers + enclave (leaves EC2 running, IP unchanged):
-bash deploy/aws/scripts/stop-stack.sh
+# Status check
+bash deploy/aws/scripts/status.sh
 
-# Bring everything back without redeploying images:
-bash deploy/aws/scripts/run-stack.sh
+# Stop stack (leaves EC2 running)
+bash deploy/aws/scripts/stop.sh
+
+# Restart after code changes
+bash deploy/aws/scripts/build.sh
+bash deploy/aws/scripts/run.sh
+
+# Debug mode (zeroed PCRs, enables nitro-cli console)
+ENCLAVE_DEBUG=1 bash deploy/aws/scripts/run.sh
+sudo nitro-cli console --enclave-id $(sudo nitro-cli describe-enclaves | jq -r '.[0].EnclaveID')
 ```
 
-## Update code
-
-After changes in `crates/`:
-
-```bash
-bash deploy/aws/scripts/build-images.sh   # rebuilds the three images
-bash deploy/aws/scripts/ship-images.sh    # re-uploads and re-EIFs
-bash deploy/aws/scripts/run-stack.sh      # restarts the stack
-```
-
-If TEE source changed, PCR0 will change. Register the new PCR0 with
+If TEE source changed, PCR0 changes. Register the new PCR0 with
 `add_approved_measurement` and run a fresh `register_key`.
 
-## Teardown
+---
 
-```bash
-cd deploy/aws/terraform
-terraform destroy
-```
+## Configuration
 
-Removes the instance, security group, and SSH key from AWS. The local
-key file under `deploy/aws/keys/` is left intact.
+| Variable | Default | Description |
+|---|---|---|
+| `ENCLAVE_MEM_MIB` | 4096 | Enclave memory allocation |
+| `ENCLAVE_CPU_COUNT` | 2 | Enclave vCPU count |
+| `ENCLAVE_DEBUG` | 0 | Set to 1 for debug mode |
+| `API_KEYS` | (none) | Comma-separated Bearer tokens |
+| `EIF_NAME` | title-protocol-tee.eif | EIF filename |
 
 ---
 
@@ -199,9 +157,9 @@ key file under `deploy/aws/keys/` is left intact.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `nitro-cli build-enclave` fails with "Insufficient memory" | hugepage allocation race after instance reboot | `sudo systemctl restart nitro-enclaves-allocator` then retry |
-| `curl /health` hangs | socat bridge or Enclave still booting | `bash deploy/aws/scripts/tee-console.sh` and confirm "TEE server starting" appeared |
-| TEE process exits with "Self-attestation failed" | NSM device permission or runtime mismatch | confirm `TEE_RUNTIME=nitro` in the EIF (set by the Dockerfile) and `/dev/nsm` is accessible |
-| `/extension/solana` returns 400 with "measurement mismatch" | TEE's runtime PCR0 doesn't match what was registered on Solana | rebuild + re-ship the EIF, register the new PCR0 |
-| Gateway returns 502 / "TEE unavailable" | TEE container crashed; socat bridge orphaned | re-run `run-stack.sh` (it stops & restarts the whole stack) |
-| Proxy logs "DNS lookup failed" for an upstream | upstream not reachable from EC2 | confirm AWS security group + VPC route table allow egress |
+| `nitro-cli build-enclave` fails "Insufficient memory" | hugepage allocation race after reboot | `sudo systemctl restart nitro-enclaves-allocator` then retry |
+| `curl /health` hangs | socat bridge or Enclave still booting | check console: `sudo nitro-cli console --enclave-id <id>` |
+| TEE exits with "Self-attestation failed" | NSM device or runtime mismatch | confirm `TEE_RUNTIME=nitro` in EIF, `/dev/nsm` accessible |
+| `/extension/solana` returns 400 "measurement mismatch" | PCR0 changed after rebuild | register new PCR0 on-chain |
+| Gateway returns 502 "TEE unavailable" | TEE crashed | `bash deploy/aws/scripts/run.sh` |
+| Proxy logs "DNS lookup failed" | egress blocked | check AWS security group + VPC route table |

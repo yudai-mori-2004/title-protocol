@@ -3,9 +3,9 @@
 # Verifies Gateway + TEE start correctly and respond to API requests.
 #
 # Usage:
-#   docker compose up --build -d
-#   ./docker/smoke-test.sh
-#   docker compose down
+#   docker compose -f deploy/local/docker-compose.yml up --build -d
+#   bash deploy/local/docker/smoke-test.sh
+#   docker compose -f deploy/local/docker-compose.yml down
 
 set -euo pipefail
 

@@ -1,19 +1,12 @@
-# Title Protocol HTTP proxy — runs on the EC2 host alongside the Enclave.
-#
-# Listens on vsock port 8000 (CID_ANY) and forwards every request to the
-# real public network. The Enclave sees a vsock socket; the outside world
-# sees a normal HTTPS client coming from the EC2 host.
-#
-# Built once per release on the operator's Linux build host (or via
-# `docker buildx --platform linux/amd64` on Mac). Image is shipped to EC2
-# with `docker save | ssh docker load` and started via
-# `docker run --network host title-protocol-proxy:latest`.
+# Title Protocol TEE (mock) — Multi-stage build
+# Spec §5.4 — Reproducible build via Cargo.lock + rust-toolchain.toml
 
-FROM --platform=linux/amd64 rust:1.93-bookworm AS builder
+# --- Build stage ---
+FROM rust:1.93-bookworm AS builder
 
 WORKDIR /build
 
-# Manifests + lock first for dependency caching
+# Copy manifests + lock first for dependency caching
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/attestation/Cargo.toml crates/attestation/Cargo.toml
 COPY crates/attestation-aws-nitro/Cargo.toml crates/attestation-aws-nitro/Cargo.toml
@@ -35,23 +28,24 @@ RUN mkdir -p crates/attestation/src && echo "" > crates/attestation/src/lib.rs \
  && mkdir -p crates/solana/src && echo "" > crates/solana/src/lib.rs \
  && mkdir -p crates/cli/src && echo "fn main() {}" > crates/cli/src/main.rs
 
-# title-proxy ships with `default = []`; pass --features vendor-aws here
-# to pull in the vsock listener. linux/amd64 only.
-RUN cargo build --release --bin title-proxy --features vendor-aws 2>&1
+RUN cargo build --release --bin title-tee --features title-tee/runtime-mock
 
+# Real source
 COPY crates/ crates/
 RUN find crates -name "*.rs" -exec touch {} + \
- && cargo build --release --bin title-proxy --features vendor-aws
+ && cargo build --release --bin title-tee --features title-tee/runtime-mock
 
 # --- Runtime stage ---
-FROM --platform=linux/amd64 debian:bookworm-slim
+FROM debian:bookworm-slim
 
-# CA certificates only — the proxy talks HTTPS to arbitrary upstreams.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/title-proxy /usr/local/bin/title-proxy
+COPY --from=builder /build/target/release/title-tee /usr/local/bin/title-tee
 
-ENV RUST_LOG=info
-ENTRYPOINT ["/usr/local/bin/title-proxy"]
+ENV TEE_RUNTIME=mock
+EXPOSE 4000
+
+ENTRYPOINT ["/usr/local/bin/title-tee"]

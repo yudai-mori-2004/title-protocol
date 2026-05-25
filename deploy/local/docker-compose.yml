@@ -1,0 +1,55 @@
+# Title Protocol — Local Docker Compose stack
+#
+# Same architecture as AWS Nitro deployment but with mock TEE runtime
+# and TCP proxy (no vsock).
+#
+#   Gateway (:3000) → TEE (:4000) → Proxy (:8000) → internet
+#
+# All three services share a single network namespace (via network_mode)
+# so they communicate over 127.0.0.1, matching the AWS host-network setup.
+#
+# Usage:
+#   cd title-protocol
+#   docker compose -f deploy/local/docker-compose.yml up --build -d
+#   bash deploy/local/docker/smoke-test.sh
+#   docker compose -f deploy/local/docker-compose.yml down
+
+services:
+  proxy:
+    build:
+      context: ../..
+      dockerfile: deploy/local/docker/proxy.Dockerfile
+    environment:
+      PROXY_LISTEN_PORT: "8000"
+      RUST_LOG: info
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:4000:4000"
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  tee:
+    build:
+      context: ../..
+      dockerfile: deploy/local/docker/tee-mock.Dockerfile
+    environment:
+      TEE_RUNTIME: mock
+      PROXY_ADDR: "127.0.0.1:8000"
+      RUST_LOG: info
+    depends_on:
+      - proxy
+    network_mode: "service:proxy"
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/local/docker/gateway.Dockerfile
+    environment:
+      TEE_ENDPOINT: "http://127.0.0.1:4000"
+      API_KEYS: "${API_KEYS:-}"
+      RUST_LOG: info
+    depends_on:
+      - tee
+    network_mode: "service:proxy"
+    restart: unless-stopped

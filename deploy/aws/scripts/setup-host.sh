@@ -21,7 +21,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-ENCLAVE_MEM_MIB="${ENCLAVE_MEM_MIB:-4096}"
+ENCLAVE_MEM_MIB="${ENCLAVE_MEM_MIB:-2048}"
 ENCLAVE_CPU_COUNT="${ENCLAVE_CPU_COUNT:-2}"
 
 echo "=== Title Protocol EC2 provisioning ==="

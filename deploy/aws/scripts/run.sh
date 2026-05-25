@@ -21,7 +21,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 EIF_NAME="${EIF_NAME:-title-protocol-tee.eif}"
-ENCLAVE_MEM_MIB="${ENCLAVE_MEM_MIB:-4096}"
+ENCLAVE_MEM_MIB="${ENCLAVE_MEM_MIB:-2048}"
 ENCLAVE_CPU_COUNT="${ENCLAVE_CPU_COUNT:-2}"
 ENCLAVE_DEBUG="${ENCLAVE_DEBUG:-0}"
 API_KEYS="${API_KEYS:-}"

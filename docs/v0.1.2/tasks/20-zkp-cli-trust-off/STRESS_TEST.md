@@ -64,24 +64,58 @@ Dockerfile 変更で PCR0 が変わるので allowlist と register-key 再実�
 JCS canonical hashing) は問題なく動く。c2pa-rs 公式ツールの hash と直接比較
 したいユースケースが将来出てきたら別途揃える必要あり。
 
-## 残作業 (本セッションで実施予定)
+## レイテンシ — 単発リクエスト
 
-- [ ] MAX_CONTENT_BYTES 2 GiB でデプロイ後の TEE で同じ計測表を再取得
-- [ ] 1 GiB / 2 GiB レベルでの latency と enclave メモリ消費の測定
-- [ ] 並列 N=2/4/8 でレスポンス時間の劣化を確認 (前提: `ResourcePool` の
-  admission limit / total limit)
-- [ ] 端まで通る最大サイズの確認 (`MAX_CONTENT_BYTES` 超え or RAM 圧迫で失敗するか)
+`MAX_CONTENT_BYTES=2 GiB` + `MAX_RESPONSE_BYTES=2 GiB` 拡張後 (PCR0
+`49daf071...`、enclave 2048 MiB RAM、c5.xlarge ホスト)。
+ローカル Mac → 東京リージョン EC2、S3 download 込みの end-to-end latency:
 
-## レイテンシ (現状 = 100 MiB cap、cache hit 後)
+| 入力 | TEE c2pa-verify | elapsed |
+|---|---|---|
+| `stress-big-200.mp4` (214 MiB) | ok | 7s |
+| `stress-big-500.mp4` (536 MiB) | ok | 12s |
+| `stress-big-1000.mp4` (1071 MiB) | ok | 23s |
 
-| asset | サイズ | TEE 処理時間 (CLI elapsed) | 備考 |
-|---|---|---|---|
-| `c2pa-properly-signed.jpg` | 273 KiB | < 1s | cache 関係なく即時 |
-| `stress-small.mp4` (4 MiB) | 4 MiB | ~1s | |
-| `stress-101.mp4` | 101 MiB | ~2-3s | S3 → TEE proxy fetch 込み |
-| `stress-606mb.mp4` (truncated に終わる) | 606 MiB DL → 100 MiB 処理 | ~1s | early fail |
+スループット: おおよそ **40 MiB/s** 安定 (S3 → proxy → enclave → c2pa-rs
+パース込み)。c5.xlarge の network 帯域に支配される。
 
-実 throughput 測定は MAX_CONTENT_BYTES 拡張デプロイ後に追加予定。
+## 並列リクエスト
+
+| 構成 | 結果 | 備考 |
+|---|---|---|
+| N=2 × 200 MiB | 2/2 ok, 8s | enclave 健在 |
+| N=2 × 500 MiB | 2/2 ok, 14s | enclave 健在 |
+| N=4 × 200 MiB | 3/4 ok (1 c2pa-verify error), 10s | enclave 健在 |
+| N=2 × 1 GiB | 0/2, **HTTP 503**, enclave クラッシュ | 2 GiB 合計 = enclave RAM 上限 |
+| N=4 × 500 MiB | 0/4, **HTTP 503**, enclave クラッシュ | 2 GiB 合計 = enclave RAM 上限 |
+
+**観測**: `enclave RAM (2048 MiB) ≒ in-flight 合計 content size` を超えると
+enclave が落ちて Gateway が 503 を返す。`run.sh` で再起動すれば復活。
+
+実運用上の指針:
+- 単発 1 GiB までは安定
+- 並列度を上げる場合は **N × size ≦ enclave RAM × 0.8 程度** を目安に
+- 大容量を捌くなら `ENCLAVE_MEM_MIB` を 4096〜8192 に上げる
+  (`/etc/nitro_enclaves/allocator.yaml` も同じ値に揃える)
+
+## 修正コミット履歴
+
+| commit | 内容 |
+|---|---|
+| `58abf3d` | `MAX_CONTENT_BYTES` env var 追加、AWS Nitro image で 2 GiB をデフォルトに |
+| `f42cf88` | `title-proxy` の `MAX_RESPONSE_BYTES` を 100 MiB → 2 GiB |
+
+両方を入れて再ビルド → 2 GiB の壁が消える。Dockerfile 変更で PCR0 が変わる
+ので、本番投入時には allowlist の `add-measurement` + `register-key` 再実行が
+必要。
+
+## 残作業
+
+- enclave memory 4 GiB / 8 GiB プロビジョン時の最大 N × size の再測定
+- HTTP server / ResourcePool / enclave 内 OOM 時の自己回復 (現状は外部から
+  `run.sh` を叩き直す必要あり)
+- `c2pa::Reader` の MP4 BMFF parser memory profile (大きい moov atom が
+  どれだけ RAM を食うか実測)
 
 ## 既知の周辺問題 (本タスクと独立)
 

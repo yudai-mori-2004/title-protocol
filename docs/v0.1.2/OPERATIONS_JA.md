@@ -90,19 +90,47 @@ Title Protocol が動き出すまでの依存関係を時系列で示す（仕�
 | Solana CLI 3.x | プログラムデプロイ・admin 鍵作成 | `sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"` |
 | AWS CLI v2 | EC2 / Terraform 操作 | https://docs.aws.amazon.com/cli/v2/ |
 | Terraform 1.5+ | EC2 + SG + 鍵をプロビジョン | https://developer.hashicorp.com/terraform/install |
+| SP1 toolchain v5.2.4 | SP1 guest のビルド + proof 生成 | `curl -L https://sp1.succinct.xyz \| bash && ~/.sp1/bin/sp1up --version v5.2.4` |
+
+> **SP1 を v5.2.4 に固定する理由**: on-chain 検証で使う
+> `sp1-solana 0.1.0` が v5 wire format しかサポートしておらず、v6 で生成した
+> proof は拒否される（仕様 §6.2 / 詳細は
+> [PCR0_REPRODUCIBILITY_INVESTIGATION.md](./tasks/15-docker-deployment/PCR0_REPRODUCIBILITY_INVESTIGATION.md) 末尾の SP1 version pin 節）。
+
+AWS CLI は使う region (デフォルト Terraform: `ap-northeast-1`) に
+`aws configure` で credential + region を通しておく:
+
+```bash
+aws configure  # AWS Access Key, Secret, Default region = ap-northeast-1
+aws sts get-caller-identity   # 動作確認
+```
+
+Solana CLI のデフォルト RPC は devnet に固定:
+
+```bash
+solana config set --url https://api.devnet.solana.com
+```
 
 `title-cli` 自身も同じリポジトリでビルドする。後続のコマンドはすべて
-`cargo run --release -p title-cli -- <subcommand>` または `./target/release/title-cli <subcommand>`
-で呼べる。本書では短く **`title-cli <subcommand>`** と表記する。
+`cargo run --release -p title-cli -- <subcommand>` または
+`./target/release/title-cli <subcommand>` で呼べる。本書では短く
+**`title-cli <subcommand>`** と表記する。
 
 ```bash
 cargo build --release -p title-cli
 alias title-cli="$PWD/target/release/title-cli"   # 一時的に PATH 通すなら
 ```
 
-admin 鍵は `keys/admin.json` に置く。プログラムの `ADMIN_AUTHORITY`
-(`wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna`) と一致している必要がある。
-チーム内では同じ鍵を共有する（変更したい場合は仕様 §6.2 に従いプログラム再デプロイ）。
+#### admin keypair (`keys/admin.json`)
+
+| 状況 | 必要な対応 |
+|---|---|
+| **既デプロイの devnet program (`43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs`) を使う** | プログラムの `ADMIN_AUTHORITY` 定数 (`wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna`) に対応する private key を `keys/admin.json` に置く。**この private key を持っていないと admin 操作 (init-registries / add-* / remove-* / revoke-key) が一切できない**。 |
+| **新規 organization として一から立てる** | 1) `solana-keygen new --outfile keys/admin.json` で新規生成 → 2) `programs/title-whitelist/src/lib.rs` の `ADMIN_AUTHORITY` を新 pubkey に書き換え → 3) `programs/title-whitelist/keypair.json` を新規生成して `declare_id!` を更新 → 4) `Anchor.toml` 更新 → 5) §2.2 でデプロイ。 |
+
+`keys/*.json` は `.gitignore` 対象。秘密鍵をコミットしないこと。
+admin keypair に devnet SOL が必要 (`solana airdrop 2 $(solana-keygen pubkey keys/admin.json) --url devnet`、
+airdrop が枯渇していたら https://faucet.solana.com/ を使う)。
 
 ### 2.2 Solana コントラクトのデプロイ
 
@@ -133,31 +161,32 @@ title-cli init-registries --admin keys/admin.json
 
 ### 2.4 SP1 guest ビルドと vkey_hash の登録
 
-仕様 §6.2 「確認 1: 検証回路の正規性」用の指紋を取得・登録する。検証回路の
-Rust コード (`sp1-guests/attestation-aws-nitro/`) を変更しない限り変わらない。
+仕様 §6.2 「確認 1: 検証回路の正規性」用の指紋を取得・登録する。
 
 ```bash
-# SP1 toolchain を入れる（初回のみ）
-curl -L https://sp1.succinct.xyz | bash
-~/.sp1/bin/sp1up --version v6.2.0
-
-# vkey_hash を取得
+# SP1 toolchain は §2.1 で v5.2.4 を install 済み前提
 cd sp1-guests/attestation-aws-nitro/host
-cargo run --release --locked --bin vkey
+cargo run --release --bin vkey
 cd -
-# 出力: 0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754
+# 出力例: 0x0071fff4b7217786401fa6a7be505a4a13ed06dc65cb18d25faee73da7b1db99
 ```
 
 得られた hex を許可リストに追加:
 
 ```bash
-title-cli add-vkey \
-  --admin keys/admin.json \
-  --vkey-hex 0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754
+VKEY=$(cd sp1-guests/attestation-aws-nitro/host && cargo run --release --bin vkey 2>/dev/null)
+title-cli add-vkey --admin keys/admin.json --vkey-hex "$VKEY"
 ```
 
-> guest 更新時は新しい vkey を追加してから旧 vkey を `title-cli remove-vkey`
-> で外す。新旧併存期間中はどちらの proof も受理される。
+> **既知の制約**: 現状 SP1 guest のビルドは host 環境 (macOS / Linux 等) に
+> よって異なる vkey を吐く（`build.rs` の `--remap-path-prefix` でも消えない
+> 残差がある）。**実際に proof を生成する環境 (通常は §4 の prover EC2) で
+> ビルドして得た vkey** を allowlist に登録すること。後述の §4.1 で
+> `prover-run.sh` 経由で生成した proof bundle に `attestation.bin.vkey_hash.hex`
+> が同梱されるので、その値を `register-key` 前に `title-cli add-vkey` する流れでも良い。
+
+> guest コードを更新したときは新しい vkey を追加してから旧 vkey を
+> `title-cli remove-vkey` で外す。新旧併存期間中はどちらの proof も受理される。
 
 ### 2.5 EC2 インフラ準備
 
@@ -187,8 +216,15 @@ EC2 にリポジトリを clone し、3 つの Docker image (`tee-nitro` / `titl
 
 ```bash
 # === EC2 上 ===
-git clone <repo-url> ~/title-protocol
+git clone https://github.com/yudai-mori-2004/title-protocol.git ~/title-protocol
 cd ~/title-protocol
+
+# 初回のみ: docker / nitro-cli / hugepage を入れる
+# (user-data.sh が自動でこれをやるが、フルパスで明示しておくと user-data の
+#  完了前に SSH した場合や、手動で再セットアップしたい場合のリカバリになる)
+sudo bash deploy/aws/scripts/setup-host.sh
+# ↑ docker グループに追加されるため、1 回ログアウト → 再 SSH
+
 bash deploy/aws/scripts/build.sh
 ```
 
@@ -211,12 +247,16 @@ bash deploy/aws/scripts/run.sh
 debug-mode で起動するが、NSM が発行する Attestation Document の PCR が全て
 ゼロになり on-chain 登録に使えないため、本番では絶対に設定しない。
 
-起動確認:
+起動確認 (手元から):
 
 ```bash
-# 外部から
-curl -sf http://<EC2_PUBLIC_IP>:3000/health
+# === ローカル ===
+PUBLIC_IP=$(terraform -chdir=deploy/aws/terraform output -raw public_ip)
+curl -sf "http://$PUBLIC_IP:3000/health"
 # {"status":"ok","tee_type":"aws-nitro"}
+
+# 以降、title-cli の Gateway endpoint を EC2 に向ける
+export GATEWAY_URL="http://$PUBLIC_IP:3000"
 ```
 
 ### 2.8 PCR0 と registration attestation の取得（EC2 上）
@@ -248,14 +288,15 @@ debug-mode で起動した Enclave だと本スクリプトは fail-fast する�
 
 ```bash
 # === ローカル ===
+PUBLIC_IP=$(terraform -chdir=deploy/aws/terraform output -raw public_ip)
 mkdir -p deploy/aws/build/registration
 scp -i deploy/aws/keys/title-protocol-devnet.pem \
-    'ec2-user@<EC2_PUBLIC_IP>:~/title-protocol/deploy/aws/build/registration/*' \
+    "ec2-user@${PUBLIC_IP}:~/title-protocol/deploy/aws/build/registration/*" \
     deploy/aws/build/registration/
 
 # PCR0 を許可リストに追加
 PCR0=$(jq -r '.PCR0' deploy/aws/build/registration/measurements.json)
-title-cli add-measurement --admin keys/admin.json --pcr0-hex 0x$PCR0
+title-cli add-measurement --admin keys/admin.json --pcr0-hex "0x$PCR0"
 ```
 
 > TEE バイナリ更新時は新 PCR0 を追加してから旧 PCR0 を
@@ -328,7 +369,8 @@ bash deploy/aws/scripts/prover-run.sh
 ```
 
 これだけで c5.12xlarge prover EC2 を起動し → toolchain インストール →
-proof 生成 → artifact 回収 → EC2 terminate まで自動で済む（合計 30 分 / ~$1）。
+proof 生成 → artifact 回収 → EC2 terminate まで自動で済む（合計 ~110 分 / ~$4。
+on-chain `sp1-solana 0.1.0` 互換性のため SP1 v5 系を使う関係で v6 系より遅い）。
 詳細・分割実行方法は
 [sp1-guests/attestation-aws-nitro/README.md](../../sp1-guests/attestation-aws-nitro/README.md) 参照。
 
@@ -374,28 +416,64 @@ title-cli describe-whitelist --signing-pubkey "$SIGNING_PUBKEY"
 
 ### 4.4 動作検証 — cNFT 発行
 
-`POST /extension/solana` を叩いて cNFT 部分署名が返ることを確認する:
+§2.7 で `export GATEWAY_URL="http://$PUBLIC_IP:3000"` した状態で:
 
 ```bash
-curl -X POST http://<EC2_PUBLIC_IP>:3000/extension/solana \
+# 1) Merkle tree を作成（初回のみ / 新しい cNFT 系統を切るとき）
+title-cli create-tree --payer keys/admin.json
+# 出力に出る tree pubkey をメモ
+export MERKLE_TREE=<step1 で出た tree pubkey>
+
+# 2) C2PA 署名済みコンテンツを Gateway で processing
+#    --url は HTTPS-fetchable な、C2PA 署名付きのコンテンツでなければならない
+#    動作テスト用には `crates/core/tests/fixtures/` 配下の C2PA fixture を
+#    一時的に GitHub Gist / S3 等にホストして渡す
+title-cli process --url https://your-storage/c2pa-signed-content.jpg
+# 標準出力に ProcessResponse JSON が返る。これを丸ごとオフチェーンストレージ
+# (S3 / Cloudflare R2 / IPFS gateway 等、HTTPS-fetchable ならどこでも) に
+# upload して URL を得る。Title Protocol 自体は特定のストレージサービスに
+# 依存しない (仕様 §0.4)。
+export OFFCHAIN_URL=https://your-storage/<step2 で得た JSON URL>
+
+# 3) cNFT 発行
+title-cli mint \
+  --offchain-data-url "$OFFCHAIN_URL" \
+  --merkle-tree "$MERKLE_TREE" \
+  --payer keys/admin.json
+# tx signature が devnet に broadcast される
+```
+
+> **メモ**: `c2pa-verify` processor が `validation_state = Invalid` を返しても
+> mint 自体は成功する。Title Protocol は「TEE が見た事実 (検証成功/失敗/エラー)」を
+> そのまま記録する設計で (仕様 §3.2)、processor の検証結果は cNFT の中の
+> 検証材料として残るが、cNFT 発行可否は判断しない。実プロダクション運用では、
+> mint した cNFT を消費する側 (DApp / インデクサ) で `results.c2pa-verify.status`
+> を確認すること。
+>
+> dev fixture や C2PA test signing service で発行されたコンテンツは
+> 多くの場合 root CA が信頼チェーンに含まれず Invalid になる。これは
+> CA pin の問題で TEE の挙動異常ではない。実コンテンツ (e.g. Sony α7 / Leica M11
+> / Adobe Lightroom 等の正規 C2PA 認証カメラ・ソフト出力) では Valid になる。
+
+下位レイヤ (`POST /extension/solana`) を直接叩く場合のリクエスト形:
+
+```bash
+curl -X POST "$GATEWAY_URL/extension/solana" \
   -H 'Content-Type: application/json' \
-  -d '{
-    "offchain_data_url": "<URL to core response JSON>",
-    "payer": "<base58 payer pubkey>",
-    "merkle_tree": "<base58 merkle tree address>",
-    "recent_blockhash": "<base58 blockhash>"
-  }'
+  -d "$(jq -n \
+    --arg ofu  "$OFFCHAIN_URL" \
+    --arg pay  "$(solana-keygen pubkey keys/admin.json)" \
+    --arg tree "$MERKLE_TREE" \
+    --arg bh   "$(solana --url devnet block-height --commitment confirmed > /dev/null && solana --url devnet rpc-version > /dev/null && echo TODO)" \
+    '{offchain_data_url: $ofu, payer: $pay, merkle_tree: $tree, recent_blockhash: $bh}')"
 # {"partial_tx": "<base64 partially signed VersionedTransaction>"}
 ```
 
-CLI から一気通貫で叩く場合（Merkle tree 未作成時は最初に `create-tree`）:
-
-```bash
-# 1) Merkle tree を作成（初回 / cNFT 容量を増やしたい時のみ）
-title-cli create-tree --payer keys/admin.json
-
-# 2) コンテンツを Gateway に POST し、レスポンス JSON をオフチェーンストレージへアップロード
-title-cli process --url https://your-storage/big-video.mp4
+`recent_blockhash` はクライアント側で
+`solana_sdk::RpcClient::get_latest_blockhash()` 相当を呼んで取得 (devnet で
+~150 slot ≈ 60 秒以内の blockhash でないと `BlockhashNotFound` で拒否される)。
+title-cli の `mint` サブコマンドはこの取得 + 署名 + broadcast を全部やる
+ので、curl で直接叩くのはトラブルシュート用途のみ。
 
 # 3) cNFT を発行
 title-cli mint \
@@ -474,11 +552,12 @@ await connection.sendRawTransaction(partialTx.serialize());
 
 TEE を再起動するたびに以下が新しくなる（仕様 §0.5 stateless 設計、§6.2）:
 - 暗号化用鍵束（KeyBundle）→ Gateway が health check で自動再取得
-- Solana 署名鍵 → 新規 `register_key` 提出が必要
+- Solana 署名鍵 → 新規 `title-cli register-key` 提出が必要
 
 Gateway は health check で鍵変更を検知し、`/keys` と `/solana-keys` のキャッシュを自動更新する（`crates/gateway/src/state.rs::check_and_refresh`）。
 
-新しい署名鍵の whitelist 登録は §4 のフローを再実行（fetch-registration-bundle → proof → register_key 提出）。
+新しい署名鍵の whitelist 登録は §4 のフローを再実行
+（`fetch-registration-bundle.sh` → `prover-run.sh` → `title-cli register-key`）。
 
 ホワイトリストには鍵が増えていく一方で問題ない（仕様 §6.2 末尾）。
 
@@ -556,7 +635,7 @@ curl -sf http://localhost:3000/health
 # {"status":"ok","tee_type":"mock"}
 ```
 
-mock runtime は `MockAttestationVerifier` とペアで動き、`"mock-attestation:"` プレフィックス付きのバイト列を Attestation として扱う。実 PCR や AWS 証明書チェーン検証は走らないので、本番経路の構造確認用。`add_approved_measurement` には mock の measurement (`[0u8; 48]`) を登録すれば devnet で疎通確認できるが、これは攻撃面が自明なので **devnet 限定**。
+mock runtime は `MockAttestationVerifier` とペアで動き、`"mock-attestation:"` プレフィックス付きのバイト列を Attestation として扱う。実 PCR や AWS 証明書チェーン検証は走らないので、本番経路の構造確認用。`title-cli add-measurement` で mock の measurement (`0x000000...` 48 バイト) を登録すれば devnet で疎通確認できるが、これは攻撃面が自明なので **devnet 限定**。
 
 ---
 
@@ -570,18 +649,22 @@ error[E0599]: no method named `source_file` found for struct `proc_macro2::Span`
 
 anchor 0.30.1 と最新 proc-macro2 の非互換。`anchor build --no-idl` で IDL ビルドをスキップする。
 
-### `register_key` が `VkeyNotApproved (6007)` で reject される
+### `register-key` が `VkeyNotApproved (6008)` で reject される
 
-`ApprovedVkeys` PDA に該当の `sp1_vkey_hash` が登録されていない（仕様 §6.2 確認 1）。`add_approved_vkey` で追加する（admin only）。
+`ApprovedVkeys` PDA に該当の `sp1_vkey_hash` が登録されていない（仕様 §6.2 確認 1）。
+`title-cli add-vkey --admin keys/admin.json --vkey-hex 0x<vkey>` で追加する（admin only）。
+vkey は host 依存なので、proof bundle 内の `attestation.bin.vkey_hash.hex` の値を
+そのまま使うのが安全。
 
-### `register_key` が `MeasurementNotApproved (6010)` で reject される
+### `register-key` が `MeasurementNotApproved (6011)` で reject される
 
-`ApprovedMeasurements` PDA に該当 measurement が登録されていない（仕様 §6.2 確認 2）。`add_approved_measurement` で追加する。
+`ApprovedMeasurements` PDA に該当 measurement が登録されていない（仕様 §6.2 確認 2）。
+`title-cli add-measurement --admin keys/admin.json --pcr0-hex 0x<pcr0>` で追加する。
 
-### `register_key` が `UserDataMismatch (6009)` で reject される
+### `register-key` が `UserDataMismatch (6006)` で reject される
 
 `user_data_hash != SHA-256(b"title:solana-key" || signing_pubkey)`（仕様 §6.2 確認 3）。typical な原因:
-- proof 生成に使った attestation.bin と register_key に渡している signing_pubkey が別の TEE 起動由来
+- proof 生成に使った attestation.bin と `register-key` に渡している signing_pubkey が別の TEE 起動由来
 - → §4 を最初からやり直し（fetch-registration-bundle で取った 3 つのファイル全部を 1 セットで使う）
 
 ### TEE 起動時に `Self-attestation failed` で停止する

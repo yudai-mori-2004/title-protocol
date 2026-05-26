@@ -16,15 +16,20 @@
 ```bash
 git clone https://github.com/yudai-mori-2004/title-protocol.git
 cd title-protocol
-docker compose up --build -d   # TEE (mock runtime) + Gateway
-./docker/smoke-test.sh         # 5 endpoints, ~10s
+docker compose up --build -d                # TEE (mock runtime) + Gateway
+bash deploy/local/docker/smoke-test.sh      # 5 endpoints, ~10s
 ```
 
 > **NOTE:** This Quickstart starts the TEE with a **mock runtime** — it returns
 > a fake Attestation Document that says "DO-NOT-APPROVE" and is unsafe for any
-> production use. Hardware-backed (AWS Nitro Enclave) deployment is the only
-> path that produces real, verifiable attestations; see
-> [`deploy/aws/README.md`](deploy/aws/README.md).
+> production use.
+>
+> The **real** flow (AWS Nitro Enclave → SP1 ZKP → Solana register-key →
+> cNFT mint) is a separate, longer procedure. Read these in order:
+>
+> 1. [`docs/v0.1.2/OPERATIONS_JA.md`](docs/v0.1.2/OPERATIONS_JA.md) — primary operator runbook (JA)
+> 2. [`deploy/aws/README.md`](deploy/aws/README.md) — AWS Nitro Enclave specifics (EN)
+> 3. [`sp1-guests/attestation-aws-nitro/README.md`](sp1-guests/attestation-aws-nitro/README.md) — SP1 ZKP proof generation
 
 ---
 
@@ -158,7 +163,7 @@ and exercised end-to-end on devnet. Remaining work tracked in
 
 ## Roadmap
 
-See [`docs/v0.1.2/OPERATIONS_JA.md` §9](docs/v0.1.2/OPERATIONS_JA.md) for current priorities. Headline items:
+Headline items (tracking in [`docs/v0.1.2/COVERAGE.md`](docs/v0.1.2/COVERAGE.md)):
 
 - Additional processors: `provenance-graph`, `image-pdq`, `video-vpdq`, `cert-google/sony/leica`
 - TypeScript client SDK

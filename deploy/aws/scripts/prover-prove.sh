@@ -55,7 +55,7 @@ echo "==> Building prove + vkey (release, locked)"
 echo "==> vkey_hash:"
 "${HOST_DIR}/target/release/vkey"
 
-echo "==> Generating Groth16 proof (~15-20 min on c5.12xlarge)"
+echo "==> Generating Groth16 proof (~90 min on c5.12xlarge for SP1 v5)"
 ( cd "${HOST_DIR}" && RUST_LOG=info ./target/release/prove ./attestation.bin )
 
 echo "==> Artifacts:"

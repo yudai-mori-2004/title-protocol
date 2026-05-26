@@ -18,13 +18,13 @@ proof bundle を出力する。
 bash deploy/aws/scripts/prover-run.sh
 ```
 
-これだけで以下が自動実行される（合計 30 分 / ~$1）:
+これだけで以下が自動実行される（合計 ~110 分 / ~$4）:
 
 1. c5.12xlarge prover EC2 を起動
-2. toolchain (Rust + SP1 v6.2.0) + 16 GiB swap をインストール
+2. toolchain (Rust + SP1 v5.2.4) + 16 GiB swap + Docker をインストール
 3. `deploy/aws/build/registration/attestation.bin` を prover に転送
 4. リポジトリを git clone し、`prove` バイナリをビルド
-5. Groth16 proof を生成（~18 分）
+5. Groth16 proof を生成（~90 分 (SP1 v5 系)）
 6. proof artifact 3 ファイルをローカルの `deploy/aws/build/registration/` へ取得
 7. prover EC2 を terminate
 
@@ -63,30 +63,35 @@ bash deploy/aws/scripts/prover-run.sh
 
 ```bash
 # 1. EC2 を起動（標準出力に "INSTANCE_ID\nPUBLIC_IP" を吐く）
-bash deploy/aws/scripts/prover-launch.sh
+LAUNCH_OUT=$(bash deploy/aws/scripts/prover-launch.sh)
+INSTANCE_ID=$(echo "$LAUNCH_OUT" | sed -n '1p')
+PUBLIC_IP=$(echo "$LAUNCH_OUT"  | sed -n '2p')
 
-# 2. prover に setup スクリプトと attestation を転送
+# 2. prover に setup スクリプト・prove スクリプト・attestation・ソース tarball
+#    (prover-prove.sh は SOURCE_TARBALL から展開するので GitHub アクセスは不要)
+git archive --format=tar.gz HEAD > /tmp/source.tar.gz
 scp -i deploy/aws/keys/title-protocol-devnet.pem \
     deploy/aws/scripts/prover-setup.sh \
     deploy/aws/scripts/prover-prove.sh \
     deploy/aws/build/registration/attestation.bin \
-    ec2-user@<PUBLIC_IP>:/tmp/
+    /tmp/source.tar.gz \
+    "ec2-user@${PUBLIC_IP}:/tmp/"
 
 # 3. prover 上で toolchain + swap を入れる
-ssh -i deploy/aws/keys/title-protocol-devnet.pem ec2-user@<PUBLIC_IP> \
+ssh -i deploy/aws/keys/title-protocol-devnet.pem "ec2-user@${PUBLIC_IP}" \
     'bash /tmp/prover-setup.sh'
 
-# 4. prover 上で git clone + build + prove (SSH agent 転送が必要)
-ssh -A -i deploy/aws/keys/title-protocol-devnet.pem ec2-user@<PUBLIC_IP> \
+# 4. prover 上で build + prove
+ssh -i deploy/aws/keys/title-protocol-devnet.pem "ec2-user@${PUBLIC_IP}" \
     'bash /tmp/prover-prove.sh /tmp/attestation.bin'
 
 # 5. artifact を取得
 scp -i deploy/aws/keys/title-protocol-devnet.pem \
-    'ec2-user@<PUBLIC_IP>:~/title-protocol/sp1-guests/attestation-aws-nitro/host/attestation.bin.*' \
+    "ec2-user@${PUBLIC_IP}:~/title-protocol/sp1-guests/attestation-aws-nitro/host/attestation.bin.*" \
     deploy/aws/build/registration/
 
 # 6. 完了したら terminate
-aws ec2 terminate-instances --instance-ids <INSTANCE_ID>
+aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
 ```
 
 ## proof の中身
@@ -118,15 +123,21 @@ on-chain `register_key` の四段検証 (仕様 §6.2):
 ## 再現性
 
 proof 生成は **冪等**: 同じ `attestation.bin` から何度実行しても同じ proof と
-同じ `public_values` が出る。SP1 guest プログラム本体も
-`build.rs` の `--remap-path-prefix` でホスト独立にビルドされるため、ソース・
-`Cargo.lock`・SP1 toolchain バージョン (`v6.2.0`) が一致するどの環境でも
-同じ `vkey_hash` (`0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754`) が得られる。
+同じ `public_values` が出る。
 
-vkey_hash が想定値と一致しないときに確認すること:
+ただし **vkey_hash はビルドホストに依存する** (既知の制約):
+SP1 SDK v5.2.4 + `build.rs` の `--remap-path-prefix` でも消えない host
+固有値が ELF に残るため、macOS / Linux 等の OS が違うと別の vkey になる。
+一致を確認したいときは下記:
+
 - `git pull` で `Cargo.lock` が最新か
-- SP1 toolchain が `v6.2.0` か (`~/.sp1/bin/sp1up --version v6.2.0`)
+- SP1 toolchain が `v5.2.4` か (`~/.sp1/bin/sp1up --version v5.2.4`)
 - `cargo build --locked` を使っているか (`prover-prove.sh` はそうしている)
+- ビルドホスト OS / アーキテクチャが同じか (典型的な運用: prover EC2 で
+  プロビジョンした AL2023 x86_64 を「基準環境」とし、その vkey を allowlist に登録)
+
+得られた vkey は `attestation.bin.vkey_hash.hex` に書き出され、
+`title-cli register-key --bundle` がそれを on-chain への提出値として使う。
 
 ## メモリ・所要時間
 
@@ -134,7 +145,7 @@ Groth16 wrapping のピーク RSS は **~95 GiB**。
 
 | インスタンス | 物理 RAM | swap | 所要時間 | コスト目安 |
 |---|---|---|---|---|
-| `c5.12xlarge` (推奨) | 96 GiB | 16 GiB | ~18 分 | $2/hr |
+| `c5.12xlarge` (推奨) | 96 GiB | 16 GiB | ~90 分 (SP1 v5 系) | $2/hr |
 | ローカル Mac (16 GiB) | 16 GiB | SSD 圧縮 swap | ~90 分 | 0 |
 
 c5.12xlarge は物理 RAM ぎりぎりなので、16 GiB swap が無いと OOM kill される

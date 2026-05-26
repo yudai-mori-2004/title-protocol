@@ -15,7 +15,9 @@
 # debugging or re-running). You can terminate later with:
 #   aws ec2 terminate-instances --instance-ids <id>
 #
-# Total wall clock: ~30 min on c5.12xlarge (~$1 in Tokyo).
+# Total wall clock: ~110 min on c5.12xlarge (~$4 in Tokyo) for SP1 v5.
+# (SP1 v6 would be ~30 min / ~$1, but on-chain sp1-solana 0.1.0 only handles
+#  v5 wire format — see PCR0_REPRODUCIBILITY_INVESTIGATION.md SP1 version pin)
 
 set -euo pipefail
 
@@ -79,7 +81,7 @@ trap 'rm -f "${TMP_TARBALL}"' EXIT
 git -C "${REPO_ROOT}" archive --format=tar.gz HEAD > "${TMP_TARBALL}"
 scp_to_prover "${TMP_TARBALL}" "ec2-user@${PUBLIC_IP}:/tmp/source.tar.gz"
 
-echo "==> Step 4/5: build + prove on prover (~25 min)"
+echo "==> Step 4/5: build + prove on prover (~90 min for SP1 v5)"
 ssh_to_prover 'bash /tmp/prover-prove.sh /tmp/attestation.bin'
 
 echo "==> Step 5/5: download artifacts"

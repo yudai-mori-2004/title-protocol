@@ -26,17 +26,23 @@
 
 | 値 | hex |
 |---|---|
-| 再現可能ビルド PCR0 | `bab9ec51dcefb562f3a42bdf046beab224aa05f94efecdf332172f4e6dc92cc505a2e052e6aa608774d86eaba7a8f231` |
+| 再現可能ビルド PCR0 (TEE) | `bab9ec51dcefb562f3a42bdf046beab224aa05f94efecdf332172f4e6dc92cc505a2e052e6aa608774d86eaba7a8f231` |
 | Rust バイナリ `title-tee` sha256 | `e3ec3de5ab27e46662e2c08de2599ef85c166570afbe4d67be4199e778a070d0` |
 | Squash 単一レイヤー sha256 | `643b0764c72a05824d85c08098c823fb6c823ffdd9a53bbd2dd5664a67e9bd01` |
-| SP1 guest vkey_hash | `0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754` |
+| SP1 guest vkey_hash (Mac arm64 build, v5.2.4) | `0x00034549b1d12550031ec07953cfcfdcf6a4a026fc961336776cd715bd83803e` |
+| SP1 guest vkey_hash (AL2023 x86_64 build, v5.2.4) | `0x0071fff4b7217786401fa6a7be505a4a13ed06dc65cb18d25faee73da7b1db99` |
 
-これらの値は記録時点のソース (commit f8f6b35 以降の Dockerfile + Cargo.toml +
-rust-toolchain.toml + Cargo.lock) と SP1 toolchain v6.2.0 と DockerHub の base image
-ダイジェストに対する結果。ソースか toolchain か base image のどれかが変わると
-値も変わる。ビルドが正しく再現したかどうかを判定する基準は
-`deploy/aws/build/registration/measurements.json` に保存された運用中 PCR0 と
-`bash deploy/aws/scripts/build.sh --verify` の出力一致性。
+TEE 側 PCR0 は Docker stack を再ビルドしても同一値（仕様 §5.4 達成）。
+SP1 guest 側 vkey_hash は **同じ SP1 toolchain v5.2.4 でもビルドホストが違うと
+別の値になる** (host 固有値が ELF に残る既知制約、§§"SP1 version pin" 参照)。
+on-chain `ApprovedVkeys` には「実 proof を生成するホストの vkey」を入れる
+（運用上は prover EC2 = AL2023 x86_64 が基準ホスト）。
+
+判定基準:
+- TEE PCR0 再現性: `bash deploy/aws/scripts/build.sh --verify` (~13 分、
+  exit 0 で OK)
+- SP1 vkey の照合: `attestation.bin.vkey_hash.hex` が `ApprovedVkeys` に
+  含まれるか (`title-cli describe-whitelist` で確認)
 
 ## 採用した対策 (重要度順)
 
@@ -194,7 +200,7 @@ attestation.bin.public_values.bin parse:
   instance_id:     i-00b3f9b3607e019c2-enc019e60207ea96699
   measurement PCR0: bab9ec51dcefb562f3a42bdf046beab224aa05f94efecdf332172f4e6dc92cc505a2e052e6aa608774d86eaba7a8f231
   user_data_hash:  SHA-256(SHA-256(b"title:solana-key" || solana_pubkey)) と一致
-  vkey_hash:       0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754
+  vkey_hash:       0x0071fff4b7217786401fa6a7be505a4a13ed06dc65cb18d25faee73da7b1db99 (AL2023 x86_64 build)
 ```
 
 つまり: 「再現性のあるソース」→「決定的な PCR0」→「PCR0 を commit した
@@ -231,6 +237,33 @@ docker create --name tmp IMG && docker cp tmp:/usr/local/bin/title-tee /tmp/titl
 sha256sum /tmp/title-tee-1 /tmp/title-tee-2
 ```
 
+## SP1 version pin (v5.2.4 を使う理由)
+
+SP1 SDK 自体は v6.2.2 まで出ているが、**on-chain `sp1-solana = "0.1.0"` が
+v5 wire format しかサポートしていない**。
+
+| 項目 | v5 | v6 |
+|---|---|---|
+| Groth16 proof サイズ | 260 B (selector + raw_proof) | 356 B (selector + 96 B extra + raw_proof) |
+| Groth16 public inputs | 2 (vkey_hash + committed_values_digest) | 5 (+ exit_code + vk_root + proof_nonce) |
+| sp1-solana 0.1.0 で検証 | ✓ | ✗ (`Groth16ProofVerificationFailed`) |
+
+業界調査時点 (2026-05):
+- `sp1-solana` の v6 対応 PR ([issue #23](https://github.com/succinctlabs/sp1-solana/issues/23)) は Succinct 公式から無回答 5 週間放置
+- Solana mainnet で SP1 v6 を実 deploy しているプロジェクトは存在を確認できず
+- 主要 SP1+SVM プロジェクト (Termina, Soon) は Solana mainnet ではなく Ethereum に settle
+- CVE-2026-40323 は v6.0.0–6.0.2 限定、v5 は影響なし
+
+判断: 業界標準 (sp1-solana 0.1.0 + SP1 v5) に乗る。将来 `sp1-solana` が
+v6 に追従したら、v6 へ upgrade を検討 (proof 生成時間が ~90 分 → ~18 分に短縮)。
+
+代替候補だが採用しなかった案:
+- **MavenRain/realms-zk-voting `vendor/sp1-solana-v6/`**: v6 対応 patched fork。
+  Solana devnet 実 deploy 例あり (program ID `5RRjZ3iJikxWbkWcTcQeWtsa3BoR2ay7G8P82ftmVGAB`) だが、
+  Succinct upstream に PR 提出されておらず、独自監査が必要
+- **EVM bridge**: Ethereum で sp1-contracts (v6.1.1) 検証 → Solana に receipt bridge。
+  最も堅牢だが設計を大きく変える
+
 ## 参考
 
 - [reproducible-builds.org — Rust](https://reproducible-builds.org/docs/rust/)
@@ -239,3 +272,5 @@ sha256sum /tmp/title-tee-1 /tmp/title-tee-2
 - [moby/moby#50063 — Whiteout file timestamps not reproducible](https://github.com/moby/moby/issues/50063)
 - [moby/buildkit#3168 — Make whiteout timestamps reproducible](https://github.com/moby/buildkit/issues/3168)
 - [Bit-for-bit reproducible builds with Dockerfile (Akihiro Suda)](https://medium.com/nttlabs/bit-for-bit-reproducible-builds-with-dockerfile-7cc2b9faed9f)
+- [sp1-solana issue #23 — Add SP1 v6 Groth16 support](https://github.com/succinctlabs/sp1-solana/issues/23)
+- [CVE-2026-40323 — SP1 v6.0.0–6.0.2 recursion soundness](https://advisories.gitlab.com/pkg/cargo/sp1_sdk/CVE-2026-40323)

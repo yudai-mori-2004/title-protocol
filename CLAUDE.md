@@ -110,10 +110,8 @@ cargo test --workspace
 # With vendor-aws feature (includes AWS Nitro skeleton)
 cargo test --workspace --features title-tee/vendor-aws
 
-# Sandbox projects (independent, not in workspace)
-cd sandbox/01-c2pa-range-request && cargo run
-cd sandbox/02-c2pa-fragment && cargo run
-cd sandbox/03-sp1-attestation && cargo run
+# SP1 guest (out-of-workspace; uses pinned v5.2.4 toolchain)
+cd sp1-guests/attestation-aws-nitro/host && cargo run --release --bin vkey
 ```
 
 ## Coding Conventions
@@ -159,8 +157,8 @@ Note: v0.1.0 WASM modules are `#![no_std]` + dlmalloc. v0.1.2 processors are sta
 |---|---|---|
 | `c2pa` | 0.84+ | C2PA verification (was 0.78 in v0.1.0). Builder API: `Reader::default().with_stream()` |
 | `http-range-client` | latest | Read+Seek over HTTP Range Requests for large file processing |
-| `sp1-sdk` / `sp1-zkvm` | v6 "Hypercube" | ZK proof generation for Attestation Document verification |
-| `sp1-solana` | 0.1+ | On-chain Groth16 proof verification (~280K CU) |
+| `sp1-sdk` / `sp1-zkvm` | =5.2.4 (pinned) | ZK proof generation for Attestation Document verification — pinned to v5 because `sp1-solana` 0.1.0 is hard-wired to v5 wire format; v6 proofs are rejected on-chain. See `docs/v0.1.2/tasks/15-docker-deployment/PCR0_REPRODUCIBILITY_INVESTIGATION.md`. |
+| `sp1-solana` | 0.1.0 | On-chain Groth16 proof verification (~280K CU) |
 | `ml-kem` | latest | ML-KEM-768 (FIPS 203) post-quantum key exchange |
 
 ## Constraints

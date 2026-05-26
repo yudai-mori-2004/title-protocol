@@ -63,7 +63,7 @@ sudo bash deploy/aws/scripts/setup-host.sh
 Log out and back in (for docker/ne group membership), then clone:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/yudai-mori-2004/title-protocol.git
 cd title-protocol
 ```
 
@@ -116,17 +116,19 @@ admin keypair):
 
 ```bash
 # === local ===
+EC2_IP=$(terraform -chdir=deploy/aws/terraform output -raw public_ip)
+
 # Copy the bundle down
 mkdir -p deploy/aws/build/registration
 scp -i deploy/aws/keys/title-protocol-devnet.pem \
-    'ec2-user@<EC2_IP>:~/title-protocol/deploy/aws/build/registration/*' \
+    "ec2-user@${EC2_IP}:~/title-protocol/deploy/aws/build/registration/*" \
     deploy/aws/build/registration/
 
 # Register the PCR0 (once per TEE binary version)
 PCR0=$(jq -r '.PCR0' deploy/aws/build/registration/measurements.json)
 title-cli add-measurement --admin keys/admin.json --pcr0-hex 0x$PCR0
 
-# Generate ZKP proof (~30 min, ~$1 on a c5.12xlarge prover EC2)
+# Generate ZKP proof (~110 min, ~$4 on a c5.12xlarge prover EC2; SP1 v5 is slower than v6)
 bash deploy/aws/scripts/prover-run.sh
 
 # Submit register_key on devnet
@@ -162,7 +164,7 @@ sudo nitro-cli console --enclave-id $(sudo nitro-cli describe-enclaves | jq -r '
 ```
 
 If TEE source changed, PCR0 changes. Register the new PCR0 with
-`add_approved_measurement` and run a fresh `register_key`.
+`title-cli add-measurement` and run a fresh `title-cli register-key`.
 
 ---
 
@@ -170,7 +172,7 @@ If TEE source changed, PCR0 changes. Register the new PCR0 with
 
 | Variable | Default | Description |
 |---|---|---|
-| `ENCLAVE_MEM_MIB` | 4096 | Enclave memory allocation |
+| `ENCLAVE_MEM_MIB` | 2048 | Enclave memory allocation (must match `/etc/nitro_enclaves/allocator.yaml`) |
 | `ENCLAVE_CPU_COUNT` | 2 | Enclave vCPU count |
 | `ENCLAVE_DEBUG` | 0 | Set to 1 for debug mode |
 | `API_KEYS` | (none) | Comma-separated Bearer tokens |

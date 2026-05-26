@@ -104,10 +104,47 @@ enclave が落ちて Gateway が 503 を返す。`run.sh` で再起動すれば�
 |---|---|
 | `58abf3d` | `MAX_CONTENT_BYTES` env var 追加、AWS Nitro image で 2 GiB をデフォルトに |
 | `f42cf88` | `title-proxy` の `MAX_RESPONSE_BYTES` を 100 MiB → 2 GiB |
+| `15c308a` | **真の streaming 修正**: `SafeRangeReader::read` を 4 MiB clamp + c2pa-rs fork で `MAX_HASH_BUF` を 256 MiB → 4 MiB |
 
-両方を入れて再ビルド → 2 GiB の壁が消える。Dockerfile 変更で PCR0 が変わる
-ので、本番投入時には allowlist の `add-measurement` + `register-key` 再実行が
-必要。
+## 真の streaming 修正 (commit `15c308a`) 後の再測
+
+PCR0 `fd46afe9b07369d8ff71306d376cadad2abc7c26160deb0b87ee7be4aec6fbf6988733cd632eae9c60511643ea474d95`、
+enclave 2048 MiB RAM。
+
+### 単発
+
+| 入力 | 結果 | elapsed |
+|---|---|---|
+| 200 MiB | ok | 9 s |
+| 500 MiB | ok | 20 s |
+| 1 GiB | ok | 38 s |
+
+### 並列（**合計 in-flight が enclave RAM を超える領域**）
+
+| 構成 | 合計 | 結果 | elapsed |
+|---|---|---|---|
+| N=4 × 500 MiB | 2 GiB | **4/4 ok**, enclave 健在 | 20 s |
+| N=8 × 500 MiB | **4 GiB** | **8/8 ok**, enclave 健在 | 30 s |
+| N=4 × 1 GiB | **4 GiB** | **4/4 ok**, enclave 健在 | 39 s |
+
+修正前は N=2 × 1 GiB (2 GiB 合計) で OOM クラッシュしていた。修正後は
+合計 4 GiB の in-flight でも安定 → **per-reader peak メモリが content size
+非依存になった証拠**。streaming verification の本来の利点が回復。
+
+## どうしてこれが効いたか
+
+1. `c2pa-rs hash_stream_by_alg_with_progress` (`utils/hash_utils.rs:449,472`)
+   が要求する `read_exact(256 MiB buf)` を、`SafeRangeReader::read` が
+   per-call 4 MiB に clamp。`Read::read` 規約上「要求より少なく返してよい」
+   のを利用して、c2pa-rs の `read_exact` ループに残りを取り直させる。
+   底層 Range Request は常に 4 MiB 上限。
+2. c2pa-rs fork の `MAX_HASH_BUF = 256 MiB → 4 MiB`。chunk 用 alloc
+   (current + next_chunk のダブルバッファ) が 512 MiB → 8 MiB に圧縮。
+   per-reader peak メモリは `4 MiB (clamp) + 8 MiB (hash chunks) + 4 MiB
+   (http buffer) ≈ 16 MiB`。
+
+100 並列でも 1.6 GiB なので 2 GiB enclave に余裕で収まる試算。実 throughput は
+ネットワーク帯域・vsock 帯域・c5.xlarge の 4 vCPU が律速。
 
 ## 残作業
 

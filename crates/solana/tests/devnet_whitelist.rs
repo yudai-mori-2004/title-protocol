@@ -8,24 +8,25 @@
 //! - Whitelist program deployed to devnet at 43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs
 //! - Admin keypair at <repo-root>/keys/admin.json with devnet SOL balance
 
-use sha2::{Digest, Sha256};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
-    instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     signature::Keypair,
     signer::Signer,
-    system_program,
     transaction::Transaction,
 };
-use std::str::FromStr;
+use title_solana::whitelist::WHITELIST_PROGRAM_ID;
+use title_solana::whitelist_ix::{
+    build_add_approved_measurement_ix, build_add_approved_vkey_ix,
+    build_initialize_approved_measurements_ix, build_initialize_approved_vkeys_ix,
+    build_register_key_ix, build_revoke_key_ix,
+};
 
 const DEVNET_URL: &str = "https://api.devnet.solana.com";
-const WHITELIST_PROGRAM_ID: &str = "43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs";
 
 fn whitelist_program() -> Pubkey {
-    Pubkey::from_str(WHITELIST_PROGRAM_ID).unwrap()
+    WHITELIST_PROGRAM_ID
 }
 
 fn load_authority_keypair() -> Keypair {
@@ -37,109 +38,6 @@ fn load_authority_keypair() -> Keypair {
         .unwrap_or_else(|_| panic!("Admin key not found at {key_path}"));
     let bytes: Vec<u8> = serde_json::from_str(&key_data).unwrap();
     Keypair::try_from(bytes.as_slice()).unwrap()
-}
-
-/// Compute Anchor instruction discriminator: SHA-256("global:<name>")[0..8]
-fn anchor_discriminator(name: &str) -> [u8; 8] {
-    let hash = Sha256::digest(format!("global:{name}").as_bytes());
-    hash[..8].try_into().unwrap()
-}
-
-/// Build a register_key instruction.
-/// Anchor borsh layout: discriminator(8) + signing_pubkey([u8;32]) +
-///   sp1_vkey_hash([u8;32]) + proof(Vec<u8>) + public_values(Vec<u8>)
-fn build_register_key_ix(
-    payer: &Pubkey,
-    signing_pubkey: &[u8; 32],
-    sp1_vkey_hash: &[u8; 32],
-    proof: &[u8],
-    public_values: &[u8],
-) -> Instruction {
-    let program_id = whitelist_program();
-
-    // Derive PDAs
-    let (whitelist_pda, _bump) =
-        Pubkey::find_program_address(&[b"whitelist", signing_pubkey.as_ref()], &program_id);
-    let (approved_vkeys_pda, _) = Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
-    let (approved_measurements_pda, _) =
-        Pubkey::find_program_address(&[b"approved_measurements"], &program_id);
-
-    // Build instruction data
-    let disc = anchor_discriminator("register_key");
-    let mut data = Vec::with_capacity(8 + 32 + 32 + 4 + proof.len() + 4 + public_values.len());
-    data.extend_from_slice(&disc);
-    data.extend_from_slice(signing_pubkey);
-    data.extend_from_slice(sp1_vkey_hash);
-    data.extend_from_slice(&(proof.len() as u32).to_le_bytes());
-    data.extend_from_slice(proof);
-    data.extend_from_slice(&(public_values.len() as u32).to_le_bytes());
-    data.extend_from_slice(public_values);
-
-    Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(whitelist_pda, false),
-            AccountMeta::new_readonly(approved_vkeys_pda, false),
-            AccountMeta::new_readonly(approved_measurements_pda, false),
-            AccountMeta::new(*payer, true),
-            AccountMeta::new_readonly(system_program::id(), false),
-        ],
-        data,
-    }
-}
-
-/// Build an `initialize_approved_vkeys` instruction.
-fn build_initialize_approved_vkeys_ix(admin: &Pubkey) -> Instruction {
-    let program_id = whitelist_program();
-    let (pda, _) = Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
-    Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(pda, false),
-            AccountMeta::new(*admin, true),
-            AccountMeta::new_readonly(system_program::id(), false),
-        ],
-        data: anchor_discriminator("initialize_approved_vkeys").to_vec(),
-    }
-}
-
-/// Build an `initialize_approved_measurements` instruction.
-fn build_initialize_approved_measurements_ix(admin: &Pubkey) -> Instruction {
-    let program_id = whitelist_program();
-    let (pda, _) = Pubkey::find_program_address(&[b"approved_measurements"], &program_id);
-    Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(pda, false),
-            AccountMeta::new(*admin, true),
-            AccountMeta::new_readonly(system_program::id(), false),
-        ],
-        data: anchor_discriminator("initialize_approved_measurements").to_vec(),
-    }
-}
-
-/// Build a `revoke_key` instruction.
-fn build_revoke_key_ix(admin: &Pubkey, signing_pubkey: &[u8; 32]) -> Instruction {
-    let program_id = whitelist_program();
-
-    let (whitelist_pda, _bump) =
-        Pubkey::find_program_address(&[b"whitelist", signing_pubkey.as_ref()], &program_id);
-    let (approved_vkeys_pda, _) = Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
-
-    let disc = anchor_discriminator("revoke_key");
-
-    Instruction {
-        program_id,
-        // Order must match the `RevokeKey` Accounts struct in
-        // `programs/title-whitelist/src/lib.rs`: whitelist_entry,
-        // approved_vkeys (read-only, used for has_one admin), admin.
-        accounts: vec![
-            AccountMeta::new(whitelist_pda, false),
-            AccountMeta::new_readonly(approved_vkeys_pda, false),
-            AccountMeta::new_readonly(*admin, true),
-        ],
-        data: disc.to_vec(),
-    }
 }
 
 #[test]
@@ -507,27 +405,12 @@ fn initialize_registries_devnet() {
 fn add_placeholder_vkey_devnet() {
     let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
     let admin = load_authority_keypair();
-    let program_id = whitelist_program();
-    let (registry_pda, _) = Pubkey::find_program_address(&[b"approved_vkeys"], &program_id);
 
     // Placeholder: deterministic non-zero bytes so it's recognizable.
     // Real value comes from `sp1-guests/attestation-aws-nitro/host: cargo run --bin vkey`.
     let placeholder: [u8; 32] = [0xAA; 32];
 
-    // `vkey_hash: [u8; 32]` is a Borsh fixed-length array — emit the 32
-    // bytes raw without a length prefix (Vec<u8> would prefix with u32).
-    let mut data = anchor_discriminator("add_approved_vkey").to_vec();
-    data.extend_from_slice(&placeholder);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(registry_pda, false),
-            AccountMeta::new_readonly(admin.pubkey(), true),
-        ],
-        data,
-    };
-
+    let ix = build_add_approved_vkey_ix(&admin.pubkey(), &placeholder);
     let blockhash = client.get_latest_blockhash().unwrap();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&admin.pubkey()), &[&admin], blockhash);
 
@@ -552,25 +435,11 @@ fn add_placeholder_vkey_devnet() {
 fn add_placeholder_measurement_devnet() {
     let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
     let admin = load_authority_keypair();
-    let program_id = whitelist_program();
-    let (registry_pda, _) = Pubkey::find_program_address(&[b"approved_measurements"], &program_id);
 
     // Placeholder 48-byte measurement, matching AWS Nitro PCR0 size.
     let placeholder: Vec<u8> = vec![0xBB; 48];
 
-    let mut data = anchor_discriminator("add_approved_measurement").to_vec();
-    data.extend_from_slice(&(placeholder.len() as u32).to_le_bytes());
-    data.extend_from_slice(&placeholder);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(registry_pda, false),
-            AccountMeta::new_readonly(admin.pubkey(), true),
-        ],
-        data,
-    };
-
+    let ix = build_add_approved_measurement_ix(&admin.pubkey(), &placeholder);
     let blockhash = client.get_latest_blockhash().unwrap();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&admin.pubkey()), &[&admin], blockhash);
 

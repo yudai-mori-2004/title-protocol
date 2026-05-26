@@ -1,22 +1,42 @@
-# PCR0 再現性調査 (2026-05-25)
+# PCR0 再現性調査 (2026-05-25 〜 26)
 
-タスク15 の Dockerfile が「同じソースから 2 回 `--no-cache` ビルドして同じ PCR0
-が出る」状態を満たしているか実機検証し、満たしていなかった原因を一つずつ
-潰した記録。AWS Nitro Enclave の PCR0 を on-chain `register_key` で
-ホワイトリスト登録するため、再現性は仕様 §5.4 の必須要件。
+> **内部記録です。** タスク15 の Dockerfile を「同じソースから 2 回 `--no-cache`
+> ビルドして同じ PCR0 が出る」状態に持っていくまでの試行錯誤を残しています。
+> 利用者向けの再現性検証手順は
+> [docs/v0.1.2/OPERATIONS_JA.md §6.2](../../OPERATIONS_JA.md) (`build.sh --verify`)。
+> 本書は対策が *なぜ* これらになったのか、調査の過程を将来の自分のために
+> 残すためのもの。
 
 ## 結論
 
-| 項目 | 状態 |
-|---|---|
-| 同じ EC2 / 同じ Docker で 2 回 `--no-cache` ビルド → 同じ PCR0 | **達成** |
-| Rust バイナリ自体が決定的 (`title-tee` の sha256 一致) | **達成** |
-| 並列ビルド・別マシンビルドでの同一性 | **達成見込み** (※下記の前提を満たす限り) |
+| 項目 | 状態 | 検証データ |
+|---|---|---|
+| 同じ EC2 / 同じ Docker で 2 回 `--no-cache` ビルド → 同じ PCR0 | **達成** | `bab9ec51...` が 2 回連続で出力 (TEE ノード c5.xlarge, 2026-05-25) |
+| Rust バイナリ自体が決定的 (`title-tee` の sha256 一致) | **達成** | `e3ec3de5...` (2 ビルド連続) |
+| Squash 後の単一レイヤーが一致 | **達成** | `sha256:643b0764...` (2 ビルド連続) |
+| ZKP proof が再現性 PCR0 を正しく commit | **達成** | proof の `public_values.measurement` = `bab9ec51...` |
+| 並列ビルド・別マシンビルドでの同一性 | **達成見込み** | 下記の前提を満たす限り、別 EC2 でも同じ結果が出るはず (※未実機検証) |
 
 並列ビルドの前提:
 - 同じコミット (`Cargo.lock`, `rust-toolchain.toml`, Dockerfile すべて)
 - `linux/amd64` 上で実行 (Dockerfile で `--platform=linux/amd64` 明示)
 - ベースイメージのダイジェスト pin が DockerHub から取得可能
+
+## 検証時点での具体値 (2026-05-25)
+
+| 値 | hex |
+|---|---|
+| 再現可能ビルド PCR0 | `bab9ec51dcefb562f3a42bdf046beab224aa05f94efecdf332172f4e6dc92cc505a2e052e6aa608774d86eaba7a8f231` |
+| Rust バイナリ `title-tee` sha256 | `e3ec3de5ab27e46662e2c08de2599ef85c166570afbe4d67be4199e778a070d0` |
+| Squash 単一レイヤー sha256 | `643b0764c72a05824d85c08098c823fb6c823ffdd9a53bbd2dd5664a67e9bd01` |
+| SP1 guest vkey_hash | `0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754` |
+
+これらの値は記録時点のソース (commit f8f6b35 以降の Dockerfile + Cargo.toml +
+rust-toolchain.toml + Cargo.lock) と SP1 toolchain v6.2.0 と DockerHub の base image
+ダイジェストに対する結果。ソースか toolchain か base image のどれかが変わると
+値も変わる。ビルドが正しく再現したかどうかを判定する基準は
+`deploy/aws/build/registration/measurements.json` に保存された運用中 PCR0 と
+`bash deploy/aws/scripts/build.sh --verify` の出力一致性。
 
 ## 採用した対策 (重要度順)
 
@@ -142,6 +162,16 @@ bash deploy/aws/scripts/build.sh --verify       # 同じ PCR0 が出るか確認
 `build.sh --verify` は `--no-cache` で再ビルドし、`measurements.json` に記録
 された PCR0 と比較する。一致すれば exit 0、不一致なら exit 1。
 
+実機検証ログ (2026-05-25, TEE ノード c5.xlarge):
+
+```
+=== REPRODUCIBILITY VERIFIED ===
+    PCR0 matches recorded value:
+    bab9ec51dcefb562f3a42bdf046beab224aa05f94efecdf332172f4e6dc92cc505a2e052e6aa608774d86eaba7a8f231
+```
+
+所要時間 12.5 分 (754 秒)。
+
 ## 別マシンでの再現性
 
 別の EC2 / 別の AL2023 マシンでも、以下が同じであれば同じ PCR0 が出る:
@@ -152,6 +182,24 @@ bash deploy/aws/scripts/build.sh --verify       # 同じ PCR0 が出るか確認
 
 並列実行で複数マシンが同じ PCR0 を吐くことが保証されるので、CI 上の自動
 検証も可能。
+
+## ZKP proof との一気通貫検証
+
+再現性 PCR0 で起動した TEE → registration attestation 取得 → SP1 proof 生成 →
+proof の `public_values.measurement` が同じ PCR0 を commit している、まで
+通しで確認した (2026-05-25):
+
+```
+attestation.bin.public_values.bin parse:
+  instance_id:     i-00b3f9b3607e019c2-enc019e60207ea96699
+  measurement PCR0: bab9ec51dcefb562f3a42bdf046beab224aa05f94efecdf332172f4e6dc92cc505a2e052e6aa608774d86eaba7a8f231
+  user_data_hash:  SHA-256(SHA-256(b"title:solana-key" || solana_pubkey)) と一致
+  vkey_hash:       0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754
+```
+
+つまり: 「再現性のあるソース」→「決定的な PCR0」→「PCR0 を commit した
+Groth16 proof」→「on-chain で PCR0 allowlist と一致検証」のチェーンが
+バイト単位で繋がっている。
 
 ## デバッグ用コマンド集
 

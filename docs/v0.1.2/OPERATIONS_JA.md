@@ -44,30 +44,36 @@ Client │ External │  HTTPS         │ AWS Nitro │     vsock     │ Gatew
 ## 1. ライフサイクル全体
 
 Title Protocol が動き出すまでの依存関係を時系列で示す（仕様 §6.2）。
+各ステップ右側に対応する `title-cli` サブコマンドを併記。
 
 ```
 [1] 検証回路の同一性指定                  ── プロトコル運営者(1回 + guest コード更新時)
-       SP1 guest をビルド → vkey_hash 取得
-       add_approved_vkey(vkey_hash)
+       SP1 guest をビルド → vkey_hash 取得    cargo run --bin vkey
+       admin が許可リストに追加              title-cli add-vkey
                   │
                   ▼
 [2] TEE バイナリの同一性指定              ── プロトコル運営者(リリース毎)
-       TEE バイナリをビルド (EIF) → PCR0 取得
-       add_approved_measurement(PCR0)
+       TEE バイナリをビルド (EIF) → PCR0    bash build.sh
+       admin が許可リストに追加              title-cli add-measurement
                   │
                   ▼
 [3] TEE 署名鍵を whitelist 登録          ── TEE 起動毎(90日有効、仕様 §6.2)
-       TEE 起動 → Ed25519 署名鍵を Enclave 内で生成
-       registration attestation 取得 → SP1 proof 生成
-       register_key 提出 → WhitelistEntry PDA 作成
+       TEE 起動 → 鍵生成 → attestation      bash run.sh + fetch-registration-bundle.sh
+       SP1 proof 生成                       bash prover-run.sh
+       register_key 提出                    title-cli register-key
                   │
                   ▼
 [4] cNFT 発行                            ── アプリ利用毎
-       Client → Gateway → /extension/solana
-       TEE が部分署名 → Client が最終署名してブロードキャスト
+       Client → Gateway → /extension/solana title-cli mint (or SDK)
+       TEE が部分署名 → Client が最終署名
 ```
 
-`[1]` `[2]` はコード変更時のみ。`[3]` は TEE 起動毎（仕様 §0.5 stateless 設計）。`[4]` がアプリの日常利用。
+`[1]` `[2]` はコード変更時のみ。`[3]` は TEE 起動毎（仕様 §0.5 stateless 設計）。
+`[4]` がアプリの日常利用。
+
+許可レジストリは `title-cli init-registries` でプログラムデプロイ後に 1 回だけ
+初期化する（冪等）。状態確認は `title-cli describe-whitelist`、鍵取り消しは
+`title-cli revoke-key`、許可リスト掃除は `title-cli remove-vkey` / `remove-measurement`。
 
 ---
 
@@ -75,14 +81,28 @@ Title Protocol が動き出すまでの依存関係を時系列で示す（仕�
 
 ### 2.1 前提
 
-| 項目 | バージョン/値 |
-|---|---|
-| Rust toolchain | `rust-toolchain.toml` で固定 |
-| Anchor CLI | 0.30.1 |
-| Solana CLI | 3.x |
-| SP1 toolchain | v6.2 (`sp1up --version v6.2.0`) |
-| AWS CLI + Terraform 1.5+ | EC2 デプロイ時 |
-| Docker buildx | ローカル mock 開発時のみ（EC2 は host で build） |
+ローカル開発マシン（手元の Mac/Linux）に必要なもの:
+
+| 項目 | 用途 | インストール |
+|---|---|---|
+| Rust toolchain | リポジトリ全体のビルド | `rust-toolchain.toml` が自動選択 |
+| Anchor CLI 0.30.1 | Solana プログラムのビルド | `cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1` |
+| Solana CLI 3.x | プログラムデプロイ・admin 鍵作成 | `sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"` |
+| AWS CLI v2 | EC2 / Terraform 操作 | https://docs.aws.amazon.com/cli/v2/ |
+| Terraform 1.5+ | EC2 + SG + 鍵をプロビジョン | https://developer.hashicorp.com/terraform/install |
+
+`title-cli` 自身も同じリポジトリでビルドする。後続のコマンドはすべて
+`cargo run --release -p title-cli -- <subcommand>` または `./target/release/title-cli <subcommand>`
+で呼べる。本書では短く **`title-cli <subcommand>`** と表記する。
+
+```bash
+cargo build --release -p title-cli
+alias title-cli="$PWD/target/release/title-cli"   # 一時的に PATH 通すなら
+```
+
+admin 鍵は `keys/admin.json` に置く。プログラムの `ADMIN_AUTHORITY`
+(`wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna`) と一致している必要がある。
+チーム内では同じ鍵を共有する（変更したい場合は仕様 §6.2 に従いプログラム再デプロイ）。
 
 ### 2.2 Solana コントラクトのデプロイ
 
@@ -90,124 +110,156 @@ Title Protocol が動き出すまでの依存関係を時系列で示す（仕�
 anchor build --no-idl
 solana program deploy \
   --url <devnet|mainnet-beta> \
-  --keypair <admin keypair path> \
-  --upgrade-authority <admin keypair path> \
+  --keypair keys/admin.json \
+  --upgrade-authority keys/admin.json \
   --program-id programs/title-whitelist/keypair.json \
   programs/title-whitelist/target/deploy/title_whitelist.so
 ```
 
-`--no-idl` は anchor 0.30.1 と最新 proc-macro2 の非互換を回避するため。アップグレードも同じコマンドで実行できる。
+`--no-idl` は anchor 0.30.1 と最新 proc-macro2 の非互換を回避するため。
+アップグレードも同じコマンドで実行できる。
+
+> 既にデプロイ済みの devnet (`43y8EUMJFJPFVs65yK9KDTtSK7fMiJQBBnMnKpz9yVzs`) を使う場合は本ステップ不要。
 
 ### 2.3 許可レジストリの初期化
 
-仕様 §6.2 の「許容 verifying_key_hash 集合」と「許容 measurement 集合」両方の PDA を作る。プログラムデプロイ後に **1 回だけ** 実行。
+仕様 §6.2 の「許容 verifying_key_hash 集合」と「許容 measurement 集合」両方の
+PDA を作る。プログラムデプロイ後に **1 回だけ** 実行。冪等（既に初期化済みなら
+スキップ）。
 
 ```bash
-cargo test -p title-solana --test devnet_whitelist initialize_registries_devnet \
-  -- --ignored --nocapture
+title-cli init-registries --admin keys/admin.json
 ```
-
-冪等。既に初期化済みなら `already in use` を検知してスキップする。
 
 ### 2.4 SP1 guest ビルドと vkey_hash の登録
 
-仕様 §6.2 「確認 1: 検証回路の正規性」用の指紋を取得・登録する。検証回路の Rust コード（`sp1-guests/attestation-aws-nitro/`）を変更しない限り変わらない。
-
-前提: SP1 toolchain が必要（`curl -L https://sp1.succinct.xyz | bash && sp1up --version v6.2.0`）。
+仕様 §6.2 「確認 1: 検証回路の正規性」用の指紋を取得・登録する。検証回路の
+Rust コード (`sp1-guests/attestation-aws-nitro/`) を変更しない限り変わらない。
 
 ```bash
+# SP1 toolchain を入れる（初回のみ）
+curl -L https://sp1.succinct.xyz | bash
+~/.sp1/bin/sp1up --version v6.2.0
+
+# vkey_hash を取得
 cd sp1-guests/attestation-aws-nitro/host
 cargo run --release --locked --bin vkey
-# stdout: 0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754
+cd -
+# 出力: 0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754
 ```
 
-得られた hex を admin keypair で Solana に登録する。`crates/solana/tests/devnet_whitelist.rs` の `add_placeholder_vkey_devnet` テスト内の placeholder バイト列を上記の値で置換して実行する:
+得られた hex を許可リストに追加:
 
 ```bash
-cargo test -p title-solana --test devnet_whitelist add_approved_vkey_devnet \
-  -- --ignored --nocapture
+title-cli add-vkey \
+  --admin keys/admin.json \
+  --vkey-hex 0x00d742a0c7af54b880c0bc27eaff7f8f481cd75d9cd7b2516fea02e9ded29754
 ```
+
+> guest 更新時は新しい vkey を追加してから旧 vkey を `title-cli remove-vkey`
+> で外す。新旧併存期間中はどちらの proof も受理される。
 
 ### 2.5 EC2 インフラ準備
 
-`deploy/aws/terraform` で 1 台の `c5.xlarge` (Nitro Enclaves 対応) を立ち上げる。
+`deploy/aws/terraform` で 1 台の `c5.xlarge` (Nitro Enclaves 対応) を立てる。
+SSH 鍵 (`deploy/aws/keys/title-protocol-devnet.pem`) は Terraform が
+自動生成し、初回起動時に `user-data.sh` が Docker・nitro-cli・hugepage を
+セットアップする。
 
 ```bash
 cd deploy/aws/terraform
 terraform init
 terraform apply
 cd -
-```
 
-SSH 鍵は Terraform が `deploy/aws/keys/title-protocol-devnet.pem` に自動生成する（既存の場合は再利用）。初回起動時に `user-data.sh` が Docker・nitro-cli・hugepage を自動セットアップする。手動で再実行する場合は `deploy/aws/scripts/setup-host.sh` を使う。
-
-```bash
+# SSH で入る
 PUBLIC_IP=$(terraform -chdir=deploy/aws/terraform output -raw public_ip)
 ssh -i deploy/aws/keys/title-protocol-devnet.pem ec2-user@$PUBLIC_IP
 ```
 
-> **以降 §2.6〜§2.9 のコマンドは全て EC2 上で実行する。**
+> **以降 §2.6〜§2.8 のコマンドは EC2 上で実行する。** §2.9 以降は手元に
+> 戻る。
 
-### 2.6 TEE バイナリのビルド（EC2 host で）
+### 2.6 TEE バイナリのビルド（EC2 上）
 
-EC2 にリポジトリを clone し、3 つの Docker image (`tee-nitro` / `title-proxy` / `title-gateway`) をビルドして `tee-nitro` から EIF を生成する。
+EC2 にリポジトリを clone し、3 つの Docker image (`tee-nitro` / `title-proxy`
+/ `title-gateway`) をビルドして `tee-nitro` から EIF を生成する。
 
 ```bash
-# EC2 上で実行
+# === EC2 上 ===
 git clone <repo-url> ~/title-protocol
 cd ~/title-protocol
 bash deploy/aws/scripts/build.sh
 ```
 
-出力末尾に PCR0 / PCR1 / PCR2 が表示される。PCR0 が以降の `add_approved_measurement` 対象となる。
+末尾に PCR0/PCR1/PCR2 が表示される。**PCR0 をメモする** (例:
+`bab9ec51dcefb562...`)。
 
-> リプロデューシブルビルド (仕様 §5.4): build.sh は EC2 の Amazon Linux 2023 上で docker build を行う。Mac でクロスビルドした image は確定的でないため避ける。
+> リプロデューシブルビルド (仕様 §5.4): 同じコミット + 同じ DockerHub の
+> ベースイメージから別マシンでビルドしても同じ PCR0 が得られる。確認方法は
+> §6.2 (`bash deploy/aws/scripts/build.sh --verify`)。
 
-### 2.7 スタック起動
+### 2.7 スタック起動（EC2 上）
 
 ```bash
-# EC2 上で実行
+# === EC2 上 ===
 bash deploy/aws/scripts/run.sh
 ```
 
-`title-proxy` → Nitro Enclave → socat ブリッジ → `title-gateway` の順で起動する。デフォルトは **release-mode** （PCR が実値）。`ENCLAVE_DEBUG=1` を設定すると debug-mode で起動するが、NSM が発行する Attestation Document の PCR がすべて 0 になり on-chain 登録に使えないため、本番では絶対に設定しない。
+`title-proxy` → Nitro Enclave → socat ブリッジ → `title-gateway` の順で起動。
+デフォルトは **release-mode** （PCR が実値）。`ENCLAVE_DEBUG=1` を設定すると
+debug-mode で起動するが、NSM が発行する Attestation Document の PCR が全て
+ゼロになり on-chain 登録に使えないため、本番では絶対に設定しない。
 
-起動確認（EC2 上で `curl localhost:3000/health`、または外部から）:
+起動確認:
 
 ```bash
+# 外部から
 curl -sf http://<EC2_PUBLIC_IP>:3000/health
 # {"status":"ok","tee_type":"aws-nitro"}
 ```
 
-### 2.8 PCR0 と registration attestation の取得
+### 2.8 PCR0 と registration attestation の取得（EC2 上）
 
 ```bash
-# EC2 上で実行
+# === EC2 上 ===
 bash deploy/aws/scripts/fetch-registration-bundle.sh
 ```
 
-`deploy/aws/build/registration/` に以下 4 ファイルが出力される:
+`deploy/aws/build/registration/` に以下が出力される:
 
 | ファイル | 内容 |
 |---|---|
 | `measurements.json` | PCR0 / PCR1 / PCR2 (`nitro-cli describe-enclaves` 由来) |
-| `pcr0.hex` | PCR0 単体（hex 96 文字） |
+| `pcr0.hex` | PCR0 単体 (hex 96 文字) |
 | `solana_pubkey.txt` | TEE が起動時にメモリ内生成した Ed25519 公開鍵 (Base58) |
-| `attestation.bin` | NSM が発行した本物の Attestation Document（CBOR バイト列、`user_data = SHA-256(b"title:solana-key" \|\| solana_pubkey)` で binding） |
+| `attestation.bin` | NSM が発行した Attestation Document (CBOR バイト列、`user_data = SHA-256(b"title:solana-key" \|\| solana_pubkey)` で binding) |
 
-debug-mode のとき本スクリプトは「Enclave is running in DEBUG_MODE」で fail-fast する。
+debug-mode で起動した Enclave だと本スクリプトは fail-fast する。
 
-> `attestation.bin` は §4 の ZKP proof 生成の入力になる。`pcr0.hex` は §2.9 で on-chain に登録する。`solana_pubkey.txt` は register_key 提出時に参照する。**この 3 ファイルは同一の TEE 起動から取得したセットでなければならない**。
+> **この 4 ファイルは同一 TEE 起動から取得したセット**。バラバラに差し替えると
+> §4 で `UserDataMismatch` になる。
 
-### 2.9 PCR0 の登録 (`add_approved_measurement`)
+### 2.9 PCR0 の登録 (`add-measurement`)
 
-仕様 §6.2 「確認 2: TEE 実体の正規性」用の measurement allowlist に PCR0 を追加する。`crates/solana/tests/devnet_whitelist.rs` の `add_placeholder_measurement_devnet` テスト内の placeholder バイト列を `pcr0.hex` の中身（48 バイト）で置換して実行する。
+`measurements.json` の `PCR0` 値を手元 (Solana CLI / AWS CLI が使える側) で
+許可リストに追加する。EC2 上の `registration/` ディレクトリをそのままローカルに
+コピーする想定（§4 で同じディレクトリを `register-key --bundle` の入力にする）:
 
 ```bash
-# Solana CLI が使える環境で実行（EC2 上または開発マシン）
-cargo test -p title-solana --test devnet_whitelist add_approved_measurement_devnet \
-  -- --ignored --nocapture
+# === ローカル ===
+mkdir -p deploy/aws/build/registration
+scp -i deploy/aws/keys/title-protocol-devnet.pem \
+    'ec2-user@<EC2_PUBLIC_IP>:~/title-protocol/deploy/aws/build/registration/*' \
+    deploy/aws/build/registration/
+
+# PCR0 を許可リストに追加
+PCR0=$(jq -r '.PCR0' deploy/aws/build/registration/measurements.json)
+title-cli add-measurement --admin keys/admin.json --pcr0-hex 0x$PCR0
 ```
+
+> TEE バイナリ更新時は新 PCR0 を追加してから旧 PCR0 を
+> `title-cli remove-measurement` で外す。
 
 ### 2.10 Gateway 設定
 
@@ -261,36 +313,68 @@ TEE バイナリ（`title-tee`）は起動時に以下を自動実行する（�
 
 ---
 
-## 4. ZKP proof 生成と register_key 提出
+## 4. ZKP proof 生成と register-key 提出
 
-仕様 §6.2 の四段検証を満たす proof を生成し、TEE 署名鍵を on-chain に登録する。**TEE 起動毎に 1 回実行** が必要（仕様 §0.5 stateless 設計のため）。
+仕様 §6.2 の四段検証を満たす proof を生成し、TEE 署名鍵を on-chain に登録する。
+**TEE 起動毎に 1 回実行** が必要（仕様 §0.5 stateless 設計のため）。
 
-### 4.1 入力の取得
+### 4.1 Groth16 proof の生成
 
-§2.8 の `fetch-registration-bundle.sh` で取得した `deploy/aws/build/registration/attestation.bin` をそのまま prover の入力に使う。
+§2.9 で `deploy/aws/build/registration/` に `attestation.bin` を含む bundle を
+揃えた状態で、ローカルから:
 
-### 4.2 Groth16 proof 生成
+```bash
+bash deploy/aws/scripts/prover-run.sh
+```
 
-EC2 上でのゼロからの手順（インスタンス起動 → toolchain → swap → build → prove → artifact 回収）は **[sp1-guests/attestation-aws-nitro/README.md](../../sp1-guests/attestation-aws-nitro/README.md)** を参照。c5.12xlarge で約 18 分。
+これだけで c5.12xlarge prover EC2 を起動し → toolchain インストール →
+proof 生成 → artifact 回収 → EC2 terminate まで自動で済む（合計 30 分 / ~$1）。
+詳細・分割実行方法は
+[sp1-guests/attestation-aws-nitro/README.md](../../sp1-guests/attestation-aws-nitro/README.md) 参照。
 
-> proof 生成は **TEE の外** で動く。SP1 prover は zkVM 内で正規の検証回路を実行したことを zk で証明するため、prover 実行ホストの信頼は不要（仕様 §6.2 「verifying_key_hash で proof 生成元を固定する」）。
+完了後 `deploy/aws/build/registration/` に追加で 3 ファイルが揃う:
+- `attestation.bin.proof.bin` (260 B)
+- `attestation.bin.public_values.bin` (~140 B)
+- `attestation.bin.vkey_hash.hex` (67 B)
 
-### 4.3 register_key 提出
+> proof 生成は **TEE の外** で動く。SP1 prover は zkVM 内で正規の検証回路を
+> 実行したことを zk で証明するため、prover 実行ホストの信頼は不要
+> （仕様 §6.2 「verifying_key_hash で proof 生成元を固定する」）。
 
-`crates/solana/tests/devnet_whitelist.rs::build_register_key_ix` の構築方法に従って命令を作り、`solana_pubkey` の所持者 (= TEE) ではなく **任意の payer** から提出する（TEE 鍵を外に出す必要はない）。
+### 4.2 register-key 提出
 
-オンチェーンで以下の四段検証が走る（仕様 §6.2 「四段の register_key 検証」、`programs/title-whitelist/src/lib.rs::register_key`）:
+bundle ディレクトリをそのまま渡す。payer は admin である必要はない（誰でも
+払える）が、admin で揃えるのが分かりやすい:
 
-1. `sp1_vkey_hash` が `ApprovedVkeys` に含まれる
-2. `measurement` が `ApprovedMeasurements` に含まれる
-3. `user_data_hash == SHA-256(b"title:solana-key" || signing_pubkey)`
-4. SP1 Groth16 proof の数学的検証（`sp1_solana::verify_proof`、約 280K CU）
+```bash
+title-cli register-key \
+  --payer keys/admin.json \
+  --bundle deploy/aws/build/registration
+```
 
-全部通過すると `WhitelistEntry` PDA が作成され、90 日間有効な署名鍵として登録される。
+オンチェーンで以下の四段検証が走る（仕様 §6.2、`programs/title-whitelist/src/lib.rs::register_key`）:
 
-### 4.4 動作検証
+1. `sp1_vkey_hash` が `ApprovedVkeys` に含まれる (§2.4 で追加済み)
+2. `measurement` が `ApprovedMeasurements` に含まれる (§2.9 で追加済み)
+3. `user_data_hash == SHA-256(SHA-256(b"title:solana-key" || signing_pubkey))`
+4. SP1 Groth16 proof の数学的検証（`sp1_solana::verify_proof`、~280K CU。
+   CLI が compute-unit limit を 400K に設定する）
 
-`POST /extension/solana` を叩いて cNFT 部分署名が返ることを確認する。
+全部通過すると `WhitelistEntry` PDA が作成され、90 日間有効な署名鍵として
+登録される。
+
+### 4.3 登録結果の確認
+
+```bash
+SIGNING_PUBKEY=$(cat deploy/aws/build/registration/solana_pubkey.txt)
+title-cli describe-whitelist --signing-pubkey "$SIGNING_PUBKEY"
+```
+
+`WhitelistEntry` セクションに `revoked: false`、`expires_at` 90 日先が出れば成功。
+
+### 4.4 動作検証 — cNFT 発行
+
+`POST /extension/solana` を叩いて cNFT 部分署名が返ることを確認する:
 
 ```bash
 curl -X POST http://<EC2_PUBLIC_IP>:3000/extension/solana \
@@ -304,7 +388,21 @@ curl -X POST http://<EC2_PUBLIC_IP>:3000/extension/solana \
 # {"partial_tx": "<base64 partially signed VersionedTransaction>"}
 ```
 
-cNFT のフルフローは `crates/solana/tests/devnet_whitelist.rs::cnft_full_flow_devnet` を参考に組む。
+CLI から一気通貫で叩く場合（Merkle tree 未作成時は最初に `create-tree`）:
+
+```bash
+# 1) Merkle tree を作成（初回 / cNFT 容量を増やしたい時のみ）
+title-cli create-tree --payer keys/admin.json
+
+# 2) コンテンツを Gateway に POST し、レスポンス JSON をオフチェーンストレージへアップロード
+title-cli process --url https://your-storage/big-video.mp4
+
+# 3) cNFT を発行
+title-cli mint \
+  --offchain-data-url https://your-storage/<step2 で得た JSON URL> \
+  --merkle-tree <step1 で得た tree pubkey> \
+  --payer keys/admin.json
+```
 
 ---
 
@@ -384,35 +482,57 @@ Gateway は health check で鍵変更を検知し、`/keys` と `/solana-keys` �
 
 ホワイトリストには鍵が増えていく一方で問題ない（仕様 §6.2 末尾）。
 
-### 6.2 TEE バイナリ更新
+### 6.2 TEE バイナリ更新 + PCR0 再現性検証
 
-1. 新 EIF をビルド → 新 PCR0 を取得 (`bash deploy/aws/scripts/build.sh`)
-2. admin が `add_approved_measurement(new_pcr0)` を実行
-3. 新 TEE を起動 → §4 のフローで新しい署名鍵を `register_key` 提出
+1. 新 EIF をビルド → 新 PCR0 を取得（EC2 上で `bash deploy/aws/scripts/build.sh`）
+2. admin が許可リストに追加:
+   ```bash
+   title-cli add-measurement --admin keys/admin.json --pcr0-hex 0x<new_pcr0>
+   ```
+3. 新 TEE を起動 → §4 のフローで新しい署名鍵を `register-key` 提出
 4. 古い TEE を停止
-5. （任意）`remove_approved_measurement(old_pcr0)` で旧バイナリを deprecate
+5. （任意）`title-cli remove-measurement --admin keys/admin.json --pcr0-hex 0x<old_pcr0>` で旧バイナリを deprecate
 
 過渡期は新旧 measurement の両方を許容できる。
+
+**再現性検証** (`build.sh --verify`):
+
+```bash
+# === EC2 上 ===
+bash deploy/aws/scripts/build.sh --verify
+```
+
+`--no-cache` で再ビルドして、`deploy/aws/build/registration/measurements.json` の
+PCR0 と一致するか比較する。一致しなければ exit 1。仕様 §5.4 の要件「同じソースから
+誰でも同じ PCR0 を再現できる」を満たしているかの単体検証として使う。所要 ~13 分。
 
 ### 6.3 SP1 guest 更新
 
 検証回路の Rust コードを変更した時:
-1. `cargo run --bin vkey` で新 vkey_hash を取得
-2. admin が `add_approved_vkey(new_vkey_hash)` を実行
+
+1. `cd sp1-guests/attestation-aws-nitro/host && cargo run --release --locked --bin vkey` で新 vkey_hash を取得
+2. `title-cli add-vkey --admin keys/admin.json --vkey-hex 0x<new>` で許可リストに追加
 3. 以降、新 vkey で生成された proof を受理
-4. （任意）`remove_approved_vkey(old_vkey_hash)` で旧 guest を deprecate
+4. （任意）`title-cli remove-vkey --admin keys/admin.json --vkey-hex 0x<old>` で旧 guest を deprecate
 
 ### 6.4 緊急時の鍵取り消し (revoke)
 
 侵害が疑われる TEE 署名鍵を緊急取り消し:
 
-```rust
-WhitelistInstruction::RevokeKey { signing_pubkey: <to_revoke> }
+```bash
+title-cli revoke-key \
+  --admin keys/admin.json \
+  --signing-pubkey <to_revoke_base58>
 ```
 
-admin のみ実行可能。仕様 §6.2 「ホワイトリスト鍵の取り消し」通り、WhitelistEntry PDA は **close せず** `revoked = true` フラグを立てる。これは取り消し巻き戻し攻撃を防ぐためで、PDA を close すると同じ proof を再投入して鍵を復活させられてしまう。
+admin のみ実行可能。仕様 §6.2 「ホワイトリスト鍵の取り消し」通り、
+`WhitelistEntry` PDA は **close せず** `revoked = true` フラグを立てる。
+これは取り消し巻き戻し攻撃を防ぐためで、PDA を close すると同じ proof を
+再投入して鍵を復活させられてしまう。
 
-取り消し前に発行された cNFT はチェーン上に残るが、アプリ側で「現在 `revoked == false` か」を判定する設計なら以降は信頼されなくなる。
+取り消し前に発行された cNFT はチェーン上に残るが、アプリ側で「現在
+`revoked == false` か」を判定する設計なら以降は信頼されなくなる。
+状態確認は `title-cli describe-whitelist --signing-pubkey <pk>`。
 
 ---
 

@@ -2,16 +2,15 @@
 //
 // `vkey` — print the SP1 verifying-key hash of the attestation guest.
 //
-// Embed this constant in the Solana whitelist program (`APPROVED_VKEYS`) so the
+// Embed this constant in the Solana whitelist program (`ApprovedVkeys`) so the
 // on-chain verifier accepts only proofs produced by this exact guest.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use title_sp1_attestation_aws_nitro_host::vkey_hash;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let hash = vkey_hash().await?;
+fn main() -> anyhow::Result<()> {
+    let hash = vkey_hash()?;
     // Metadata on stderr so the stdout line stays machine-friendly
     // (`vkey > vkey_hash.hex` keeps a single hex value).
     let captured = SystemTime::now()

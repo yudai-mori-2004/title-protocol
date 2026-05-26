@@ -33,8 +33,7 @@ struct Args {
     attestation: PathBuf,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     // SP1 emits a tqdm-style progress bar via `tracing`; without a
     // subscriber the ~90 minute prove loop is silent — impossible to tell
     // "working" from "wedged".
@@ -57,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let started = Instant::now();
-    let artifacts = generate_groth16_proof(&doc).await?;
+    let artifacts = generate_groth16_proof(&doc)?;
     let elapsed = started.elapsed();
 
     // Build sibling filenames by appending suffixes to the *complete*

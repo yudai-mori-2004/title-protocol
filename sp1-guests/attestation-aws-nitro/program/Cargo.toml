@@ -9,7 +9,12 @@ license = "Apache-2.0"
 [workspace]
 
 [dependencies]
-sp1-zkvm = "6.2"
+# Pinned to v5 because sp1-solana 0.1.0 (the only published Solana on-chain
+# verifier crate) is hard-wired to v5's wire format (2 Groth16 public inputs,
+# 260-byte proof). v6 generates 5-input / 356-byte proofs that v5 verifiers
+# reject. See docs/v0.1.2/tasks/15-docker-deployment/PCR0_REPRODUCIBILITY_INVESTIGATION.md
+# §SP1 version pin.
+sp1-zkvm = "=5.2.4"
 
 # Production attestation verifier with SP1 precompile patches enabled.
 title-attestation-aws-nitro = { path = "../../../crates/attestation-aws-nitro", default-features = false, features = ["sp1"] }

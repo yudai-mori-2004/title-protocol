@@ -14,6 +14,7 @@ pub mod cnft;
 pub mod extension;
 pub mod signing_key;
 pub mod whitelist;
+pub mod whitelist_ix;
 
 pub use solana_sdk::hash::Hash as SolanaHash;
 pub use solana_sdk::pubkey::Pubkey as SolanaPubkey;

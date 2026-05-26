@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 mod client;
 mod solana;
+mod whitelist;
 
 const DEVNET_RPC: &str = "https://api.devnet.solana.com";
 
@@ -105,6 +106,110 @@ enum Command {
         #[arg(long, env = "SOLANA_RPC_URL", default_value = DEVNET_RPC)]
         rpc_url: String,
     },
+
+    /// 許可レジストリ (ApprovedVkeys + ApprovedMeasurements) を初期化
+    InitRegistries {
+        /// Admin keypair JSON ファイルパス
+        #[arg(long)]
+        admin: String,
+
+        #[arg(long, env = "SOLANA_RPC_URL", default_value = DEVNET_RPC)]
+        rpc_url: String,
+    },
+
+    /// SP1 verifying-key hash を許可リストに追加
+    AddVkey {
+        /// Admin keypair JSON ファイルパス
+        #[arg(long)]
+        admin: String,
+
+        /// vkey_hash 32 バイト (hex, 0x プレフィックス任意)
+        #[arg(long)]
+        vkey_hex: String,
+
+        #[arg(long, env = "SOLANA_RPC_URL", default_value = DEVNET_RPC)]
+        rpc_url: String,
+    },
+
+    /// SP1 verifying-key hash を許可リストから削除
+    RemoveVkey {
+        #[arg(long)]
+        admin: String,
+
+        #[arg(long)]
+        vkey_hex: String,
+
+        #[arg(long, env = "SOLANA_RPC_URL", default_value = DEVNET_RPC)]
+        rpc_url: String,
+    },
+
+    /// TEE measurement (e.g. AWS Nitro PCR0, 48 バイト) を許可リストに追加
+    AddMeasurement {
+        #[arg(long)]
+        admin: String,
+
+        /// PCR0 hex (0x プレフィックス任意)
+        #[arg(long)]
+        pcr0_hex: String,
+
+        #[arg(long, env = "SOLANA_RPC_URL", default_value = DEVNET_RPC)]
+        rpc_url: String,
+    },
+
+    /// TEE measurement を許可リストから削除
+    RemoveMeasurement {
+        #[arg(long)]
+        admin: String,
+
+        #[arg(long)]
+        pcr0_hex: String,
+
+        #[arg(long, env = "SOLANA_RPC_URL", default_value = DEVNET_RPC)]
+        rpc_url: String,
+    },
+
+    /// TEE 署名鍵を on-chain ホワイトリストに登録（register_key 提出）
+    ///
+    /// --bundle <dir> 配下に以下のファイルが揃っている必要がある:
+    ///   solana_pubkey.txt
+    ///   attestation.bin.proof.bin
+    ///   attestation.bin.public_values.bin
+    ///   attestation.bin.vkey_hash.hex
+    RegisterKey {
+        /// Payer keypair JSON ファイルパス（admin である必要はない）
+        #[arg(long)]
+        payer: String,
+
+        /// fetch-registration-bundle.sh と prove の出力を集約したディレクトリ
+        #[arg(long)]
+        bundle: String,
+
+        #[arg(long, env = "SOLANA_RPC_URL", default_value = DEVNET_RPC)]
+        rpc_url: String,
+    },
+
+    /// 登録済み TEE 署名鍵を取り消す（PDA は close せず revoked フラグを立てる）
+    RevokeKey {
+        #[arg(long)]
+        admin: String,
+
+        /// 取り消す signing pubkey (Base58)
+        #[arg(long)]
+        signing_pubkey: String,
+
+        #[arg(long, env = "SOLANA_RPC_URL", default_value = DEVNET_RPC)]
+        rpc_url: String,
+    },
+
+    /// 許可レジストリと WhitelistEntry の状態を表示
+    DescribeWhitelist {
+        /// 任意: 指定の signing pubkey (Base58) について WhitelistEntry も読む
+        #[arg(long)]
+        signing_pubkey: Option<String>,
+
+        #[arg(long, env = "SOLANA_RPC_URL", default_value = DEVNET_RPC)]
+        rpc_url: String,
+    },
 }
 
 fn main() {
@@ -148,6 +253,43 @@ fn main() {
             collection.as_deref(),
             &rpc_url,
         ),
+        Command::InitRegistries { admin, rpc_url } => {
+            whitelist::cmd_init_registries(&admin, &rpc_url)
+        }
+        Command::AddVkey {
+            admin,
+            vkey_hex,
+            rpc_url,
+        } => whitelist::cmd_add_vkey(&admin, &vkey_hex, &rpc_url),
+        Command::RemoveVkey {
+            admin,
+            vkey_hex,
+            rpc_url,
+        } => whitelist::cmd_remove_vkey(&admin, &vkey_hex, &rpc_url),
+        Command::AddMeasurement {
+            admin,
+            pcr0_hex,
+            rpc_url,
+        } => whitelist::cmd_add_measurement(&admin, &pcr0_hex, &rpc_url),
+        Command::RemoveMeasurement {
+            admin,
+            pcr0_hex,
+            rpc_url,
+        } => whitelist::cmd_remove_measurement(&admin, &pcr0_hex, &rpc_url),
+        Command::RegisterKey {
+            payer,
+            bundle,
+            rpc_url,
+        } => whitelist::cmd_register_key(&payer, &bundle, &rpc_url),
+        Command::RevokeKey {
+            admin,
+            signing_pubkey,
+            rpc_url,
+        } => whitelist::cmd_revoke_key(&admin, &signing_pubkey, &rpc_url),
+        Command::DescribeWhitelist {
+            signing_pubkey,
+            rpc_url,
+        } => whitelist::cmd_describe(&rpc_url, signing_pubkey.as_deref()),
     };
 
     match result {

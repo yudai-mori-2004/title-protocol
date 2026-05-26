@@ -106,15 +106,40 @@ curl http://localhost:3000/solana-keys | jq
 After the stack is running in release mode (not debug):
 
 ```bash
+# === on EC2 ===
 bash deploy/aws/scripts/fetch-registration-bundle.sh
 ```
 
 This captures PCR0, solana_pubkey, and the registration attestation into
-`deploy/aws/build/registration/`. Then:
+`deploy/aws/build/registration/`. Then on your local workstation (`title-cli` +
+admin keypair):
 
-1. `add_approved_measurement(PCR0)` on devnet (admin keypair)
-2. Generate Groth16 proof from `attestation.bin` (~90 min on CPU)
-3. Submit `register_key` with proof + public_values
+```bash
+# === local ===
+# Copy the bundle down
+mkdir -p deploy/aws/build/registration
+scp -i deploy/aws/keys/title-protocol-devnet.pem \
+    'ec2-user@<EC2_IP>:~/title-protocol/deploy/aws/build/registration/*' \
+    deploy/aws/build/registration/
+
+# Register the PCR0 (once per TEE binary version)
+PCR0=$(jq -r '.PCR0' deploy/aws/build/registration/measurements.json)
+title-cli add-measurement --admin keys/admin.json --pcr0-hex 0x$PCR0
+
+# Generate ZKP proof (~30 min, ~$1 on a c5.12xlarge prover EC2)
+bash deploy/aws/scripts/prover-run.sh
+
+# Submit register_key on devnet
+title-cli register-key \
+  --payer keys/admin.json \
+  --bundle deploy/aws/build/registration
+
+# Confirm the WhitelistEntry PDA is valid for 90 days
+SIGNING_PUBKEY=$(cat deploy/aws/build/registration/solana_pubkey.txt)
+title-cli describe-whitelist --signing-pubkey "$SIGNING_PUBKEY"
+```
+
+Full operational reference: [docs/v0.1.2/OPERATIONS_JA.md](../../docs/v0.1.2/OPERATIONS_JA.md).
 
 ---
 

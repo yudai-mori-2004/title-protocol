@@ -35,9 +35,18 @@ pub const KEY_EXPIRY_SECONDS: i64 = 90 * 24 * 60 * 60;
 /// `SOLANA_KEY_USER_DATA_TAG` と完全一致させること。
 pub const SOLANA_KEY_USER_DATA_TAG: &[u8] = b"title:solana-key";
 
-/// SP1 v6.2 Groth16 verification key (492 bytes).
-/// Extracted from sp1-verifier 6.2.2 vk-artifacts/groth16_vk.bin.
-pub const GROTH16_VK_BYTES: &[u8] = include_bytes!("../vk/groth16_vk_v6.2.bin");
+/// SP1 v5.0.0 Groth16 verification key (396 bytes).
+/// Extracted from sp1-solana 0.1.0 (`vk/v5.0.0/groth16_vk.bin`).
+///
+/// sp1-solana 0.1.0 only handles v5 wire format (2 Groth16 public inputs +
+/// 260-byte selector+proof). It does NOT support v6's 5-input layout.
+/// See docs/v0.1.2/tasks/15-docker-deployment/PCR0_REPRODUCIBILITY_INVESTIGATION.md
+/// for the v5 vs v6 decision.
+///
+/// Update only when bumping SP1 toolchain across major versions; coordinate
+/// with the SP1 SDK pin in `sp1-guests/attestation-aws-nitro/{program,host}/Cargo.toml`
+/// and rebuild the guest to capture the new vkey_hash.
+pub const GROTH16_VK_BYTES: &[u8] = include_bytes!("../vk/groth16_vk_v5.0.0.bin");
 
 /// Admin authority pubkey: wrVwsTuRzbsDutybqqpf9tBE7JUqRPYzJ3iPUgcFmna.
 ///

@@ -14,32 +14,24 @@
 //!  * [`generate_groth16_proof`] — given an AWS Nitro Attestation Document,
 //!    run the guest under the SP1 prover and produce the Groth16 proof bytes
 //!    plus public values bytes ready for the `register_key` instruction.
+//!
+//! Pinned to SP1 SDK v5.2.4 (synchronous API). The on-chain verifier
+//! (`sp1-solana = "0.1.0"` from inside `programs/title-whitelist`) only
+//! handles v5 wire format; bumping to v6 here would break on-chain
+//! verification.
 
-use sp1_sdk::{
-    include_elf, CpuProver, Elf, HashableKey, ProveRequest, Prover, ProverClient, ProvingKey,
-    SP1Stdin,
-};
+use sp1_sdk::{include_elf, HashableKey, Prover, ProverClient, SP1Stdin};
 
 /// Guest ELF embedded at build time (compiled by `build.rs`).
-pub const ATTESTATION_ELF: Elf = include_elf!("title-sp1-attestation-aws-nitro-program");
-
-/// Build a `CpuProver` and run `setup` once. `build()` and `setup()` are
-/// both async in SP1 SDK 6.2.
-async fn cpu_setup() -> anyhow::Result<(CpuProver, sp1_sdk::SP1ProvingKey)> {
-    let client: CpuProver = ProverClient::builder().cpu().build().await;
-    let pk = client
-        .setup(ATTESTATION_ELF)
-        .await
-        .map_err(|e| anyhow::anyhow!("SP1 setup failed: {e}"))?;
-    Ok((client, pk))
-}
+pub const ATTESTATION_ELF: &[u8] = include_elf!("title-sp1-attestation-aws-nitro-program");
 
 /// Returns the 32-byte SP1 verifying-key hash for the embedded guest.
 ///
 /// This is the value to compare against `sp1_vkey_hash` on-chain.
-pub async fn vkey_hash() -> anyhow::Result<[u8; 32]> {
-    let (_client, pk) = cpu_setup().await?;
-    Ok(pk.verifying_key().bytes32_raw())
+pub fn vkey_hash() -> anyhow::Result<[u8; 32]> {
+    let client = ProverClient::builder().cpu().build();
+    let (_pk, vk) = client.setup(ATTESTATION_ELF);
+    Ok(vk.bytes32_raw())
 }
 
 /// Output of a successful proving run.
@@ -56,21 +48,22 @@ pub struct ProofArtifacts {
 ///
 /// The guest verifies the full cabundle chain — its root must match the
 /// vendor root hash pinned inside `title-attestation-aws-nitro`.
-pub async fn generate_groth16_proof(attestation_doc: &[u8]) -> anyhow::Result<ProofArtifacts> {
-    let (client, pk) = cpu_setup().await?;
+pub fn generate_groth16_proof(attestation_doc: &[u8]) -> anyhow::Result<ProofArtifacts> {
+    let client = ProverClient::builder().cpu().build();
+    let (pk, vk) = client.setup(ATTESTATION_ELF);
 
     let mut stdin = SP1Stdin::new();
     stdin.write_slice(attestation_doc);
 
     let proof = client
-        .prove(&pk, stdin)
+        .prove(&pk, &stdin)
         .groth16()
-        .await
+        .run()
         .map_err(|e| anyhow::anyhow!("SP1 prove failed: {e}"))?;
 
     Ok(ProofArtifacts {
         proof: proof.bytes(),
         public_values: proof.public_values.as_slice().to_vec(),
-        vkey_hash: pk.verifying_key().bytes32_raw(),
+        vkey_hash: vk.bytes32_raw(),
     })
 }

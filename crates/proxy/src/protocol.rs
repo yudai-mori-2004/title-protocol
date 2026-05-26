@@ -100,7 +100,12 @@ pub const MAX_URL_BYTES: usize = 8 * 1024;
 /// Maximum byte length accepted for the proxy request `body` field.
 pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum total response body the proxy is willing to forward.
-pub const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
+/// Raised to 2 GiB to support full-length / high-resolution video as
+/// single-request content (see `tee::main` `MAX_CONTENT_BYTES`). The
+/// enclave still applies its own cap via `ProxyContentFetcher::max_body_bytes`,
+/// so this is just the upstream-fetch budget; nothing forces the enclave
+/// to actually accept this much.
+pub const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// `HEAD` 応答 body の固定ヘッダ部 (content_length:u64 + accept_ranges:u8) の長さ。
 /// その後に `[u32 etag_len][etag][u32 ct_len][ct]` が続く。

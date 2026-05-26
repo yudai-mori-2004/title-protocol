@@ -32,6 +32,46 @@ use crate::processor::{Processor, ProcessorError};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom};
 
+/// Construct the `c2pa::Context` used by every Title Protocol c2pa verification
+/// path. Centralised so the trust-list policy can only change in one place.
+///
+/// **Trust policy**: `verify.verify_trust = false` (off).
+/// Title Protocol delegates trust decisions to the consumer, not the TEE.
+///
+/// What stays enforced:
+///   - assertion.dataHash.match (content tampering detection)
+///   - claimSignature math (COSE signature verified against the leaf cert's
+///     public key extracted from the manifest)
+///   - manifest structural integrity (malformed assertions, missing actions,
+///     etc.)
+///
+/// What gets relaxed:
+///   - signingCredential.untrusted (cert chain not on the C2PA conformance
+///     trust list) — no longer counted as a failure
+///
+/// Why: Title Protocol's value is "the TEE faithfully records what it saw".
+/// Gatekeeping on the official C2PA trust list would block self-signed and
+/// in-house C2PA pipelines (RootLens app, internal capture devices, test
+/// fixtures from `title-fixture-factory`) that have integrity-valid signatures
+/// but are not yet enrolled in the C2PA conformance program. Downstream
+/// consumers inspect `signature_info` / cert chain in the manifest output and
+/// decide trust themselves.
+///
+/// This deliberately deviates from the C2PA spec recommendation. The C2PA
+/// crate's own docs label trust-off as "for development or testing"; we accept
+/// that label and move trust evaluation up the stack.
+pub fn c2pa_context() -> Result<c2pa::Context, ProcessorError> {
+    let mut settings = c2pa::Settings::default();
+    settings
+        .set_value("verify.verify_trust", false)
+        .map_err(|e| {
+            ProcessorError::Internal(format!("failed to disable c2pa trust verify: {e}"))
+        })?;
+    c2pa::Context::default()
+        .with_settings(settings)
+        .map_err(|e| ProcessorError::Internal(format!("failed to build c2pa context: {e}")))
+}
+
 /// c2pa-verify processor output is the C2PA manifest store itself.
 /// Spec §3.2.
 ///
@@ -255,7 +295,7 @@ fn verify_and_extract(
     content.seek(SeekFrom::Start(0)).map_err(|e| {
         ProcessorError::ReadFailed(format!("Failed to rewind content stream: {e}"))
     })?;
-    let reader = c2pa::Reader::from_context(c2pa::Context::default())
+    let reader = c2pa::Reader::from_context(c2pa_context()?)
         .with_stream(content_type, &mut *content)
         .map_err(|e| {
             ProcessorError::C2paVerificationFailed(format!("C2PA Reader construction failed: {e}"))

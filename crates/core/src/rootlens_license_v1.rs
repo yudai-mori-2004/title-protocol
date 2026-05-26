@@ -110,7 +110,7 @@ impl Processor for RootLensLicenseV1Processor {
         content.seek(SeekFrom::Start(0)).map_err(|e| {
             ProcessorError::ReadFailed(format!("Failed to rewind content stream: {e}"))
         })?;
-        let reader = c2pa::Reader::from_context(c2pa::Context::default())
+        let reader = c2pa::Reader::from_context(crate::c2pa_verify::c2pa_context()?)
             .with_stream(content_type, &mut *content)
             .map_err(|e| {
                 ProcessorError::C2paVerificationFailed(format!(

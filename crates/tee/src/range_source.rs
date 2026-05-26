@@ -243,7 +243,24 @@ pub(crate) struct SafeRangeReader<T: SyncHttpRangeClient> {
     inner: SyncBufferedHttpRangeClient<T>,
     file_size: u64,
     pos: u64,
+    /// Per-`read()` 上限。c2pa-rs 0.84.1 の
+    /// `hash_stream_by_alg_with_progress` (`utils/hash_utils.rs:449,472`) は
+    /// 256 MiB の chunk バッファを `read_exact` で 1 回で埋めようとし、
+    /// `http-range-client::SyncBufferedHttpRangeClient` はその要求を 1 本の
+    /// 256 MiB Range Request に流して enclave の per-reader peak メモリを
+    /// 256 MiB に膨らませる。`Read::read` は規約上「要求より少なく返してよい」
+    /// ので、ここで小さく clamp すれば c2pa-rs 側の `read_exact` ループが
+    /// 残りを自動的に取り直す — c2pa-rs に手を入れずに底層 Range Request
+    /// だけを `max_read_size` に分割できる。
+    max_read_size: usize,
 }
+
+/// `Read::read` 1 回あたりの底層 Range Request 上限 (default)。
+///
+/// `min_req_size` (= prefetch 単位、default 4 MiB) と独立。
+/// この値以上のサイズで c2pa-rs が `read_exact(buf)` してきても、内部で
+/// 自動分割される。`SafeRangeReader::with_max_read_size` で上書き可能。
+pub(crate) const DEFAULT_MAX_READ_SIZE: usize = 4 * 1024 * 1024;
 
 impl<T: SyncHttpRangeClient> SafeRangeReader<T> {
     /// 構築時に `file_size` を渡す。これは `ContentSource` 構築時の HEAD probe
@@ -253,7 +270,17 @@ impl<T: SyncHttpRangeClient> SafeRangeReader<T> {
             inner,
             file_size,
             pos: 0,
+            max_read_size: DEFAULT_MAX_READ_SIZE,
         }
+    }
+
+    /// `max_read_size` の上書き (テスト・特殊用途)。
+    #[allow(dead_code)]
+    pub(crate) fn with_max_read_size(mut self, n: usize) -> Self {
+        // 0 は disable とみなさず最低 1 byte を要求する (read=0 は EOF と区別が
+        // 付かなくなるため、誤設定は意図しない loop を生む)。
+        self.max_read_size = n.max(1);
+        self
     }
 }
 
@@ -264,8 +291,12 @@ impl<T: SyncHttpRangeClient> Read for SafeRangeReader<T> {
         }
         // EOF を超えるリクエストを未然に防ぐ。これにより上流の get_request_range が
         // 「fetch 失敗 → 未消費 buffer ロスト」経路を踏まなくなる。
+        // さらに `max_read_size` で c2pa-rs hash_utils.rs:449 の 256 MiB chunk read を
+        // 4 MiB 単位の Range Request に強制分割する。
         let remaining = self.file_size - self.pos;
-        let request_len = (buf.len() as u64).min(remaining) as usize;
+        let request_len = (buf.len() as u64)
+            .min(remaining)
+            .min(self.max_read_size as u64) as usize;
 
         match self.inner.get_bytes(request_len) {
             Ok(bytes) => {
@@ -619,5 +650,44 @@ mod tests {
         let mut b1_cont = [0u8; 50];
         r1.read_exact(&mut b1_cont).unwrap();
         assert_eq!(b1_cont, body[100..150]);
+    }
+
+    /// `Read::read` は `max_read_size` で clamp される。
+    ///
+    /// c2pa-rs の `hash_stream_by_alg_with_progress` (`hash_utils.rs:449`) は
+    /// 256 MiB の chunk バッファを 1 回の `read_exact` で埋めようとするので、
+    /// `Read::read` がそれを単一 Range Request に流すと per-reader peak
+    /// メモリが file size に比例して膨らむ。底層に渡す length が常に上限
+    /// 以下に抑えられること、かつ `read_exact` ループで残りが正しく
+    /// fetch されることを保証する。
+    #[test]
+    fn read_clamps_to_max_read_size_and_read_exact_still_completes() {
+        // 4 MiB clamp に対して、明らかに大きい 10 MiB body で「単発 read() が
+        // clamp 以下に縛られる」+「read_exact が完走する」を検証。
+        let body: Vec<u8> = (0..10 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let server = FakeRangeServer::spawn(body.clone());
+        let source = HttpRangeSource::probe(&server.url("/big.bin")).expect("probe");
+
+        let mut reader = source.open().expect("open");
+
+        // 10 MiB buf で 1 回 read → default clamp = 4 MiB が効くので返却は
+        // 4 MiB を超えない (実値は底層の prefetch 戦略で 4 MiB ぴったり付近)。
+        let mut buf = vec![0u8; 10 * 1024 * 1024];
+        let n = reader.read(&mut buf).expect("read");
+        assert!(
+            n <= DEFAULT_MAX_READ_SIZE,
+            "single read() returned {n} bytes, expected <= 4 MiB clamp",
+        );
+        assert!(n > 0);
+
+        // 残りを read_exact で吸い出して全 body 復元できることを確認。
+        // (c2pa-rs 側の `read_exact` ループが透過に走るシナリオ。clamp が効いて
+        // いても read_exact は内部ループで何度も read() を呼ぶので最終的に
+        // 全データを受け取れる。)
+        let mut rest = vec![0u8; body.len() - n];
+        reader.read_exact(&mut rest).expect("read_exact rest");
+        let mut got = buf[..n].to_vec();
+        got.extend_from_slice(&rest);
+        assert_eq!(got, body);
     }
 }

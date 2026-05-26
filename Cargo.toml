@@ -32,7 +32,12 @@ thiserror = "2"
 # (key ordering, optional fields, encoding choices). The TEE attestation seals
 # the processor output via JCS hash, so a silent minor-version bump invalidates
 # attestation comparability. Bump intentionally and bump PCR0 with it.
-c2pa = "=0.84.1"
+# Title Protocol fork of c2pa-rs 0.84.1 with MAX_HASH_BUF reduced from
+# 256 MiB to 4 MiB. Required for streaming verification in a memory-
+# constrained TEE (AWS Nitro Enclave 2 GiB). Tracked upstream as
+# https://github.com/contentauth/c2pa-rs/issues/1769.
+# Switch back to crates.io once a chunked variant lands upstream.
+c2pa = { git = "https://github.com/yudai-mori-2004/c2pa-rs.git", rev = "426cf785" }
 sha2 = "0.10"
 hex = "0.4"
 image = "0.25"

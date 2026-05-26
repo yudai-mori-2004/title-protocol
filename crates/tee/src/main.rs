@@ -163,13 +163,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // K3 must-fix-r3-001 参照。
     const EXTENSION_MAX_BODY_BYTES: usize = 1024 * 1024;
 
+    // Main content fetch cap. Spec §4.4 default is 100 MiB; operator can raise
+    // it via MAX_CONTENT_BYTES (e.g. for full-length video). Bigger values
+    // expand the attack surface — each in-flight request can hold up to this
+    // many bytes of decrypted content in enclave RAM. Keep below the enclave
+    // memory allocation (ENCLAVE_MEM_MIB) minus working space.
+    let max_content_bytes: usize = std::env::var("MAX_CONTENT_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(ProxyContentFetcher::DEFAULT_MAX_BODY_BYTES);
+    tracing::info!(max_content_bytes, "main content fetch cap");
+
     let proxy_addr = std::env::var("PROXY_ADDR").unwrap_or_else(|_| "direct".to_string());
     let (fetcher, extension_fetcher): (Box<dyn ContentFetcher>, Box<dyn ContentFetcher>) =
         if proxy_addr == "direct" {
             tracing::info!("Content fetcher: direct (reqwest)");
-            let main_fetcher = tokio::task::spawn_blocking(HttpContentFetcher::new)
-                .await
-                .expect("Failed to build HTTP content fetcher");
+            let main_fetcher = tokio::task::spawn_blocking(move || {
+                HttpContentFetcher::with_max_body_bytes(max_content_bytes)
+            })
+            .await
+            .expect("Failed to build HTTP content fetcher");
             let ext_fetcher = tokio::task::spawn_blocking(|| {
                 HttpContentFetcher::with_max_body_bytes(EXTENSION_MAX_BODY_BYTES)
             })
@@ -181,7 +194,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let endpoint = ProxyEndpoint::parse(&proxy_addr)
                 .map_err(|e| format!("Invalid PROXY_ADDR={proxy_addr}: {e}"))?;
             (
-                Box::new(ProxyContentFetcher::new(endpoint.clone())),
+                Box::new(ProxyContentFetcher::with_max_body_bytes(
+                    endpoint.clone(),
+                    max_content_bytes,
+                )),
                 Box::new(ProxyContentFetcher::with_max_body_bytes(
                     endpoint,
                     EXTENSION_MAX_BODY_BYTES,

@@ -91,4 +91,9 @@ FROM scratch
 COPY --from=runtime / /
 ENV TEE_RUNTIME=nitro
 ENV PROXY_ADDR=vsock://3:8000
+# Main content fetch cap (spec §4.4 default = 100 MiB). Raised here to
+# 2 GiB so full-length / high-resolution video can be processed in a
+# single request. Bigger values expand the per-request memory footprint
+# inside the enclave; keep below ENCLAVE_MEM_MIB minus working space.
+ENV MAX_CONTENT_BYTES=2147483648
 ENTRYPOINT ["/usr/local/bin/tee-entrypoint.sh"]

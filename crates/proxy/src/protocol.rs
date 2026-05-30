@@ -19,7 +19,12 @@
 //! 対応メソッド (proxy 側 method whitelist):
 //! - `GET`        — 通常の content fetch (body は空)
 //! - `POST`       — Solana RPC 等の送信 (body は payload)
-//! - `HEAD`       — Range Request 対応確認用 (body は空、§4.3)
+//! - `PROBE`      — Range Request 対応確認用 (§4.3)。proxy は実際には
+//!                  `GET Range: bytes=0-0` を upstream に投げて 206 / Content-Range
+//!                  から構造化メタデータを抽出する。R2 / S3 の SigV4 presigned GET
+//!                  URL は HTTP method が署名対象なので HTTP HEAD が SignatureDoesNotMatch
+//!                  で落ちるが、`Range` ヘッダは signed header に含まれないため
+//!                  Range GET なら presigned GET URL でも署名が通る。
 //! - `GET_RANGE`  — Range Request 本体 (body は `[8B u64 BE: begin][8B u64 BE: length]`、§4.3)
 //!
 //! ## Proxy → TEE (response)
@@ -37,21 +42,22 @@
 //! [4B u32 BE: 0 or CHUNKED_TRUNCATED]   // end-of-stream marker
 //! ```
 //!
-//! ## HEAD response body format
+//! ## PROBE response body format
 //!
-//! `HEAD` requests return a structured body that the TEE side parses to
-//! decide whether Range Request streaming is feasible. status_code は通常の
-//! HTTP ステータス (200 OK 等)。body は固定レイアウト:
+//! `PROBE` requests return a structured body that the TEE side parses to
+//! decide whether Range Request streaming is feasible. status_code は upstream の
+//! HTTP ステータス (206 = Range 対応、200 = Range 非対応、それ以外は upstream error)。
+//! body は固定レイアウト:
 //!
 //! ```text
-//! [8B u64 BE: content_length]
-//! [1B u8: accept_ranges_bytes]      // 1 = "Accept-Ranges: bytes", 0 = otherwise
+//! [8B u64 BE: content_length]       // 206 時: Content-Range の分母。それ以外: 0
+//! [1B u8: accepts_ranges]            // 1 = 206 を確認、0 = それ以外
 //! [4B u32 BE: etag_len][etag utf8]
 //! [4B u32 BE: content_type_len][content_type utf8]
 //! ```
 //!
 //! `etag_len` / `content_type_len` は 0 でも構わない (= ヘッダ未送出)。
-//! `accept_ranges_bytes = 0` の場合、TEE 側は full fetch にフォールバックする。
+//! `accepts_ranges = 0` の場合、TEE 側は full fetch にフォールバックする。
 //!
 //! ### chunk_len の解釈空間
 //!
@@ -107,16 +113,16 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// to actually accept this much.
 pub const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// `HEAD` 応答 body の固定ヘッダ部 (content_length:u64 + accept_ranges:u8) の長さ。
+/// `PROBE` 応答 body の固定ヘッダ部 (content_length:u64 + accepts_ranges:u8) の長さ。
 /// その後に `[u32 etag_len][etag][u32 ct_len][ct]` が続く。
-pub const HEAD_RESPONSE_FIXED_PREFIX_BYTES: usize = 8 + 1;
+pub const PROBE_RESPONSE_FIXED_PREFIX_BYTES: usize = 8 + 1;
 
 /// `GET_RANGE` リクエスト body のサイズ (begin:u64 + length:u64 = 16 byte 固定)。
 pub const GET_RANGE_REQUEST_BODY_BYTES: usize = 16;
 
-/// Encode a HEAD response body into the wire format described in this module's
+/// Encode a PROBE response body into the wire format described in this module's
 /// doc comment.
-pub fn encode_head_response(
+pub fn encode_probe_response(
     content_length: u64,
     accepts_ranges: bool,
     etag: Option<&str>,
@@ -125,7 +131,7 @@ pub fn encode_head_response(
     let etag = etag.unwrap_or("");
     let ct = content_type.unwrap_or("");
     let mut buf = Vec::with_capacity(
-        HEAD_RESPONSE_FIXED_PREFIX_BYTES + 4 + etag.len() + 4 + ct.len(),
+        PROBE_RESPONSE_FIXED_PREFIX_BYTES + 4 + etag.len() + 4 + ct.len(),
     );
     buf.extend_from_slice(&content_length.to_be_bytes());
     buf.push(if accepts_ranges { 1 } else { 0 });
@@ -136,27 +142,27 @@ pub fn encode_head_response(
     buf
 }
 
-/// Parsed HEAD response. Mirror of [`encode_head_response`].
+/// Parsed PROBE response. Mirror of [`encode_probe_response`].
 #[derive(Debug, Clone)]
-pub struct ParsedHeadResponse {
+pub struct ParsedProbeResponse {
     pub content_length: u64,
     pub accepts_ranges: bool,
     pub etag: Option<String>,
     pub content_type: Option<String>,
 }
 
-/// Decode a HEAD response body (as produced by [`encode_head_response`]).
-pub fn decode_head_response(body: &[u8]) -> Result<ParsedHeadResponse, &'static str> {
-    if body.len() < HEAD_RESPONSE_FIXED_PREFIX_BYTES {
-        return Err("HEAD response too short for fixed prefix");
+/// Decode a PROBE response body (as produced by [`encode_probe_response`]).
+pub fn decode_probe_response(body: &[u8]) -> Result<ParsedProbeResponse, &'static str> {
+    if body.len() < PROBE_RESPONSE_FIXED_PREFIX_BYTES {
+        return Err("PROBE response too short for fixed prefix");
     }
     let content_length =
         u64::from_be_bytes(body[..8].try_into().expect("8 bytes => [u8; 8]"));
     let accepts_ranges = body[8] != 0;
-    let mut pos = HEAD_RESPONSE_FIXED_PREFIX_BYTES;
+    let mut pos = PROBE_RESPONSE_FIXED_PREFIX_BYTES;
 
     if body.len() < pos + 4 {
-        return Err("HEAD response truncated before etag_len");
+        return Err("PROBE response truncated before etag_len");
     }
     let etag_len = u32::from_be_bytes(
         body[pos..pos + 4]
@@ -165,21 +171,21 @@ pub fn decode_head_response(body: &[u8]) -> Result<ParsedHeadResponse, &'static 
     ) as usize;
     pos += 4;
     if body.len() < pos + etag_len {
-        return Err("HEAD response truncated before etag bytes");
+        return Err("PROBE response truncated before etag bytes");
     }
     let etag = if etag_len == 0 {
         None
     } else {
         Some(
             std::str::from_utf8(&body[pos..pos + etag_len])
-                .map_err(|_| "HEAD response etag not utf8")?
+                .map_err(|_| "PROBE response etag not utf8")?
                 .to_string(),
         )
     };
     pos += etag_len;
 
     if body.len() < pos + 4 {
-        return Err("HEAD response truncated before content_type_len");
+        return Err("PROBE response truncated before content_type_len");
     }
     let ct_len = u32::from_be_bytes(
         body[pos..pos + 4]
@@ -188,24 +194,36 @@ pub fn decode_head_response(body: &[u8]) -> Result<ParsedHeadResponse, &'static 
     ) as usize;
     pos += 4;
     if body.len() < pos + ct_len {
-        return Err("HEAD response truncated before content_type bytes");
+        return Err("PROBE response truncated before content_type bytes");
     }
     let content_type = if ct_len == 0 {
         None
     } else {
         Some(
             std::str::from_utf8(&body[pos..pos + ct_len])
-                .map_err(|_| "HEAD response content_type not utf8")?
+                .map_err(|_| "PROBE response content_type not utf8")?
                 .to_string(),
         )
     };
 
-    Ok(ParsedHeadResponse {
+    Ok(ParsedProbeResponse {
         content_length,
         accepts_ranges,
         etag,
         content_type,
     })
+}
+
+/// `Content-Range: bytes 0-0/12345` → `Some(12345)`。`*` (= 全長不明) または
+/// parse 失敗時は `None`。RFC 7233 §4.2 準拠の最小実装で、`bytes <start>-<end>/<total>`
+/// の `/` 以降だけを見る。
+pub fn parse_content_range_total(value: &str) -> Option<u64> {
+    let after_slash = value.rsplit_once('/').map(|(_, t)| t.trim())?;
+    if after_slash == "*" {
+        None
+    } else {
+        after_slash.parse().ok()
+    }
 }
 
 /// Encode a GET_RANGE request body: `[u64 begin][u64 length]`.
@@ -296,7 +314,7 @@ pub fn read_bytes_sync(r: &mut impl std::io::Read, max_len: usize) -> std::io::R
 }
 
 // ----------------------------------------------------------------------------
-// Tests for HEAD / GET_RANGE encoding
+// Tests for PROBE / GET_RANGE encoding
 // ----------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -304,14 +322,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn head_response_roundtrip_with_all_headers() {
-        let encoded = encode_head_response(
+    fn probe_response_roundtrip_with_all_headers() {
+        let encoded = encode_probe_response(
             1_073_741_824,
             true,
             Some("\"abc123\""),
             Some("video/mp4"),
         );
-        let parsed = decode_head_response(&encoded).expect("decode");
+        let parsed = decode_probe_response(&encoded).expect("decode");
         assert_eq!(parsed.content_length, 1_073_741_824);
         assert!(parsed.accepts_ranges);
         assert_eq!(parsed.etag.as_deref(), Some("\"abc123\""));
@@ -319,9 +337,9 @@ mod tests {
     }
 
     #[test]
-    fn head_response_roundtrip_without_optional_headers() {
-        let encoded = encode_head_response(42, false, None, None);
-        let parsed = decode_head_response(&encoded).expect("decode");
+    fn probe_response_roundtrip_without_optional_headers() {
+        let encoded = encode_probe_response(42, false, None, None);
+        let parsed = decode_probe_response(&encoded).expect("decode");
         assert_eq!(parsed.content_length, 42);
         assert!(!parsed.accepts_ranges);
         assert!(parsed.etag.is_none());
@@ -329,12 +347,26 @@ mod tests {
     }
 
     #[test]
-    fn head_response_rejects_truncated_input() {
-        let encoded = encode_head_response(100, true, Some("e"), Some("ct"));
+    fn probe_response_rejects_truncated_input() {
+        let encoded = encode_probe_response(100, true, Some("e"), Some("ct"));
         // 切り詰めて 1 byte 落とす → decode 失敗
-        assert!(decode_head_response(&encoded[..encoded.len() - 1]).is_err());
-        assert!(decode_head_response(&[]).is_err());
-        assert!(decode_head_response(&[0u8; HEAD_RESPONSE_FIXED_PREFIX_BYTES]).is_err());
+        assert!(decode_probe_response(&encoded[..encoded.len() - 1]).is_err());
+        assert!(decode_probe_response(&[]).is_err());
+        assert!(decode_probe_response(&[0u8; PROBE_RESPONSE_FIXED_PREFIX_BYTES]).is_err());
+    }
+
+    #[test]
+    fn content_range_total_parses_206_form() {
+        assert_eq!(parse_content_range_total("bytes 0-0/12345"), Some(12345));
+        assert_eq!(parse_content_range_total("bytes 100-199/2048"), Some(2048));
+    }
+
+    #[test]
+    fn content_range_total_handles_unknown_size_and_garbage() {
+        assert_eq!(parse_content_range_total("bytes 0-0/*"), None);
+        assert_eq!(parse_content_range_total("garbage"), None);
+        assert_eq!(parse_content_range_total(""), None);
+        assert_eq!(parse_content_range_total("bytes 0-0/abc"), None);
     }
 
     #[test]

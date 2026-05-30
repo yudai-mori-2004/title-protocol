@@ -6,8 +6,8 @@
 //! the transport (Spec §5.2).
 
 use crate::protocol::{
-    self, decode_get_range_body, encode_head_response, CHUNKED_SENTINEL, CHUNKED_TRUNCATED,
-    MAX_RESPONSE_BYTES, MAX_WIRE_CHUNK_BYTES,
+    self, decode_get_range_body, encode_probe_response, parse_content_range_total,
+    CHUNKED_SENTINEL, CHUNKED_TRUNCATED, MAX_RESPONSE_BYTES, MAX_WIRE_CHUNK_BYTES,
 };
 
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -54,19 +54,25 @@ pub async fn forward_http_streaming<W: tokio::io::AsyncWrite + Unpin>(
         .map_err(std::io::Error::other)?;
 
     // Spec §5.2, §4.3 — proxy only forwards GET / POST (existing) と
-    // HEAD / GET_RANGE (Range Request streaming 用、§4.3 で追加)。
+    // PROBE / GET_RANGE (Range Request streaming 用、§4.3 で追加)。
     // method whitelist を絞ることで attack surface を最小化する。
     //
-    // HEAD は Range Request 対応の事前確認 (HEAD で Accept-Ranges / Content-Length
-    // を取り、応答は専用エンコーディングで返す)。
+    // PROBE は Range Request 対応の事前確認。proxy は upstream に
+    // `GET Range: bytes=0-0` を投げ、206 + Content-Range の分母から
+    // 全長を取り出して構造化応答で返す。HTTP HEAD を使わない理由:
+    // R2 / S3 の SigV4 presigned GET URL は HTTP method が署名対象なので
+    // HEAD だと SignatureDoesNotMatch (= 403) で落ちる。一方 `Range` ヘッダは
+    // signed header に含まれないため、同じ署名済 GET URL に Range を付けて
+    // 投げる経路は 206 で通る。
+    //
     // GET_RANGE は body に `[u64 begin][u64 length]` を載せ、proxy が
     // `Range: bytes=begin-(begin+length-1)` 付きで GET を発行する。
     let request_result = match method {
         "GET" => client.get(url).send().await,
         "POST" => client.post(url).body(body.to_vec()).send().await,
-        "HEAD" => {
-            // HEAD は専用パスで処理 (応答ボディが HTTP body ではなく構造化メタデータ)。
-            return handle_head(w, &client, url, &upstream_host, started).await;
+        "PROBE" => {
+            // PROBE は専用パスで処理 (応答ボディが HTTP body ではなく構造化メタデータ)。
+            return handle_probe(w, &client, url, &upstream_host, started).await;
         }
         "GET_RANGE" => {
             return handle_get_range(w, &client, url, body, &upstream_host, started).await;
@@ -253,10 +259,18 @@ async fn write_error<W: tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// HEAD: upstream に HEAD を投げ、`encode_head_response` で構造化応答を返す。
-/// content_length は HTTP の `Content-Length` ヘッダから読む (`response.content_length()`
-/// は HEAD では body 長 = 0 を返すため使えない、これは reqwest の仕様)。
-async fn handle_head<W: tokio::io::AsyncWrite + Unpin>(
+/// PROBE: upstream に `GET Range: bytes=0-0` を投げ、`encode_probe_response`
+/// で構造化応答を返す。HTTP HEAD は使わない (R2 / S3 の SigV4 presigned GET URL
+/// は HEAD で SignatureDoesNotMatch になるため)。
+///
+/// 判定ロジック:
+/// - status == 206: Range 対応確認。`Content-Range: bytes 0-0/<total>` の分母から
+///   全長を抽出 (= `parse_content_range_total`)。`accepts_ranges = true`。
+/// - status == 200: upstream が Range ヘッダを無視して全 body を返そうとした。
+///   ここで body を読み始めると全体ダウンロードになるので消費せずに drop し、
+///   `accepts_ranges = false` で返して TEE 側を full-fetch fallback に落とす。
+/// - その他 (3xx/4xx/5xx): そのまま透過。body は空。
+async fn handle_probe<W: tokio::io::AsyncWrite + Unpin>(
     w: &mut W,
     client: &reqwest::Client,
     url: &str,
@@ -265,43 +279,45 @@ async fn handle_head<W: tokio::io::AsyncWrite + Unpin>(
 ) -> std::io::Result<()> {
     use tokio::io::AsyncWriteExt;
 
-    let response = match client.head(url).send().await {
+    let response = match client
+        .get(url)
+        .header(reqwest::header::RANGE, "bytes=0-0")
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(
                 err = format!("{e:#}"),
                 upstream_host = %upstream_host,
-                "HEAD request failed",
+                "PROBE request failed",
             );
-            let msg = format!("Proxy HEAD error: {e}").into_bytes();
+            let msg = format!("Proxy PROBE error: {e}").into_bytes();
             write_error(w, PROXY_ERROR_STATUS, &msg).await?;
             return shutdown_write(w).await;
         }
     };
 
-    let status = response.status().as_u16() as u32;
+    let status_code = response.status().as_u16();
+    let status = status_code as u32;
 
+    // 成功系 (= 2xx) 以外は body 空で status だけ透過。upstream が 4xx/5xx を
+    // 返した場合は TEE 側で wire の non-2xx ハンドリングに任せる。
     if !response.status().is_success() {
-        // upstream が non-2xx を返した場合はそのまま透過。body は空。
+        // body を消費せずに drop してコネクションを解放する。
+        drop(response);
         w.write_all(&status.to_be_bytes()).await?;
         w.write_all(&0u32.to_be_bytes()).await?;
         w.flush().await?;
+        tracing::info!(
+            url,
+            status,
+            upstream_host = %upstream_host,
+            duration_ms = started.elapsed().as_millis() as u64,
+            "PROBE (non-2xx, passthrough)",
+        );
         return shutdown_write(w).await;
     }
-
-    let content_length = response
-        .headers()
-        .get(reqwest::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0);
-
-    let accepts_ranges = response
-        .headers()
-        .get(reqwest::header::ACCEPT_RANGES)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.eq_ignore_ascii_case("bytes"))
-        .unwrap_or(false);
 
     let etag = response
         .headers()
@@ -315,7 +331,35 @@ async fn handle_head<W: tokio::io::AsyncWrite + Unpin>(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let body = encode_head_response(
+    let (content_length, accepts_ranges) = if status_code == 206 {
+        let content_range = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let total = content_range
+            .as_deref()
+            .and_then(parse_content_range_total)
+            .unwrap_or(0);
+        (total, true)
+    } else {
+        // 200 等は Range 無視 → fallback 経路に。Content-Length ヘッダは
+        // 念のため拾う (= TEE 側 metric 用)。
+        let cl = response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        (cl, false)
+    };
+
+    // ここで明示的に drop して upstream connection を閉じる。206 でも 1 バイト
+    // (= bytes=0-0 の応答 body) を読まずに切る — その分は後続の GET_RANGE で
+    // 改めて取り直す。proxy 側でも追加メモリを抱えないことを保証する。
+    drop(response);
+
+    let body = encode_probe_response(
         content_length,
         accepts_ranges,
         etag.as_deref(),
@@ -334,7 +378,7 @@ async fn handle_head<W: tokio::io::AsyncWrite + Unpin>(
         accepts_ranges,
         upstream_host = %upstream_host,
         duration_ms = started.elapsed().as_millis() as u64,
-        "HEAD",
+        "PROBE",
     );
     shutdown_write(w).await
 }

@@ -109,9 +109,12 @@ use wire::{CHUNKED_SENTINEL, CHUNKED_TRUNCATED, MAX_WIRE_CHUNK_BYTES};
 impl ContentFetcher for ProxyContentFetcher {
     /// Spec §4.3 — proxy 経由の Range Request 対応。
     ///
-    /// HEAD (新 wire method) を proxy に投げて Accept-Ranges を確認し、対応して
-    /// いれば [`ProxyRangeSource`] を返す。HEAD が non-2xx もしくは Accept-Ranges
-    /// が無ければ従来の full fetch にフォールバックする。
+    /// PROBE (= proxy は実装上 `GET Range: bytes=0-0`) を投げて 206 (= Range 対応)
+    /// を確認し、対応していれば [`ProxyRangeSource`] を返す。non-206 (= 200 を含む)
+    /// もしくは upstream エラーなら従来の full fetch にフォールバックする。
+    /// HEAD ではなく Range GET を使う理由: R2 / S3 の SigV4 presigned GET URL は
+    /// HTTP method が署名対象なので HEAD は SignatureDoesNotMatch で落ちるが、
+    /// `Range` ヘッダは signed header に入っていないので Range GET なら署名が通る。
     fn fetch_streaming(&self, url: &str) -> Result<StreamingFetchResponse, FetchError> {
         match ProxyRangeSource::probe(self.endpoint.clone(), url, self.max_body_bytes) {
             Ok(source) => {
@@ -208,7 +211,7 @@ impl ContentFetcher for ProxyContentFetcher {
 
         // The proxy doesn't forward Content-Type or ETag on this `fetch` path
         // (full body). Magic-byte sniffing + URL extension に頼る。`fetch_streaming`
-        // 経由の HEAD probe (`ProxyRangeSource::probe`) では Content-Type と ETag
+        // 経由の PROBE (`ProxyRangeSource::probe`) では Content-Type と ETag
         // が wire-encoded で返るため、Range Request 経路は ETag 一致を維持できる。
         let content_type = Some(detect_content_type(&body, url, None));
 
@@ -328,7 +331,7 @@ struct ProxyConn {
 }
 
 /// `http_range_client::SyncHttpRangeClient` を proxy ワイヤープロトコル経由で
-/// 実装したアダプタ。HEAD は `wire::encode_head_response` で構造化された
+/// 実装したアダプタ。PROBE は `wire::encode_probe_response` で構造化された
 /// 応答を proxy が返す前提。Range GET は `GET_RANGE` 専用メソッドを使い、
 /// `[u64 begin][u64 length]` の固定 16 byte body を送る。
 ///
@@ -390,12 +393,12 @@ impl http_range_client::SyncHttpRangeClient for ProxyRangeBackend {
     ) -> http_range_client::Result<Option<String>> {
         let (status, body) = send_wire_request(
             &self.conn.endpoint,
-            "HEAD",
+            "PROBE",
             url,
             &[],
             self.conn.max_body_bytes,
         )
-        .map_err(|e| http_range_client::HttpError::HttpError(format!("proxy HEAD: {e}")))?;
+        .map_err(|e| http_range_client::HttpError::HttpError(format!("proxy PROBE: {e}")))?;
 
         if status == PROXY_INTERNAL_ERROR_STATUS {
             return Err(http_range_client::HttpError::HttpError(format!(
@@ -407,7 +410,7 @@ impl http_range_client::SyncHttpRangeClient for ProxyRangeBackend {
             return Err(http_range_client::HttpError::HttpStatus(status as u16));
         }
 
-        let parsed = wire::decode_head_response(&body)
+        let parsed = wire::decode_probe_response(&body)
             .map_err(|e| http_range_client::HttpError::HttpError(e.to_string()))?;
 
         let value = match header.to_ascii_lowercase().as_str() {
@@ -422,7 +425,7 @@ impl http_range_client::SyncHttpRangeClient for ProxyRangeBackend {
 }
 
 /// proxy 経由で 1 リクエスト送って応答 (single-frame) を読み取る低レイヤ helper。
-/// `body_len_field == CHUNKED_SENTINEL` 経路は HEAD/GET_RANGE では使われない想定。
+/// `body_len_field == CHUNKED_SENTINEL` 経路は PROBE/GET_RANGE では使われない想定。
 fn send_wire_request(
     endpoint: &ProxyEndpoint,
     method: &str,
@@ -441,7 +444,7 @@ fn send_wire_request(
     if body_len_field == CHUNKED_SENTINEL {
         return Err(FetchError::HttpError {
             url: url.to_string(),
-            reason: "Unexpected chunked framing on HEAD/GET_RANGE response".to_string(),
+            reason: "Unexpected chunked framing on PROBE/GET_RANGE response".to_string(),
         });
     }
     let body_len = body_len_field as usize;
@@ -537,21 +540,22 @@ impl ProxyRangeSource {
     /// 値を共有する (4 MiB)。理由はそちらの doc を参照。
     pub const DEFAULT_MIN_REQ_SIZE: usize = crate::range_source::HttpRangeSource::DEFAULT_MIN_REQ_SIZE;
 
-    /// HEAD で Range 対応 + Content-Length を確認する。
+    /// PROBE (proxy が内部で `GET Range: bytes=0-0` を発行) で Range 対応 +
+    /// Content-Length (= 206 時の Content-Range の分母) を確認する。
     pub fn probe(
         endpoint: ProxyEndpoint,
         url: &str,
         max_body_bytes: usize,
     ) -> Result<Self, FetchError> {
-        let (status, head_body) =
-            send_wire_request(&endpoint, "HEAD", url, &[], max_body_bytes)?;
+        let (status, probe_body) =
+            send_wire_request(&endpoint, "PROBE", url, &[], max_body_bytes)?;
 
         if status == PROXY_INTERNAL_ERROR_STATUS {
             return Err(FetchError::HttpError {
                 url: url.to_string(),
                 reason: format!(
-                    "proxy HEAD returned internal error: {}",
-                    String::from_utf8_lossy(&head_body)
+                    "proxy PROBE returned internal error: {}",
+                    String::from_utf8_lossy(&probe_body)
                 ),
             });
         }
@@ -562,15 +566,15 @@ impl ProxyRangeSource {
             });
         }
 
-        let parsed = wire::decode_head_response(&head_body).map_err(|e| FetchError::HttpError {
+        let parsed = wire::decode_probe_response(&probe_body).map_err(|e| FetchError::HttpError {
             url: url.to_string(),
-            reason: format!("HEAD response decode failed: {e}"),
+            reason: format!("PROBE response decode failed: {e}"),
         })?;
 
         if !parsed.accepts_ranges {
             return Err(FetchError::HttpError {
                 url: url.to_string(),
-                reason: "Upstream does not advertise Accept-Ranges: bytes".to_string(),
+                reason: "Upstream did not return 206 to Range probe (= no Range support)".to_string(),
             });
         }
 
@@ -615,7 +619,7 @@ impl ContentSource for ProxyRangeSource {
         // SafeRangeReader (上流の Read::read バグ + EOF 規約違反 + 末尾跨ぎ
         // バッファロストを吸収する共通アダプタ、`crates/tee/src/range_source.rs`
         // に定義) で包む。HttpRangeSource と同じ実装を再利用するため、direct HTTP と
-        // proxy で実装重複が消える。HEAD で確認済みの `content_length` を渡し、
+        // proxy で実装重複が消える。PROBE で確認済みの `content_length` を渡し、
         // EOF を超えるリクエストを未然に防ぐ。
         Ok(Box::new(crate::range_source::SafeRangeReader::new(
             reader,
@@ -802,16 +806,16 @@ mod tests {
         };
 
         match method.as_str() {
-            "HEAD" => {
-                let head_body = wire::encode_head_response(
+            "PROBE" => {
+                let probe_body = wire::encode_probe_response(
                     body.len() as u64,
                     true,
                     Some("\"proxy-test\""),
                     Some("video/mp4"),
                 );
                 let _ = stream.write_all(&200u32.to_be_bytes());
-                let _ = stream.write_all(&(head_body.len() as u32).to_be_bytes());
-                let _ = stream.write_all(&head_body);
+                let _ = stream.write_all(&(probe_body.len() as u32).to_be_bytes());
+                let _ = stream.write_all(&probe_body);
             }
             "GET_RANGE" => {
                 let (begin, length) =

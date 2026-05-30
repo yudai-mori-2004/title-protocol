@@ -96,4 +96,10 @@ ENV PROXY_ADDR=vsock://3:8000
 # single request. Bigger values expand the per-request memory footprint
 # inside the enclave; keep below ENCLAVE_MEM_MIB minus working space.
 ENV MAX_CONTENT_BYTES=2147483648
+# ResourcePool admission ceiling (= `POOL_TOTAL_LIMIT`). コード既定は 512 MiB
+# だが、MAX_CONTENT_BYTES が 2 GiB を許可している以上、admission も同値に
+# 揃えないと正常系で `Memory reservation would exceed total_limit` が出る。
+# 万一 streaming probe (PROBE wire method) が失敗して in-memory fallback に
+# 落ちても、2 GiB 以下なら admission レベルでは弾かれずに動く defense in depth。
+ENV POOL_TOTAL_LIMIT=2147483648
 ENTRYPOINT ["/usr/local/bin/tee-entrypoint.sh"]

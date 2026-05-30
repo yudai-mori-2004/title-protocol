@@ -341,21 +341,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn head_returns_structured_response() {
-        use crate::protocol::decode_head_response;
-        use axum::http::Response;
+    async fn probe_returns_structured_response_on_206() {
+        use crate::protocol::decode_probe_response;
+        use axum::extract::Request;
+        use axum::http::{header, Response};
 
-        // Upstream that responds to HEAD with Content-Length / Accept-Ranges / ETag.
+        // Upstream that honors Range on a 1 MiB body and returns 206 + Content-Range.
+        // proxy が PROBE = GET Range: bytes=0-0 を投げてくる前提のテスト。
         let app = Router::new().route(
             "/file.mp4",
-            axum::routing::head(|| async {
+            get(|req: Request| async move {
+                let total: usize = 1024 * 1024;
+                let has_range = req.headers().get(header::RANGE).is_some();
+                if has_range {
+                    // bytes=0-0 を期待。1 バイト返して 206 + Content-Range。
+                    Response::builder()
+                        .status(206)
+                        .header(header::CONTENT_LENGTH, "1")
+                        .header(header::CONTENT_RANGE, format!("bytes 0-0/{total}"))
+                        .header(header::ACCEPT_RANGES, "bytes")
+                        .header(header::ETAG, "\"abc-123\"")
+                        .header(header::CONTENT_TYPE, "video/mp4")
+                        .body(axum::body::Body::from(vec![0u8]))
+                        .unwrap()
+                } else {
+                    Response::builder()
+                        .status(200)
+                        .body(axum::body::Body::from(vec![0u8; total]))
+                        .unwrap()
+                }
+            }),
+        );
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(upstream, app).await.unwrap();
+        });
+
+        let proxy = start_proxy().await;
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy}"))
+            .await
+            .unwrap();
+        write_request(
+            &mut stream,
+            "PROBE",
+            &format!("http://127.0.0.1:{upstream_port}/file.mp4"),
+            &[],
+        )
+        .await;
+
+        let (status, body) = read_response(&mut stream).await;
+        assert_eq!(status, 206);
+        let parsed = decode_probe_response(&body).expect("decode PROBE response");
+        assert_eq!(parsed.content_length, 1_048_576);
+        assert!(parsed.accepts_ranges);
+        assert_eq!(parsed.etag.as_deref(), Some("\"abc-123\""));
+        assert_eq!(parsed.content_type.as_deref(), Some("video/mp4"));
+    }
+
+    #[tokio::test]
+    async fn probe_marks_range_unsupported_on_200() {
+        use crate::protocol::decode_probe_response;
+        use axum::http::Response;
+
+        // upstream が Range ヘッダを無視して 200 + full body を返してくる挙動。
+        // proxy は body を消費せず accepts_ranges=false で短く返すこと。
+        let app = Router::new().route(
+            "/no-range.bin",
+            get(|| async {
                 Response::builder()
                     .status(200)
-                    .header("Content-Length", "1048576")
-                    .header("Accept-Ranges", "bytes")
-                    .header("ETag", "\"abc-123\"")
-                    .header("Content-Type", "video/mp4")
-                    .body(axum::body::Body::empty())
+                    .header("Content-Length", "2048")
+                    .header("Content-Type", "application/octet-stream")
+                    .body(axum::body::Body::from(vec![0u8; 2048]))
                     .unwrap()
             }),
         );
@@ -371,19 +429,17 @@ mod tests {
             .unwrap();
         write_request(
             &mut stream,
-            "HEAD",
-            &format!("http://127.0.0.1:{upstream_port}/file.mp4"),
+            "PROBE",
+            &format!("http://127.0.0.1:{upstream_port}/no-range.bin"),
             &[],
         )
         .await;
 
         let (status, body) = read_response(&mut stream).await;
         assert_eq!(status, 200);
-        let parsed = decode_head_response(&body).expect("decode HEAD response");
-        assert_eq!(parsed.content_length, 1_048_576);
-        assert!(parsed.accepts_ranges);
-        assert_eq!(parsed.etag.as_deref(), Some("\"abc-123\""));
-        assert_eq!(parsed.content_type.as_deref(), Some("video/mp4"));
+        let parsed = decode_probe_response(&body).expect("decode PROBE response");
+        assert!(!parsed.accepts_ranges, "200 must be reported as no-range");
+        assert_eq!(parsed.content_length, 2048);
     }
 
     #[tokio::test]

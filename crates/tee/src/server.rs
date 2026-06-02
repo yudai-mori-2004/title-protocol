@@ -242,11 +242,16 @@ async fn handle_solana_keys(State(state): State<Arc<TeeAppState>>) -> impl IntoR
 #[derive(serde::Deserialize)]
 struct SolanaExtensionBody {
     offchain_data_url: String,
+    /// leaf owner (= cNFT 所有者) の pubkey。
     payer: String,
     merkle_tree: String,
     recent_blockhash: String,
     #[serde(default)]
     collection: Option<String>,
+    /// 手数料の支払者 (= スポンサー) の pubkey。 省略時は payer (= leaf owner) が払う。
+    /// leaf owner と分離することで、 SOL を持たない新規ユーザーでも mint できる。
+    #[serde(default)]
+    fee_payer: Option<String>,
 }
 
 /// POST /extension/solana — Solana Extension cNFT mint.
@@ -275,6 +280,7 @@ async fn handle_solana_extension(
         &body.merkle_tree,
         &body.recent_blockhash,
         &body.payer,
+        body.fee_payer.as_deref(),
     )
     .map_err(|e| {
         (

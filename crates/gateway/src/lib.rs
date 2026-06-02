@@ -138,7 +138,8 @@ pub struct SolanaExtensionRequest {
     /// コア処理結果のオフチェーンデータURL。
     pub offchain_data_url: String,
 
-    /// Payer公開鍵（Base58）。Fee payer かつ leaf_owner。
+    /// Payer公開鍵（Base58）。leaf_owner（= cNFT 所有者）。
+    /// fee_payer 省略時はこの口座が手数料も払う（旧挙動）。
     pub payer: String,
 
     /// Merkle Treeアドレス（Base58）。
@@ -151,6 +152,12 @@ pub struct SolanaExtensionRequest {
     /// 開発者が選択するもので、信頼モデルの一部ではない。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collection: Option<String>,
+
+    /// 手数料の支払者（Base58、任意）= スポンサー。指定があれば payer（leaf_owner）と分離され、
+    /// この口座が手数料を払う。SOL を持たない新規ユーザーでも mint できるようにするための分離。
+    /// gateway はこのフィールドをそのまま TEE /extension/solana へ転送する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_payer: Option<String>,
 }
 
 /// POST /extension/solana レスポンス。

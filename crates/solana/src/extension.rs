@@ -60,8 +60,12 @@ pub struct ExtensionRequest {
     pub merkle_tree: Pubkey,
     /// Recent blockhash (Base58).
     pub recent_blockhash: Hash,
-    /// Payer / leaf owner address.
+    /// Leaf owner address (= cNFT の所有者)。 旧フィールド名 payer。
     pub payer: Pubkey,
+    /// Transaction fee payer address (Base58). Optional — 指定があればこの口座が手数料を
+    /// 払う (= スポンサー)。 None なら `payer` (= leaf owner) が払う (旧挙動・後方互換)。
+    /// leaf owner と fee payer を分離することで、 SOL を持たない新規ユーザーでも mint できる。
+    pub fee_payer: Option<Pubkey>,
 }
 
 impl ExtensionRequest {
@@ -72,6 +76,7 @@ impl ExtensionRequest {
         merkle_tree: &str,
         recent_blockhash: &str,
         payer: &str,
+        fee_payer: Option<&str>,
     ) -> Result<Self, ExtensionError> {
         Ok(Self {
             offchain_data_url: offchain_data_url.to_string(),
@@ -79,6 +84,7 @@ impl ExtensionRequest {
             merkle_tree: parse_pubkey(merkle_tree)?,
             recent_blockhash: parse_hash(recent_blockhash)?,
             payer: parse_pubkey(payer)?,
+            fee_payer: fee_payer.map(parse_pubkey).transpose()?,
         })
     }
 }
@@ -167,6 +173,9 @@ pub fn process_extension(
 ) -> Result<Vec<u8>, ExtensionError> {
     verify_attestation_binding(verifier, offchain_data, expected_measurement, now_unix_secs)?;
 
+    // leaf_owner = request.payer (= cNFT 所有者)。 fee payer = request.fee_payer があればそれ
+    // (= スポンサー)、 無ければ payer 自身 (= 旧挙動)。 これで所有者と手数料支払者を分離できる。
+    let fee_payer = request.fee_payer.as_ref().unwrap_or(&request.payer);
     let tx = cnft::build_and_sign_mint_tx(
         signing_key,
         &request.merkle_tree,
@@ -174,7 +183,7 @@ pub fn process_extension(
         &offchain_data.verifiable.signature_hash,
         &request.offchain_data_url,
         request.collection.as_ref(),
-        &request.payer,
+        fee_payer,
         &request.recent_blockhash,
     )?;
 
@@ -284,6 +293,7 @@ mod tests {
             merkle_tree: Pubkey::new_unique(),
             recent_blockhash: Hash::new_unique(),
             payer: Pubkey::new_unique(),
+            fee_payer: None,
         };
 
         let tx_bytes = process_extension(&verifier(), &key, &response, &request, None, 0).unwrap();
@@ -292,6 +302,34 @@ mod tests {
         let tx: solana_sdk::transaction::VersionedTransaction =
             bincode::deserialize(&tx_bytes).unwrap();
         assert!(!tx.signatures.is_empty());
+    }
+
+    #[test]
+    fn process_extension_separates_fee_payer() {
+        // fee_payer を指定すると、 手数料の支払者 (= message の先頭アカウント) が leaf owner では
+        // なくスポンサーになる (= D 案: SOL を持たない撮影者でも mint できる)。
+        let key = SolanaSigningKey::generate(&mut rand::rngs::OsRng);
+        let response = mock_process_response();
+        let owner = Pubkey::new_unique();
+        let sponsor = Pubkey::new_unique();
+
+        let request = ExtensionRequest {
+            offchain_data_url: "https://example.com/output/abc123.json".into(),
+            collection: None,
+            merkle_tree: Pubkey::new_unique(),
+            recent_blockhash: Hash::new_unique(),
+            payer: owner,
+            fee_payer: Some(sponsor),
+        };
+
+        let tx_bytes = process_extension(&verifier(), &key, &response, &request, None, 0).unwrap();
+        let tx: solana_sdk::transaction::VersionedTransaction =
+            bincode::deserialize(&tx_bytes).unwrap();
+
+        // Solana では fee payer = message の先頭アカウント。
+        let keys = tx.message.static_account_keys();
+        assert_eq!(keys[0], sponsor, "fee payer はスポンサーであるべき");
+        assert_ne!(keys[0], owner, "fee payer は leaf owner ではない");
     }
 
     #[test]
@@ -306,6 +344,7 @@ mod tests {
             merkle_tree: Pubkey::new_unique(),
             recent_blockhash: Hash::new_unique(),
             payer: Pubkey::new_unique(),
+            fee_payer: None,
         };
 
         let result = process_extension(&verifier(), &key, &response, &request, None, 0);
